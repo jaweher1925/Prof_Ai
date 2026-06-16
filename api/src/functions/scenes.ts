@@ -28,6 +28,7 @@ app.http('updateScene', {
         where: { id: req.params.id },
         data: {
           ...(body.script_content !== undefined && { scriptContent: body.script_content }),
+          ...(body.slide_deck_content !== undefined && { slideDeckContent: body.slide_deck_content }),
           ...(body.visual_prompt !== undefined && { visualPrompt: body.visual_prompt }),
           ...(body.text_animation_type !== undefined && { textAnimationType: body.text_animation_type }),
           ...(body.presenter_position !== undefined && { presenterPosition: body.presenter_position }),
@@ -70,5 +71,30 @@ app.http('approveScene', {
 
       return { status: 200, jsonBody: { success: true, module_completed: moduleCompleted } }
     } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// POST /api/scenes/{id}/ai-rewrite
+// Rewrites slide bullet points using the LLM
+app.http('aiRewriteScene', {
+  methods: ['POST'], route: 'scenes/{id}/ai-rewrite', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const body = (await req.json()) as { prompt?: string; content?: string; title?: string }
+      if (!body.prompt || !body.content) return { status: 400, jsonBody: { error: 'prompt and content required' } }
+
+      const { generateJson } = await import('../lib/llm')
+      const result = await generateJson<{ bullets: Array<{ text: string; level: number }> }>(
+        `You are an educational content editor for presentation slides. ${body.prompt} Always respond with valid JSON only.`,
+        `Slide title: "${body.title || ''}"
+Current bullet points:
+${body.content}
+
+Return JSON with rewritten bullets:
+{ "bullets": [{ "text": "string", "level": 1 or 2 }] }`
+      )
+      return { status: 200, jsonBody: result }
+    } catch (e: any) { ctx.error(e); return err500(e) }
   },
 })

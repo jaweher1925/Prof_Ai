@@ -22,8 +22,6 @@ const navItems = [
 export default function Sidebar() {
   return (
     <aside className="w-16 lg:w-60 h-screen bg-slate-900 border-r border-white/[0.06] flex flex-col flex-shrink-0">
-
-      {/* Brand */}
       <div className="px-3 lg:px-5 py-5 border-b border-white/[0.06]">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30 flex-shrink-0">
@@ -36,7 +34,6 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
         <p className="hidden lg:block text-[10px] text-slate-600 uppercase tracking-widest font-medium px-3 mb-3">Workspace</p>
         {navItems.map(({ to, icon: Icon, label, desc }) => (
@@ -67,7 +64,6 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* User section */}
       <div className="px-2 lg:px-3 py-4 border-t border-white/[0.06]">
         <div className="flex items-center gap-3 px-2 lg:px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.05]">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center flex-shrink-0">
@@ -79,7 +75,6 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-
     </aside>
   )
 }

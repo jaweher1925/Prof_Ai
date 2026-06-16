@@ -1,10 +1,9 @@
 /**
  * POST /api/pollHeyGenVideo
  *
- * Checks the status of a HeyGen video generation job.
+ * Checks the status of a video generation job.
  * When complete, saves the final video URL to the scene.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
@@ -34,7 +33,7 @@ async function pollHeyGenVideoHandler(
       return { status: 500, jsonBody: { error: 'HEYGEN_API_KEY not configured' } }
     }
 
-    // Poll HeyGen for video status
+    // Poll for video status
     const res = await fetch(`${HEYGEN_API}/v1/video_status.get?video_id=${body.video_id}`, {
       headers: { 'x-api-key': apiKey },
     })
@@ -42,14 +41,14 @@ async function pollHeyGenVideoHandler(
     const data = await res.json() as any
 
     if (!res.ok) {
-      return { status: res.status, jsonBody: { error: data.message || 'HeyGen poll error' } }
+      return { status: res.status, jsonBody: { error: data.message || 'Video poll error' } }
     }
 
     const status = data.data?.status
     const videoUrl = data.data?.video_url
     const thumbnailUrl = data.data?.thumbnail_url
 
-    context.log(`HeyGen video ${body.video_id} status: ${status}`)
+    context.log(`Video ${body.video_id} status: ${status}`)
 
     // If completed and we have a scene_id, update the scene
     if (status === 'completed' && videoUrl && body.scene_id) {

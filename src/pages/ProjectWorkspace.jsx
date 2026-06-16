@@ -12,7 +12,7 @@ import Button from '@/components/ui/Button'
 import SourcesPanel from '@/components/workspace/SourcesPanel'
 import ScriptsPanel from '@/components/workspace/ScriptsPanel'
 import VoicePanel from '@/components/workspace/VoicePanel'
-import VisualPanel from '@/components/workspace/VisualPanel'
+import VisualDesignerPanel from '@/components/workspace/VisualDesignerPanel'
 import VideoPanel from '@/components/workspace/VideoPanel'
 import CastingSettings from '@/components/workspace/CastingSettings'
 
@@ -20,18 +20,18 @@ import CastingSettings from '@/components/workspace/CastingSettings'
  * NEW pipeline order (most expensive last):
  * 1. Library  → upload sources
  * 2. Script   → AI generates text scripts
- * 3. Voice    → ElevenLabs converts text to audio
- * 4. Visual   → DALL-E generates background images
- * 5. Video    → HeyGen generates avatar videos (expensive — LAST)
+ * 3. Voice    → Voice AI converts text to audio
+ * 4. Visual   → Image AI generates background images
+ * 5. Video    → Video AI generates avatar videos (expensive — LAST)
  *
  * Casting (avatar/voice settings) = gear button, not a stage
  */
 const STAGES = [
-  { id: 'library', label: 'Library',  icon: Library,   desc: 'Upload sources' },
-  { id: 'script',  label: 'Script',   icon: FileText,  desc: 'Generate text'  },
-  { id: 'voice',   label: 'Voice',    icon: Mic2,      desc: 'Text to audio'  },
-  { id: 'visual',  label: 'Visual',   icon: Image,     desc: 'Generate images' },
-  { id: 'video',   label: 'Video',    icon: Video,     desc: 'Avatar videos'  },
+  { id: 'library',         label: 'Library',         icon: Library,  desc: 'Upload sources'         },
+  { id: 'script',          label: 'Script',          icon: FileText, desc: 'Generate scripts'       },
+  { id: 'voice',           label: 'Voice',           icon: Mic2,     desc: 'Text to audio'          },
+  { id: 'visual-designer', label: 'Visual Designer', icon: Image,    desc: 'Animated slides'        },
+  { id: 'video',           label: 'Video',           icon: Video,    desc: 'Avatar videos'          },
 ]
 
 export default function ProjectWorkspace() {
@@ -64,12 +64,12 @@ export default function ProjectWorkspace() {
 
   const isLocked = (stageId) => {
     switch (stageId) {
-      case 'library': return false
-      case 'script':  return sources.length === 0
-      case 'voice':   return !['journey_approved','in_production','completed'].includes(project?.status)
-      case 'visual':  return !['journey_approved','in_production','completed'].includes(project?.status)
-      case 'video':   return !['in_production','completed'].includes(project?.status)
-      default:        return true
+      case 'library':         return false
+      case 'script':          return sources.length === 0
+      case 'voice':           return !['journey_approved','in_production','completed'].includes(project?.status)
+      case 'visual-designer': return !['journey_approved','in_production','completed'].includes(project?.status)
+      case 'video':           return !['in_production','completed'].includes(project?.status)
+      default:                return true
     }
   }
 
@@ -95,7 +95,7 @@ export default function ProjectWorkspace() {
           <p className="text-slate-500 text-sm">
             {activeStage === 'script'
               ? 'Upload at least one source file in the Library first.'
-              : activeStage === 'voice' || activeStage === 'visual'
+              : activeStage === 'voice' || activeStage === 'visual-designer'
               ? 'Generate and approve scripts first.'
               : 'Complete the previous stages first.'}
           </p>
@@ -104,12 +104,12 @@ export default function ProjectWorkspace() {
     }
 
     switch (activeStage) {
-      case 'library': return <SourcesPanel project={project} onStageChange={setActiveStage} />
-      case 'script':  return <ScriptsPanel project={project} onUpdate={invalidate} />
-      case 'voice':   return <VoicePanel project={project} onUpdate={invalidate} />
-      case 'visual':  return <VisualPanel project={project} onUpdate={invalidate} />
-      case 'video':   return <VideoPanel project={project} onUpdate={invalidate} />
-      default:        return null
+      case 'library':         return <SourcesPanel project={project} onStageChange={setActiveStage} />
+      case 'script':          return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'voice':           return <VoicePanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'visual-designer': return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'video':           return <VideoPanel project={project} onUpdate={invalidate} />
+      default:                return null
     }
   }
 

@@ -5,16 +5,43 @@
  * For each approved module, generates a detailed presenter script
  * with scenes, visual prompts, and estimated durations.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { generateJson } from '../../lib/llm'
 
+interface SlideBullet {
+  text: string
+  level: 1 | 2
+}
+
+interface SlideBlock {
+  type: 'bullets' | 'definition' | 'quote' | 'two-column' | 'key-concept'
+  items?: SlideBullet[]          // for bullets
+  term?: string                  // for definition
+  definition?: string            // for definition
+  examples?: string[]            // for definition
+  quote?: string                 // for quote
+  attribution?: string           // for quote
+  concept?: string               // for key-concept
+  left?: SlideBullet[]           // for two-column
+  right?: SlideBullet[]          // for two-column
+}
+
+interface SlideContent {
+  title: string
+  subtitle?: string
+  layout: 'title-hero' | 'bullets' | 'split' | 'quote' | 'definition' | 'summary'
+  theme?: 'dark-navy' | 'ocean' | 'academic' | 'light' | 'corporate'
+  blocks: SlideBlock[]
+  imagePrompt?: string
+}
+
 interface SceneOutput {
   title: string
   script_content: string
+  slide_content: SlideContent
   visual_prompt: string
   duration_seconds: number
   text_animation_type: string
@@ -77,26 +104,68 @@ You write engaging, clear presenter scripts for online learning modules.
 Always respond with valid JSON only — no markdown, no explanation.`
 
       const userPrompt = `Write a complete presenter script for this learning module.
+This module must be exactly 6 minutes long (360 seconds total).
 
 Module title: ${mod.title}
 Module objective: ${mod.objective || 'Not specified'}
 ${specialInstructions}
 
-Create 3-5 scenes. Each scene is one section of the video.
-The presenter speaks directly to camera — write conversational, engaging text.
+CORE PRINCIPLE — TWO COMPLETELY DIFFERENT OUTPUTS PER SCENE:
+1. script_content = ONLY what the PRESENTER SAYS out loud — natural conversational speech, 80-120 words, first-person narrator voice, no bullet points
+2. slide_content = ONLY what STUDENTS READ on the slide — structured educational reference material (title, subtitle, bullets). Must be DIFFERENT TEXT from script_content. Students should be able to study the slide without watching the video. No narration phrasing. Bullets = facts/concepts to remember.
+
+SLIDE STRUCTURE RULES (like Gamma):
+- Follow a logical outline: intro → problem → concept → examples → application → summary
+- Scene 1: always layout "title-hero" (module intro)
+- Scene 8: always layout "summary" (key takeaways with checkmarks)
+- Middle scenes: alternate between "bullets", "definition", "split", "quote"
+- Subtitles should state the key insight, not repeat the title
+- Bullets must be educational facts/concepts students can study — not what the presenter says
+
+LAYOUT OPTIONS:
+- "title-hero": big title + subtitle + one key statement (scene intros)
+- "bullets": title + 4-5 scannable bullet points (main content)
+- "definition": term being defined + clear definition + 2-3 examples
+- "split": two columns — left: concept, right: examples or comparison
+- "quote": highlighted key principle or formula (standout concept)
+- "summary": "Key Takeaways" checklist of 4-5 items students must remember
+
+THEME: choose the best for this topic:
+- "dark-navy": tech, software, data science
+- "ocean": business, management, communication
+- "academic": science, mathematics, research
+- "light": healthcare, education, UX design
+- "corporate": finance, law, strategy
+${specialInstructions}
 
 Return this exact JSON:
 {
   "title": "${mod.title}",
-  "learning_objectives": ["string", "string"],
-  "estimated_duration_minutes": number,
+  "learning_objectives": ["string", "string", "string"],
+  "estimated_duration_minutes": 6,
   "scenes": [
     {
-      "title": "string",
-      "script_content": "Full text the presenter speaks (2-4 paragraphs)",
-      "visual_prompt": "Description of what should appear on screen behind the presenter (for DALL-E image generation)",
-      "duration_seconds": number (30-120),
-      "text_animation_type": "none" or "bullet-reveal" or "fade-in" or "lower-third"
+      "title": "Scene title",
+      "script_content": "What the presenter says out loud — 80-120 conversational words",
+      "slide_content": {
+        "title": "Slide title (max 7 words, educational)",
+        "subtitle": "One-line key insight or concept being taught",
+        "layout": "bullets",
+        "theme": "dark-navy",
+        "blocks": [
+          {
+            "type": "bullets",
+            "items": [
+              { "text": "Key educational fact or concept", "level": 1 },
+              { "text": "Supporting detail, example or sub-concept", "level": 2 }
+            ]
+          }
+        ],
+        "imagePrompt": "Description of an educational diagram that would help students understand"
+      },
+      "visual_prompt": "Brief background context",
+      "duration_seconds": 45,
+      "text_animation_type": "bullet-reveal"
     }
   ]
 }`
@@ -115,8 +184,9 @@ Return this exact JSON:
             moduleId: mod.id,
             orderIndex: i,
             scriptContent: sceneData.script_content,
+            slideDeckContent: JSON.stringify(sceneData.slide_content || {}),
             visualPrompt: sceneData.visual_prompt,
-            textAnimationType: sceneData.text_animation_type || 'none',
+            textAnimationType: sceneData.text_animation_type || 'bullet-reveal',
             presenterPosition: 'bottom-right',
             durationSeconds: sceneData.duration_seconds,
             status: 'draft',

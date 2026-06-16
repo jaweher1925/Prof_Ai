@@ -1,7 +1,7 @@
 /**
  * Casting Settings — gear button panel (not a pipeline stage)
  * Choose default avatar and voice for the project.
- * Sits outside the main pipeline because HeyGen API listing costs credits.
+ * Sits outside the main pipeline because External API listing may incur costs.
  */
 import React, { useState, useEffect, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -38,7 +38,7 @@ function AvatarPicker({ value, onChange }) {
       const res = await mediaService.listAvatars()
       setAvatars(res?.avatars || [])
     } catch (e) {
-      setError('Failed to load avatars. Check your HeyGen API key.')
+      setError('Failed to load avatars. Check your avatar API key.')
     } finally {
       setLoading(false)
     }
@@ -122,7 +122,7 @@ function VoicePicker({ value, onChange }) {
       const res = await mediaService.listVoices()
       setVoices(res?.voices || [])
     } catch (e) {
-      setError('Failed to load voices. Check your ElevenLabs API key.')
+      setError('Failed to load voices. Check your voice API key.')
     } finally {
       setLoading(false)
     }
@@ -157,6 +157,8 @@ function VoicePicker({ value, onChange }) {
             ? <div className="flex justify-center py-6"><Spinner size="sm" /></div>
             : error
             ? <p className="text-xs text-red-400 p-4">{error}</p>
+            : voices.length === 0
+            ? <p className="text-xs text-slate-500 p-4 text-center">No voices found — check your voice API key in Integrations</p>
             : <ul className="max-h-56 overflow-y-auto divide-y divide-white/[0.04]">
                 {voices.map(v => (
                   <li key={v.voice_id}

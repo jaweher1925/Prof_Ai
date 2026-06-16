@@ -1,7 +1,6 @@
 /**
  * Agents service — all AI agent calls.
  * Every function here maps to a real Azure Function endpoint.
- * Written from scratch — no Base44 dependency.
  */
 import apiClient from '@/api/apiClient'
 
@@ -22,22 +21,33 @@ export const agentsService = {
 
   // ── Stage 2 → Voice (Text to Audio) ──────────────────────────────────────
 
-  /** Generate TTS audio for a single scene using ElevenLabs */
-  runGenerateTTS: (sceneId, voiceId) =>
+  /** Generate TTS audio for a single scene using Voice AI */
+  runGenerateTTS: (sceneId, voiceId, overrideText, voiceSettings) =>
     apiClient.post('/generateTTS', {
       scene_id: sceneId,
       voice_id: voiceId || undefined,
+      override_text: overrideText || undefined,
+      voice_settings: voiceSettings || undefined,
     }),
 
   // ── Stage 3 → Visual (Generate Images) ───────────────────────────────────
 
-  /** Generate DALL-E background image for a single scene */
+  /** Generate Image AI background image for a single scene */
   runGenerateAsset: (sceneId) =>
     apiClient.post('/generateSceneAsset', { scene_id: sceneId }),
 
+  // ── Storyboard ───────────────────────────────────────────────────────────────
+
+  /** Generate storyboard (visual prompt + motion style + text cues + slide content) for a project or module */
+  runStoryboard: (projectId, moduleId) =>
+    apiClient.post('/storyboardAgent', {
+      project_id: projectId || undefined,
+      module_id: moduleId || undefined,
+    }),
+
   // ── Stage 4 → Video (Voice to Video — expensive, last) ────────────────────
 
-  /** Generate HeyGen avatar video for a single scene */
+  /** Generate Video AI avatar video for a single scene */
   runHeyGenAvatar: (sceneId, avatarId, voiceId) =>
     apiClient.post('/generateHeyGenAvatar', {
       scene_id: sceneId,
@@ -45,7 +55,7 @@ export const agentsService = {
       voice_id: voiceId || undefined,
     }),
 
-  /** Check HeyGen video render status */
+  /** Check Video AI video render status */
   pollHeyGen: (videoId, sceneId) =>
     apiClient.post('/pollHeyGenVideo', {
       video_id: videoId,

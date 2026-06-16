@@ -23,7 +23,7 @@ export async function uploadFromForm(file: File): Promise<string> {
 
   // Return a URL that Vite dev server can serve
   // In production with Azure, this would be the Blob Storage URL
-  return `/uploads/${fileName}`
+  return `/api/uploads/${fileName}`
 }
 
 export async function uploadBuffer(
@@ -35,5 +35,5 @@ export async function uploadBuffer(
   await mkdir(UPLOAD_DIR, { recursive: true })
   const fileName = `${randomUUID()}.${ext}`
   await writeFile(join(UPLOAD_DIR, fileName), buffer)
-  return `/uploads/${fileName}`
+  return `/api/uploads/${fileName}`
 }

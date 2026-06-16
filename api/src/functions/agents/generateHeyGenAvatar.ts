@@ -3,16 +3,15 @@
  *
  * Step 5 of the pipeline — Voice to Video (expensive, last).
  * Takes a scene's TTS audio + visual background + avatar selection
- * and submits a HeyGen video generation job.
+ * and submits a video generation job.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 
 const HEYGEN_API = 'https://api.heygen.com'
-const DEFAULT_AVATAR_ID = 'Daisy-inskirt-20220818' // free default HeyGen avatar
+const DEFAULT_AVATAR_ID = 'Daisy-inskirt-20220818' // free default avatar
 
 async function generateHeyGenAvatarHandler(
   request: HttpRequest,
@@ -53,7 +52,7 @@ async function generateHeyGenAvatarHandler(
       || scene.module?.project?.defaultAvatarId
       || DEFAULT_AVATAR_ID
 
-    context.log(`Generating HeyGen video for scene ${body.scene_id} with avatar ${avatarId}`)
+    context.log(`Generating video for scene ${body.scene_id} with avatar ${avatarId}`)
 
     // Update scene status
     await prisma.scene.update({
@@ -61,8 +60,8 @@ async function generateHeyGenAvatarHandler(
       data: { status: 'rendering' },
     })
 
-    // Build HeyGen API request
-    // HeyGen v2 video generation
+    // Build video API request
+    // Video generation request
     const heygenBody: Record<string, unknown> = {
       video_inputs: [
         {
@@ -110,28 +109,28 @@ async function generateHeyGenAvatarHandler(
     const heygenData = await heygenResponse.json() as any
 
     if (!heygenResponse.ok || heygenData.error) {
-      context.error('HeyGen API error:', heygenData)
+      context.error('Video API error:', heygenData)
       await prisma.scene.update({ where: { id: body.scene_id }, data: { status: 'assets_ready' } })
       return {
         status: heygenResponse.status,
-        jsonBody: { error: heygenData.message || heygenData.error || 'HeyGen API error' },
+        jsonBody: { error: heygenData.message || heygenData.error || 'Video API error' },
       }
     }
 
     const videoId = heygenData.data?.video_id
-    if (!videoId) throw new Error('No video_id returned from HeyGen')
+    if (!videoId) throw new Error('No video_id returned')
 
     // Store video ID in scene for polling
     await prisma.scene.update({
       where: { id: body.scene_id },
       data: {
-        // We store the HeyGen video ID in avatarVideoUrl temporarily (prefixed)
+        // Store the video job ID temporarily
         avatarVideoUrl: `heygen:${videoId}`,
         status: 'rendering',
       },
     })
 
-    context.log(`HeyGen job started for scene ${body.scene_id}: video_id=${videoId}`)
+    context.log(`Video job started for scene ${body.scene_id}: video_id=${videoId}`)
 
     return {
       status: 200,

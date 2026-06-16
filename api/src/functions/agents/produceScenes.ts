@@ -4,7 +4,6 @@
  * Bulk orchestrator — triggers TTS + Visual generation for ALL scenes
  * in a project or module at once.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'

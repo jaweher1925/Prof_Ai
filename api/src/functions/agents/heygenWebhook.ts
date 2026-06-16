@@ -1,11 +1,10 @@
 /**
  * POST /api/heygenWebhook
  *
- * Receives completion callbacks from HeyGen.
- * HeyGen calls this URL when a video finishes rendering.
+ * Receives video completion callbacks.
+ * Called when a video finishes rendering.
  * This is the recommended approach instead of polling.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
@@ -17,7 +16,7 @@ async function heygenWebhookHandler(
   try {
     const body = await request.json() as any
 
-    context.log('HeyGen webhook received:', JSON.stringify(body))
+    context.log('Video webhook received:', JSON.stringify(body))
 
     const eventType = body.event_type
     const videoId = body.event_data?.video_id
@@ -25,7 +24,7 @@ async function heygenWebhookHandler(
     const status = body.event_data?.status
 
     if (!videoId) {
-      return { status: 200, jsonBody: { received: true } } // Always return 200 to HeyGen
+      return { status: 200, jsonBody: { received: true } } // Always return 200
     }
 
     if (eventType === 'avatar_video.success' || status === 'completed') {
@@ -57,7 +56,7 @@ async function heygenWebhookHandler(
       }
     }
 
-    // Always return 200 — HeyGen retries if it gets anything else
+    // Always return 200 — service retries on other status codes
     return { status: 200, jsonBody: { received: true } }
   } catch (error: any) {
     context.error('heygenWebhook error:', error)
@@ -68,6 +67,6 @@ async function heygenWebhookHandler(
 app.http('heygenWebhook', {
   methods: ['POST'],
   route: 'heygenWebhook',
-  authLevel: 'anonymous', // Must be anonymous — HeyGen doesn't know our auth
+  authLevel: 'anonymous',
   handler: heygenWebhookHandler,
 })

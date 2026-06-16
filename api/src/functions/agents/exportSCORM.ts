@@ -4,7 +4,6 @@
  * Exports the project as a SCORM 1.2 package (.zip)
  * for uploading to any LMS (Moodle, Canvas, etc.)
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'

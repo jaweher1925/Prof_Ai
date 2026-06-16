@@ -2,8 +2,7 @@
  * POST /api/librarianAgent
  *
  * Step 1 of the pipeline.
- * Reads source files → sends content to OpenAI → creates modules in DB.
- * Written from scratch — no Base44 dependency.
+ * Reads source files → analyzes content → creates modules in DB.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
@@ -44,7 +43,7 @@ async function extractPdfText(filePath: string, context: InvocationContext): Pro
 async function fetchUrlText(url: string, context: InvocationContext): Promise<string> {
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SecondSelf/1.0)' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ProfAI/1.0)' },
       signal: AbortSignal.timeout(10000),
     })
     if (!res.ok) return ''
@@ -136,7 +135,7 @@ async function librarianAgentHandler(
         content = `[Document: ${file.fileName}]`
       }
 
-      // If we couldn't extract content, still include the filename so OpenAI knows what exists
+      // If we couldn't extract content, still include the filename as context
       if (!content) {
         content = `[File: ${file.fileName} — content could not be extracted automatically]`
       }
@@ -146,9 +145,9 @@ async function librarianAgentHandler(
 
     const combinedContent = contentParts.join('\n\n')
     context.log(`Total content length: ${combinedContent.length} characters`)
-    context.log('Calling OpenAI to build course structure...')
+    context.log('Calling LLM to build course structure...')
 
-    // Call OpenAI
+    // Call LLM
     const systemPrompt = `You are an expert instructional designer.
 Your job is to analyze source materials and create a structured Learning Journey for a video course.
 Even if content is limited, create a reasonable course structure based on what you know about the topic.
@@ -159,7 +158,8 @@ Always respond with valid JSON only — no markdown, no explanation.`
 Source materials:
 ${combinedContent.slice(0, 12000)}
 
-Create a course with 3-6 modules. Each module should cover one major topic area.
+Create a course with EXACTLY 5 modules. Each module becomes one 6-minute video.
+Each module should cover one major topic area with enough depth to fill 6 minutes of presenter content.
 Return ONLY this JSON structure (no other text):
 {
   "course_title": "string",
@@ -168,16 +168,16 @@ Return ONLY this JSON structure (no other text):
       "title": "string",
       "objective": "string (what the learner will be able to do after this module)",
       "key_points": ["string", "string", "string"],
-      "estimated_duration_minutes": number
+      "estimated_duration_minutes": 6
     }
   ]
 }`
 
     const journey = await generateJson<LearningJourney>(systemPrompt, userPrompt)
-    context.log(`OpenAI returned: ${journey.modules?.length} modules`)
+    context.log(`LLM returned: ${journey.modules?.length} modules`)
 
     if (!journey.modules || !Array.isArray(journey.modules) || journey.modules.length === 0) {
-      throw new Error('OpenAI returned an invalid structure — no modules found')
+      throw new Error('LLM returned an invalid structure — no modules found')
     }
 
     // Delete existing modules and recreate

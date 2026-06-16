@@ -3,9 +3,8 @@
  *
  * Step 3 of the pipeline — Text to Voice.
  * Takes a scene's script_content and generates an audio file
- * using the ElevenLabs Text-to-Speech API.
+ * using the voice synthesis API.
  *
- * Written from scratch — no Base44 dependency.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
@@ -30,6 +29,14 @@ async function generateTTSHandler(
     const body = (await request.json()) as {
       scene_id?: string
       voice_id?: string
+      override_text?: string
+      voice_settings?: {
+        stability?: number
+        similarity_boost?: number
+        style?: number
+        use_speaker_boost?: boolean
+        speed?: number
+      }
     }
 
     if (!body.scene_id) {
@@ -68,7 +75,7 @@ async function generateTTSHandler(
 
     context.log(`Generating TTS for scene ${body.scene_id} with voice ${voiceId}`)
 
-    // Call ElevenLabs API
+    // Call voice API
     const ttsResponse = await fetch(`${ELEVENLABS_API_URL}/${voiceId}`, {
       method: 'POST',
       headers: {
@@ -77,22 +84,23 @@ async function generateTTSHandler(
         'Accept': 'audio/mpeg',
       },
       body: JSON.stringify({
-        text: scene.scriptContent,
+        text: body.override_text || scene.scriptContent,
         model_id: DEFAULT_MODEL,
         voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.8,
-          style: 0.3,
-          use_speaker_boost: true,
+          stability:        body.voice_settings?.stability        ?? 0.5,
+          similarity_boost: body.voice_settings?.similarity_boost ?? 0.8,
+          style:            body.voice_settings?.style            ?? 0.3,
+          use_speaker_boost: body.voice_settings?.use_speaker_boost ?? true,
+          speed:            body.voice_settings?.speed            ?? 1.0,
         },
       }),
     })
 
     if (!ttsResponse.ok) {
       const errText = await ttsResponse.text()
-      context.error('ElevenLabs error:', errText)
+      context.error('Voice API error:', errText)
       await prisma.scene.update({ where: { id: body.scene_id }, data: { status: 'draft' } })
-      return { status: ttsResponse.status, jsonBody: { error: `ElevenLabs error: ${errText}` } }
+      return { status: ttsResponse.status, jsonBody: { error: `Voice API error: ${errText}` } }
     }
 
     // Save the audio file

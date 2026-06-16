@@ -3,9 +3,9 @@ import { Settings, CheckCircle, Circle } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 
 const INTEGRATIONS = [
-  { name: 'Azure OpenAI', key: 'AZURE_OPENAI_KEY', description: 'Powers all AI agent generation — scripts, visuals, summaries.', configured: !!import.meta.env.VITE_AZURE_OPENAI_CONFIGURED },
-  { name: 'HeyGen', key: 'HEYGEN_API_KEY', description: 'Generates presenter avatar videos from script + voice.', configured: !!import.meta.env.VITE_HEYGEN_CONFIGURED },
-  { name: 'ElevenLabs', key: 'ELEVENLABS_API_KEY', description: 'Text-to-speech voiceover generation.', configured: !!import.meta.env.VITE_ELEVENLABS_CONFIGURED },
+  { name: 'Azure ', key: 'AZURE_OPENAI_KEY', description: 'Powers all AI agent generation — scripts, visuals, summaries.', configured: !!import.meta.env.VITE_AZURE_OPENAI_CONFIGURED },
+  { name: 'Avatar Video', key: 'HEYGEN_API_KEY', description: 'Generates presenter avatar videos from script + voice.', configured: !!import.meta.env.VITE_HEYGEN_CONFIGURED },
+  { name: 'Voice Synthesis', key: 'ELEVENLABS_API_KEY', description: 'Text-to-speech voiceover generation.', configured: !!import.meta.env.VITE_ELEVENLABS_CONFIGURED },
   { name: 'Azure Blob Storage', key: 'AZURE_STORAGE_CONNECTION_STRING', description: 'Stores all uploaded files, audio, and generated assets.', configured: !!import.meta.env.VITE_STORAGE_CONFIGURED },
   { name: 'PostgreSQL (PgBouncer)', key: 'DATABASE_URL', description: 'Primary database for all project data via Prisma.', configured: !!import.meta.env.VITE_DB_CONFIGURED },
 ]

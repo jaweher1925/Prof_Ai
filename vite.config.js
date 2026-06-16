@@ -17,10 +17,11 @@ export default defineConfig({
         target: 'http://localhost:7071',
         changeOrigin: true,
       },
-      // Proxy /uploads to the api/uploads folder served by the functions host
+      // Proxy /uploads → /api/uploads (Azure Function serves the files)
       '/uploads': {
         target: 'http://localhost:7071',
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/uploads/, '/api/uploads'),
       },
     },
   },

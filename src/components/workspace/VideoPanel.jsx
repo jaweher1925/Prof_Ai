@@ -1,6 +1,6 @@
 /**
  * Stage 5 — Video (last / most expensive)
- * Generates HeyGen avatar videos per scene.
+ * Generates avatar videos per scene.
  * Requires TTS audio to be generated first.
  */
 import React, { useState } from 'react'
@@ -83,13 +83,13 @@ export default function VideoPanel({ project, onUpdate }) {
         <Badge variant="yellow">Expensive API</Badge>
       </div>
       <p className="text-sm text-slate-500 mb-2">
-        Generate HeyGen avatar videos for each scene.
+        Generate avatar videos for each scene.
         Requires voice audio from Stage 3.
       </p>
       <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20 mb-6">
         <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
         <p className="text-xs text-amber-300">
-          Each video costs HeyGen credits. Make sure your avatar and voice are set in
+          Each video uses your configured avatar and voice. Make sure your avatar and voice are set in
           Casting Settings before generating. Videos take 1–3 minutes to render.
         </p>
       </div>

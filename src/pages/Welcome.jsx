@@ -4,10 +4,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { GraduationCap, ArrowRight, Mic, Video, FileText, Image, Sparkles } from 'lucide-react'
 
 const FEATURES = [
-  { icon: FileText, title: 'Script Generation',  desc: 'AI reads your PDFs and writes lecture scripts automatically' },
-  { icon: Mic,      title: 'Voice Synthesis',     desc: 'ElevenLabs turns scripts into natural-sounding voiceovers' },
-  { icon: Image,    title: 'Visual Creation',     desc: 'DALL-E 3 generates custom visuals for every scene' },
-  { icon: Video,    title: 'Avatar Video',        desc: 'HeyGen produces presenter-driven video courses at scale' },
+  { icon: FileText, title: 'Script Generation',  desc: 'AI reads your PDFs and writes engaging lecture scripts automatically' },
+  { icon: Mic,      title: 'Voice Synthesis',     desc: 'Converts scripts into natural-sounding professional voiceovers' },
+  { icon: Image,    title: 'Visual Creation',     desc: 'Generates custom background visuals for every scene' },
+  { icon: Video,    title: 'Avatar Video',        desc: 'Produces presenter-driven video courses at scale' },
 ]
 
 export default function Welcome() {
@@ -22,8 +22,6 @@ export default function Welcome() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex flex-col overflow-hidden">
-
-      {/* Flash overlay */}
       <AnimatePresence>
         {flashing && (
           <motion.div
@@ -36,7 +34,6 @@ export default function Welcome() {
         )}
       </AnimatePresence>
 
-      {/* Background glows */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <motion.div
           className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[500px] bg-blue-600/10 rounded-full blur-3xl"
@@ -50,7 +47,6 @@ export default function Welcome() {
         />
       </div>
 
-      {/* Nav */}
       <motion.nav
         className="relative z-10 flex items-center justify-between px-8 py-5 border-b border-white/[0.06]"
         initial={{ opacity: 0, y: -20 }}
@@ -80,10 +76,7 @@ export default function Welcome() {
         </motion.button>
       </motion.nav>
 
-      {/* Hero */}
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 py-20 text-center">
-
-        {/* Badge */}
         <motion.div
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium mb-8"
           initial={{ opacity: 0, scale: 0.8 }}
@@ -94,7 +87,6 @@ export default function Welcome() {
           AI-Powered Course Creation
         </motion.div>
 
-        {/* Headline */}
         <motion.h1
           className="text-5xl lg:text-6xl font-bold text-white max-w-3xl leading-tight mb-6"
           initial={{ opacity: 0, y: 30 }}
@@ -105,7 +97,6 @@ export default function Welcome() {
           <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400"> video courses</span>
         </motion.h1>
 
-        {/* Sub */}
         <motion.p
           className="text-slate-400 text-lg max-w-xl leading-relaxed mb-10"
           initial={{ opacity: 0, y: 20 }}
@@ -116,7 +107,6 @@ export default function Welcome() {
           video courses with scripts, voiceover, and visuals in minutes.
         </motion.p>
 
-        {/* CTA */}
         <motion.button
           onClick={enter}
           className="flex items-center gap-3 px-8 py-4 text-base font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl shadow-xl shadow-blue-500/20"
@@ -129,7 +119,6 @@ export default function Welcome() {
           Get Started <ArrowRight className="w-5 h-5" />
         </motion.button>
 
-        {/* Feature cards */}
         <motion.div
           className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-20 max-w-4xl w-full"
           initial="hidden"
@@ -156,7 +145,6 @@ export default function Welcome() {
         </motion.div>
       </main>
 
-      {/* Footer */}
       <motion.footer
         className="relative z-10 text-center py-6 text-xs text-slate-700 border-t border-white/[0.04]"
         initial={{ opacity: 0 }}
