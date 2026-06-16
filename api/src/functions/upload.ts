@@ -11,7 +11,7 @@ app.http('upload', {
       const form = await req.formData()
       const file = form.get('file') as File | null
       if (!file) return { status: 400, jsonBody: { error: 'No file provided' } }
-      if (file.size > 50 * 1024 * 1024) return { status: 400, jsonBody: { error: 'File exceeds 50 MB limit' } }
+      if (file.size > 200 * 1024 * 1024) return { status: 400, jsonBody: { error: 'File exceeds 200 MB limit' } }
       const file_url = await uploadFromForm(file)
       ctx.log(`Uploaded: ${file.name} (${file.size} bytes)`)
       return { status: 200, jsonBody: { file_url } }
@@ -20,4 +20,4 @@ app.http('upload', {
       return { status: 500, jsonBody: { error: e?.message } }
     }
   },
-})
+}

@@ -10,13 +10,15 @@ import { join, extname } from 'path'
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
 const MIME: Record<string, string> = {
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
+  '.mp3':  'audio/mpeg',
+  '.wav':  'audio/wav',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
+  '.svg':  'image/svg+xml',
+  '.pdf':  'application/pdf',
+  '.txt':  'text/plain; charset=utf-8',
 }
 
 async function serveUploadHandler(
@@ -44,17 +46,7 @@ async function serveUploadHandler(
     status: 200,
     body: buffer,
     headers: {
-      'Content-Type': contentType,
-      'Content-Length': String(buffer.length),
-      'Cache-Control': 'public, max-age=86400',
-      'Access-Control-Allow-Origin': '*',
-    },
-  }
-}
-
-app.http('serveUpload', {
-  methods: ['GET'],
-  route: 'uploads/{filename}',
-  authLevel: 'anonymous',
-  handler: serveUploadHandler,
-})
+      'Content-Type':        contentType,
+      'Content-Length':      String(buffer.length),
+      'Content-Disposition': 'inline',           // render in browser, never download
+      'Cache-Control':       'public, max

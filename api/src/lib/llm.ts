@@ -8,36 +8,22 @@ const openai = new OpenAI({
 
 const MODEL = process.env.OPENAI_MODEL || 'llama-3.3-70b-versatile'
 
-export async function generateJson<T = unknown>(
-  systemPrompt: string,
-  userPrompt: string
-): Promise<T> {
-  const completion = await openai.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.2,
-  })
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-  const text = completion.choices[0]?.message?.content
-  if (!text) throw new Error('Empty LLM response')
-  return JSON.parse(text) as T
-}
-
-export async function generateText(
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
-  const completion = await openai.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    temperature: 0.5,
-  })
-  return completion.choices[0]?.message?.content || ''
-}
+/**
+ * Call the LLM with automatic retry on rate-limit (429).
+ * Groq free tier: 12,000 TPM — waits for the retry-after header then tries again.
+ * Retries up to 4 times with exponential back-off.
+ */
+async function callWithRetry(
+  params: Parameters<typeof openai.chat.completions.create>[0],
+  retries = 4
+): Promise<OpenAI.Chat.ChatCompletion> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await openai.chat.completions.create(params) as OpenAI.Chat.ChatCompletion
+    } catch (err: any) {
+      const isRateLimit = err?.status === 429 || err?.message?.includes('429') || err?.message?.includes('Rate limit')
+      if (isRateLimit && attempt < retries) {
+        // Groq returns retry-after in milliseconds or seconds — parse it
+        const retryAfterRaw = err?.headers?.['retry-after'] 

@@ -336,10 +336,24 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect }
 
 function SceneEditor({ scene, isGenerating, onGenerate }) {
   const parsed = (() => { try { return JSON.parse(scene.slideDeckContent || '{}') } catch { return {} } })()
-  const initBullets = parsed.blocks?.[0]?.items || []
 
-  const [layout,    setLayout]    = useState(parsed.layout    || 'bullets')
-  const [theme,     setTheme]     = useState(parsed.theme     || 'light')
+  // Pre-fill bullets from AI blocks — fall back to extracting sentences from the voice script
+  const initBullets = (() => {
+    const items = parsed.blocks?.[0]?.items
+    if (items?.length) return items
+    // Derive from scriptContent when AI blocks are missing or empty
+    return (scene.scriptContent || '')
+      .replace(/\n+/g, ' ')
+      .split(/(?<=[.!?])\s+/)
+      .filter(s => s.length > 25 && s.length < 160)
+      .slice(0, 5)
+      .map(text => ({ text: text.trim(), level: 1 }))
+  })()
+
+  const [layout,    setLayout]    = useState(parsed.layout || 'bullets')
+  // Theme: if user has previously saved positions they've interacted → keep their choice.
+  // Otherwise always start with 'light' (ignore AI-generated dark-navy default).
+  const [theme,     setTheme]     = useState(parsed.positions ? (parsed.theme || 'light') : 'light')
   const [title,     setTitle]     = useState(parsed.title     || `Scene ${(scene.orderIndex??0)+1}`)
   const [subtitle,  setSubtitle]  = useState(parsed.subtitle  || '')
   const [bullets,   setBullets]   = useState(initBullets)
@@ -896,49 +910,30 @@ function SlideBackground({ theme }) {
 }
 
 // ─── GVSU Logo ────────────────────────────────────────────────────────────────
-// Uses /gvsu-logo.png (the actual circular GV emblem — blue mark on black bg).
-//
-// Dark slides  → grayscale + max-brightness makes the mark white,
-//                mix-blend-mode:screen removes the black background.
-// Light slide  → white mark on a GVSU-blue pill (filter:invert removes
-//                the black bg inside the blue container).
+// Pure inline SVG — no background, no box, no image file needed.
+//   Dark slides  → white  (#FFFFFF)
+//   Light slide  → GVSU blue (#0032A0)
 
 const GVSU_BLUE = '#0032A0'
 
 function GVSULogoSVG({ isDark = true }) {
-  if (isDark) {
-    return (
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'grayscale(1) brightness(20)',
-          mixBlendMode: 'screen',
-        }}
-      />
-    )
-  }
-  // Light theme — white mark inside a GVSU-blue rounded badge
+  const c = isDark ? '#FFFFFF' : GVSU_BLUE
   return (
-    <div style={{
-      background: GVSU_BLUE,
-      borderRadius: '16%',
-      padding: '10%',
-      lineHeight: 0,
-      display: 'block',
-    }}>
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'brightness(0) invert(1)',
-        }}
-      />
-    </div>
+    <svg
+      viewBox="0 0 260 260"
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ width: '100%', height: 'auto', display: 'block' }}
+    >
+      {/* G ring — nearly full circle, ~70° gap on the lower-right */}
+      <path d="M 214,74 A 101,101 0 1,0 214,186"
+        fill="none" stroke={c} strokeWidth="25" strokeLinecap="round" />
+      {/* G crossbar */}
+      <line x1="231" y1="130" x2="175" y2="130"
+        stroke={c} strokeWidth="25" strokeLinecap="round" />
+      {/* Bold V chevron */}
+      <path d="M 64,80 L 130,178 L 196,80 L 174,80 L 130,154 L 86,80 Z"
+        fill={c} />
+    </svg>
   )
 }
 
@@ -1217,58 +1212,4 @@ function DefinitionContent({ bullets, theme }) {
       )}
       {examples.length>0 && (
         <>
-          <p style={{ color:theme.accent, fontSize:FS(6,0.85,11), fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'1.5%', marginTop:'2%' }}>
-            EXAMPLES
-          </p>
-          {examples.slice(0,3).map((b,i)=>(
-            <div key={i} className={`pa-b${i+1} flex items-start`} style={{ gap:'2%', marginBottom:'1%' }}>
-              <span style={{ color:theme.accent, fontSize:FS(6,0.9,12), flexShrink:0, marginTop:'0.3%' }}>→</span>
-              <p style={{ color:theme.textSub, fontSize:FS(7,1.05,14), lineHeight:1.4 }}>{b.text}</p>
-            </div>
-          ))}
-        </>
-      )}
-    </div>
-  )
-}
-
-function QuoteContent({ bullets, theme }) {
-  const quoteText = bullets[0]?.text || ''
-  return (
-    <div style={{ textAlign:'center' }}>
-      <div className="pa-icon" style={{ color:theme.accent, fontSize:FS(30,5.5,80), lineHeight:0.7, opacity:0.45, marginBottom:'3%', fontFamily:'Georgia,serif' }}>
-        "
-      </div>
-      <p className="pa-title" style={{
-        color:theme.text, fontSize:FS(11,2.0,28), lineHeight:1.55,
-        fontStyle:'italic', fontWeight:600,
-        textShadow: theme.isDark?'0 1px 6px rgba(0,0,0,0.3)':'none',
-      }}>
-        {quoteText}
-      </p>
-    </div>
-  )
-}
-
-function SummaryContent({ bullets, theme }) {
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:'1.8%' }}>
-      {bullets.slice(0,5).map((b,i)=>(
-        <div key={i} className={`pa-b${i} flex items-center`} style={{ gap:'2.5%' }}>
-          <div style={{
-            flexShrink:0,
-            width:FS(12,1.6,22), height:FS(12,1.6,22),
-            borderRadius:'50%', background:`${theme.accent}25`,
-            border:`1.5px solid ${theme.accent}`,
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>
-            <span style={{ color:theme.accent, fontSize:FS(6,0.85,11), fontWeight:800 }}>✓</span>
-          </div>
-          <p style={{ color:theme.text, fontSize:FS(8,1.2,16), fontWeight:500, lineHeight:1.4 }}>
-            {b.text}
-          </p>
-        </div>
-      ))}
-    </div>
-  )
-}
+          <p style={{ color:theme.accent, fontSize:FS(6,0.85,11), fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'1.5%', ma

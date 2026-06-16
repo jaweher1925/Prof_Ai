@@ -24,19 +24,73 @@ interface LearningJourney {
 }
 
 /** Try to extract text from a PDF file */
+/**
+ * Extract text from a PDF file.
+ * Strategy 1: pdf-parse npm package (works on Node 18/20).
+ * Strategy 2: raw regex on the PDF binary (works on any Node version).
+ * Returns empty string only for scanned/image PDFs with no embedded text.
+ */
 async function extractPdfText(filePath: string, context: InvocationContext): Promise<string> {
+  const buffer = readFileSync(filePath)
+
+  // ── Strategy 1: pdf-parse ──────────────────────────────────────────────
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pdfParse = require('pdf-parse')
-    const buffer = readFileSync(filePath)
     const data = await pdfParse(buffer)
     const text = (data.text || '').trim()
-    context.log(`PDF extracted: ${text.length} characters`)
-    return text.slice(0, 8000)
+    if (text.length > 50) {
+      context.log(`PDF extracted via pdf-parse: ${text.length} chars`)
+      return text.slice(0, 10000)
+    }
   } catch (e: any) {
-    context.warn(`PDF parse failed: ${e.message} — will use filename as context`)
+    context.warn(`pdf-parse failed (${e.message}) — trying raw extraction`)
+  }
+
+  // ── Strategy 2: raw regex extraction ──────────────────────────────────
+  // Reads text operators in PDF content streams: (hello world)Tj / [(A)(B)]TJ
+  try {
+    const raw = buffer.toString('binary')
+    const chunks: string[] = []
+
+    // Single string: (text)Tj
+    const singleRe = /\(([^)]{1,300})\)\s*Tj/g
+    let m: RegExpExecArray | null
+    while ((m = singleRe.exec(raw)) !== null) {
+      chunks.push(decodePdfString(m[1]))
+    }
+
+    // Array: [(str)(str)...]TJ
+    const arrayRe = /\[((?:\([^)]*\)\s*-?\d*\.?\d*\s*)+)\]\s*TJ/g
+    while ((m = arrayRe.exec(raw)) !== null) {
+      const parts = m[1].match(/\(([^)]{0,300})\)/g) || []
+      parts.forEach(p => chunks.push(decodePdfString(p.slice(1, -1))))
+    }
+
+    const text = chunks
+      .map(s => s.replace(/[^\x20-\x7EÀ-ɏ]/g, ' ').trim())
+      .filter(s => s.length > 1)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (text.length > 50) {
+      context.log(`PDF extracted via raw regex: ${text.length} chars`)
+      return text.slice(0, 10000)
+    }
+
+    context.warn('PDF appears to be scanned/image-based — no embedded text found')
+    return ''
+  } catch (e: any) {
+    context.warn(`Raw PDF extraction failed: ${e.message}`)
     return ''
   }
+}
+
+function decodePdfString(s: string): string {
+  return s
+    .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+    .replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\')
 }
 
 /** Fetch plain text from a URL */
@@ -71,9 +125,10 @@ function readTextFile(filePath: string): string {
   }
 }
 
-/** Map a fileUrl like /uploads/uuid.ext to the actual disk path */
+/** Map a fileUrl like /api/uploads/uuid.pdf to the actual disk path */
 function resolveUploadPath(fileUrl: string): string {
-  const fileName = fileUrl.replace('/uploads/', '').replace('/uploads\\', '')
+  // fileUrl = '/api/uploads/abc123.pdf'  →  fileName = 'abc123.pdf'
+  const fileName = fileUrl.split('/').pop() || ''
   return join(process.cwd(), 'uploads', fileName)
 }
 
@@ -130,105 +185,36 @@ async function librarianAgentHandler(
           content = readTextFile(filePath)
         }
 
+      } else if (file.fileType === 'video') {
+        content = `[Video source: ${file.fileName} - use the title and surrounding project context as reference. Transcript extraction is not available yet.]`
+
       } else {
         // DOCX, XLSX, or other — use filename as context
         content = `[Document: ${file.fileName}]`
       }
 
-      // If we couldn't extract content, still include the filename as context
       if (!content) {
-        content = `[File: ${file.fileName} — content could not be extracted automatically]`
+        context.warn(`No text extracted from ${file.fileName} — skipping`)
+        contentParts.push(`--- Source: ${file.fileName} ---\n[No readable text found — may be a scanned image PDF]`)
+      } else {
+        contentParts.push(`--- Source: ${file.fileName} ---\n${content}`)
       }
-
-      contentParts.push(`--- Source: ${file.fileName} ---\n${content}`)
     }
 
     const combinedContent = contentParts.join('\n\n')
-    context.log(`Total content length: ${combinedContent.length} characters`)
-    context.log('Calling LLM to build course structure...')
+    context.log(`Total extracted content: ${combinedContent.length} characters`)
 
-    // Call LLM
-    const systemPrompt = `You are an expert instructional designer.
-Your job is to analyze source materials and create a structured Learning Journey for a video course.
-Even if content is limited, create a reasonable course structure based on what you know about the topic.
-Always respond with valid JSON only — no markdown, no explanation.`
+    // ── Fail early if no real content was extracted ─────────────────────
+    const realContentLength = combinedContent
+      .replace(/--- Source:.*?---/g, '')
+      .replace(/\[No readable text.*?\]/g, '')
+      .trim().length
 
-    const userPrompt = `Analyze these source materials and create a Learning Journey course structure.
-
-Source materials:
-${combinedContent.slice(0, 12000)}
-
-Create a course with EXACTLY 5 modules. Each module becomes one 6-minute video.
-Each module should cover one major topic area with enough depth to fill 6 minutes of presenter content.
-Return ONLY this JSON structure (no other text):
-{
-  "course_title": "string",
-  "modules": [
-    {
-      "title": "string",
-      "objective": "string (what the learner will be able to do after this module)",
-      "key_points": ["string", "string", "string"],
-      "estimated_duration_minutes": 6
-    }
-  ]
-}`
-
-    const journey = await generateJson<LearningJourney>(systemPrompt, userPrompt)
-    context.log(`LLM returned: ${journey.modules?.length} modules`)
-
-    if (!journey.modules || !Array.isArray(journey.modules) || journey.modules.length === 0) {
-      throw new Error('LLM returned an invalid structure — no modules found')
-    }
-
-    // Delete existing modules and recreate
-    await prisma.module.deleteMany({ where: { projectId } })
-
-    const createdModules = []
-    for (let i = 0; i < journey.modules.length; i++) {
-      const mod = journey.modules[i]
-      const created = await prisma.module.create({
-        data: {
-          projectId,
-          title: mod.title,
-          objective: mod.objective || '',
-          orderIndex: i,
-          status: 'proposed',
-        },
-      })
-      createdModules.push(created)
-      context.log(`Module ${i + 1}: ${mod.title}`)
-    }
-
-    await prisma.project.update({
-      where: { id: projectId },
-      data: { status: 'pending_director_approval' },
-    })
-
-    context.log(`Librarian complete — ${createdModules.length} modules created`)
-
-    return {
-      status: 200,
-      jsonBody: {
-        success: true,
-        course_title: journey.course_title,
-        modules_created: createdModules.length,
-        modules: createdModules,
-      },
-    }
-  } catch (error: any) {
-    context.error('librarianAgent error:', error)
-    if (projectId) {
-      try {
-        await prisma.project.update({ where: { id: projectId }, data: { status: 'draft' } })
-      } catch {}
-    }
-    return { status: 500, jsonBody: { error: error.message || 'Agent failed' } }
-  }
-}
-
-app.http('librarianAgent', {
-  methods: ['POST'],
-  route: 'librarianAgent',
-  authLevel: 'anonymous',
-  handler: librarianAgentHandler,
-})
+    if (realContentLength < 100) {
+      return {
+        status: 400,
+        jsonBody: {
+          error:
+            'Could not extract readable text from your uploaded files. ' +
+            'Make sure you upload a text-based PDF (not a scanned image). ' +
+            'You can also try uploadi

@@ -30,6 +30,14 @@ export const agentsService = {
       voice_settings: voiceSettings || undefined,
     }),
 
+  /** Generate a short TTS sample without changing any scene */
+  runPreviewTTS: (voiceId, text, voiceSettings) =>
+    apiClient.post('/previewTTS', {
+      voice_id: voiceId || undefined,
+      text,
+      voice_settings: voiceSettings || undefined,
+    }),
+
   // ── Stage 3 → Visual (Generate Images) ───────────────────────────────────
 
   /** Generate Image AI background image for a single scene */
@@ -73,9 +81,4 @@ export const agentsService = {
       generate_visual: opts.visual !== false,
     }),
 
-  // ── Export ────────────────────────────────────────────────────────────────
-
-  /** Export project as SCORM package */
-  exportSCORM: (projectId) =>
-    apiClient.post('/exportSCORM', { project_id: projectId }),
-}
+  // ── Export ───────────────────────�

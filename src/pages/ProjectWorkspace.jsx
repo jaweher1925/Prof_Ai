@@ -200,17 +200,4 @@ export default function ProjectWorkspace() {
                 ? 'bg-slate-700/50 text-white'
                 : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
             }`}
-          >
-            <Settings className="w-4 h-4 flex-shrink-0" />
-            <span className="hidden lg:block text-xs">Casting Settings</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Main content */}
-      <div className="flex-1 overflow-y-auto">
-        {renderPanel()}
-      </div>
-    </div>
-  )
-}
+    

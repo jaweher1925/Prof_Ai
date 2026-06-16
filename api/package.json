@@ -23,8 +23,4 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/pdf-parse": "^1.1.4",
-    "prisma": "^5.22.0",
-    "typescript": "^5.6.0"
-  }
-}
+   

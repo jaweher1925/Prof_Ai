@@ -126,20 +126,4 @@ async function generateTTSHandler(
         tts_audio_url: audioUrl,
       },
     }
-  } catch (error: any) {
-    context.error('generateTTS error:', error)
-    // Reset scene status on failure
-    try {
-      const { scene_id } = (await request.json() as any)
-      await prisma.scene.update({ where: { id: scene_id }, data: { status: 'draft' } })
-    } catch {}
-    return { status: 500, jsonBody: { error: error.message || 'TTS generation failed' } }
-  }
-}
-
-app.http('generateTTS', {
-  methods: ['POST'],
-  route: 'generateTTS',
-  authLevel: 'anonymous',
-  handler: generateTTSHandler,
-})
+  } catch (error: any) 

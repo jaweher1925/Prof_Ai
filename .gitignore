@@ -18,16 +18,4 @@ api/dist/
 api/prisma/dev.db
 api/prisma/dev.db-journal
 api/uploads/
-api/local.settings.json
-api/.env
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+api/local.settings

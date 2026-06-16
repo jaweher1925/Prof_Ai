@@ -266,10 +266,4 @@ export default function CastingSettings({ project, onUpdate, onClose }) {
 
       <div className="mt-6 p-3 rounded-xl bg-slate-800/40 border border-white/[0.06]">
         <p className="text-xs text-slate-500 leading-relaxed">
-          <strong className="text-slate-400">Tip:</strong> Set these once before running Stage 3 (Voice)
-          and Stage 5 (Video). The avatar and voice are applied to all scenes automatically.
-        </p>
-      </div>
-    </div>
-  )
-}
+          <strong className="text-slate-400">Tip:</strong> Set these once 
