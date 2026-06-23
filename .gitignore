@@ -15,7 +15,8 @@ dist-ssr
 .env.local
 api/node_modules/
 api/dist/
-api/prisma/dev.db
-api/prisma/dev.db-journal
+api/prisma/**/dev.db
+api/prisma/**/dev.db-journal
 api/uploads/
-api/local.settings
+api/prisma/**/dev.db-wal
+api/prisma/**/dev.db-shm

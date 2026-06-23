@@ -11,7 +11,11 @@ app.http('getModuleScenes', {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (!getUser(req)) return unauth()
     try {
-      const scenes = await prisma.scene.findMany({ where: { moduleId: req.params.id }, orderBy: { orderIndex: 'asc' } })
+      const scenes = await prisma.scene.findMany({
+        where: { moduleId: req.params.id },
+        orderBy: { orderIndex: 'asc' },
+        include: { segments: { orderBy: { orderIndex: 'asc' } } },
+      })
       return { status: 200, jsonBody: scenes }
     } catch (e) { ctx.error(e); return err500(e) }
   },
@@ -36,6 +40,59 @@ app.http('updateScene', {
         },
       })
       return { status: 200, jsonBody: scene }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// POST /api/modules/{id}/scenes — create a new blank scene appended to the end of the module
+app.http('createScene', {
+  methods: ['POST'], route: 'modules/{id}/scenes', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const moduleId = req.params.id
+      const mod = await prisma.module.findUnique({ where: { id: moduleId } })
+      if (!mod) return { status: 404, jsonBody: { error: 'Module not found' } }
+
+      const last = await prisma.scene.findFirst({ where: { moduleId }, orderBy: { orderIndex: 'desc' } })
+      const nextOrderIndex = last ? last.orderIndex + 1 : 0
+
+      const scene = await prisma.scene.create({
+        data: {
+          moduleId,
+          orderIndex: nextOrderIndex,
+          scriptContent: '',
+          slideDeckContent: null,
+          status: 'draft',
+        },
+      })
+      return { status: 201, jsonBody: scene }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// DELETE /api/scenes/{id} — removes a scene and re-normalizes orderIndex of remaining siblings
+app.http('deleteScene', {
+  methods: ['DELETE'], route: 'scenes/{id}', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const scene = await prisma.scene.findUnique({ where: { id: req.params.id } })
+      if (!scene) return { status: 404, jsonBody: { error: 'Scene not found' } }
+
+      await prisma.scene.delete({ where: { id: req.params.id } })
+
+      const siblings = await prisma.scene.findMany({
+        where: { moduleId: scene.moduleId },
+        orderBy: { orderIndex: 'asc' },
+      })
+      await Promise.all(
+        siblings.map((s, i) =>
+          s.orderIndex === i ? null : prisma.scene.update({ where: { id: s.id }, data: { orderIndex: i } })
+        )
+      )
+
+      return { status: 200, jsonBody: { success: true } }
     } catch (e) { ctx.error(e); return err500(e) }
   },
 })
@@ -92,7 +149,8 @@ Current bullet points:
 ${body.content}
 
 Return JSON with rewritten bullets:
-{ "bullets": [{ "text": "string", "level": 1 or 2 }] }`
+{ "bullets": [{ "text": "string", "level": 1 or 2 }] }`,
+        1024
       )
       return { status: 200, jsonBody: result }
     } catch (e: any) { ctx.error(e); return err500(e) }

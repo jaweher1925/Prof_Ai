@@ -2,139 +2,56 @@
  * POST /api/librarianAgent
  *
  * Step 1 of the pipeline.
- * Reads source files → analyzes content → creates modules in DB.
+ * Reads pre-extracted text from SourceFile.extractedText (saved at upload time)
+ * and asks the LLM to create 5 course modules from it.
+ *
+ * No file parsing here — extraction happened once at upload via extractText.ts.
+ * URLs are the only exception: their content is fetched live (it can change).
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { generateJson } from '../../lib/llm'
-import { readFileSync, existsSync } from 'fs'
-import { join } from 'path'
 
 interface LearningJourneyModule {
-  title: string
-  objective: string
-  key_points: string[]
+  title:                      string
+  objective:                  string
+  key_points:                 string[]
   estimated_duration_minutes: number
 }
-
 interface LearningJourney {
   course_title: string
-  modules: LearningJourneyModule[]
+  modules:      LearningJourneyModule[]
 }
 
-/** Try to extract text from a PDF file */
-/**
- * Extract text from a PDF file.
- * Strategy 1: pdf-parse npm package (works on Node 18/20).
- * Strategy 2: raw regex on the PDF binary (works on any Node version).
- * Returns empty string only for scanned/image PDFs with no embedded text.
- */
-async function extractPdfText(filePath: string, context: InvocationContext): Promise<string> {
-  const buffer = readFileSync(filePath)
+// ─── URL fetcher (URLs can't be pre-extracted — content changes) ──────────────
 
-  // ── Strategy 1: pdf-parse ──────────────────────────────────────────────
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require('pdf-parse')
-    const data = await pdfParse(buffer)
-    const text = (data.text || '').trim()
-    if (text.length > 50) {
-      context.log(`PDF extracted via pdf-parse: ${text.length} chars`)
-      return text.slice(0, 10000)
-    }
-  } catch (e: any) {
-    context.warn(`pdf-parse failed (${e.message}) — trying raw extraction`)
-  }
-
-  // ── Strategy 2: raw regex extraction ──────────────────────────────────
-  // Reads text operators in PDF content streams: (hello world)Tj / [(A)(B)]TJ
-  try {
-    const raw = buffer.toString('binary')
-    const chunks: string[] = []
-
-    // Single string: (text)Tj
-    const singleRe = /\(([^)]{1,300})\)\s*Tj/g
-    let m: RegExpExecArray | null
-    while ((m = singleRe.exec(raw)) !== null) {
-      chunks.push(decodePdfString(m[1]))
-    }
-
-    // Array: [(str)(str)...]TJ
-    const arrayRe = /\[((?:\([^)]*\)\s*-?\d*\.?\d*\s*)+)\]\s*TJ/g
-    while ((m = arrayRe.exec(raw)) !== null) {
-      const parts = m[1].match(/\(([^)]{0,300})\)/g) || []
-      parts.forEach(p => chunks.push(decodePdfString(p.slice(1, -1))))
-    }
-
-    const text = chunks
-      .map(s => s.replace(/[^\x20-\x7EÀ-ɏ]/g, ' ').trim())
-      .filter(s => s.length > 1)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    if (text.length > 50) {
-      context.log(`PDF extracted via raw regex: ${text.length} chars`)
-      return text.slice(0, 10000)
-    }
-
-    context.warn('PDF appears to be scanned/image-based — no embedded text found')
-    return ''
-  } catch (e: any) {
-    context.warn(`Raw PDF extraction failed: ${e.message}`)
-    return ''
-  }
-}
-
-function decodePdfString(s: string): string {
-  return s
-    .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
-    .replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\')
-}
-
-/** Fetch plain text from a URL */
 async function fetchUrlText(url: string, context: InvocationContext): Promise<string> {
   try {
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ProfAI/1.0)' },
-      signal: AbortSignal.timeout(10000),
+      signal:  AbortSignal.timeout(10000),
     })
     if (!res.ok) return ''
     const html = await res.text()
-    const text = html
+    return html
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-    context.log(`URL fetched: ${text.length} characters from ${url}`)
-    return text.slice(0, 8000)
+      .slice(0, 8000)
   } catch (e: any) {
-    context.warn(`URL fetch failed: ${e.message}`)
+    context.warn(`URL fetch failed (${url}): ${e.message}`)
     return ''
   }
 }
 
-/** Read a plain text file */
-function readTextFile(filePath: string): string {
-  try {
-    return readFileSync(filePath, 'utf-8').slice(0, 8000)
-  } catch {
-    return ''
-  }
-}
-
-/** Map a fileUrl like /api/uploads/uuid.pdf to the actual disk path */
-function resolveUploadPath(fileUrl: string): string {
-  // fileUrl = '/api/uploads/abc123.pdf'  →  fileName = 'abc123.pdf'
-  const fileName = fileUrl.split('/').pop() || ''
-  return join(process.cwd(), 'uploads', fileName)
-}
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
 async function librarianAgentHandler(
-  request: HttpRequest,
-  context: InvocationContext
+  request:  HttpRequest,
+  context:  InvocationContext
 ): Promise<HttpResponseInit> {
   const user = getUser(request)
   if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
@@ -143,78 +60,158 @@ async function librarianAgentHandler(
 
   try {
     const body = (await request.json()) as { project_id?: string }
-    projectId = body.project_id
+    projectId  = body.project_id
 
-    if (!projectId) {
-      return { status: 400, jsonBody: { error: 'project_id is required' } }
-    }
+    if (!projectId) return { status: 400, jsonBody: { error: 'project_id is required' } }
 
     const project = await prisma.project.findUnique({ where: { id: projectId } })
     if (!project) return { status: 404, jsonBody: { error: 'Project not found' } }
 
-    // Get all source files
     const sourceFiles = await prisma.sourceFile.findMany({ where: { projectId } })
     if (sourceFiles.length === 0) {
       return { status: 400, jsonBody: { error: 'Upload at least one source file first.' } }
     }
 
-    // Update status
     await prisma.project.update({ where: { id: projectId }, data: { status: 'ingesting_sources' } })
-    context.log(`Librarian: processing ${sourceFiles.length} file(s)`)
+    context.log(`Librarian: processing ${sourceFiles.length} source file(s)`)
 
-    // Extract content from each file
-    const contentParts: string[] = []
-
-    for (const file of sourceFiles) {
-      context.log(`Reading: ${file.fileName} (type: ${file.fileType})`)
-      let content = ''
+    // ── Build combined content from DB (no file I/O for uploads) ─────────────
+    // URL fetches used to run one-at-a-time in this loop (each with its own
+    // 10s timeout) — with several URL sources that serialized into many
+    // seconds of dead time. They're independent network calls, so fetch them
+    // all concurrently; non-URL files just read the already-extracted text
+    // from DB and resolve instantly.
+    const contentParts = await Promise.all(sourceFiles.map(async (file) => {
+      let text = ''
 
       if (file.fileType === 'url') {
-        content = await fetchUrlText(file.fileUrl, context)
-
-      } else if (file.fileType === 'pdf') {
-        const filePath = resolveUploadPath(file.fileUrl)
-        context.log(`PDF path: ${filePath}, exists: ${existsSync(filePath)}`)
-        if (existsSync(filePath)) {
-          content = await extractPdfText(filePath, context)
-        }
-
-      } else if (file.fileType === 'txt') {
-        const filePath = resolveUploadPath(file.fileUrl)
-        if (existsSync(filePath)) {
-          content = readTextFile(filePath)
-        }
-
-      } else if (file.fileType === 'video') {
-        content = `[Video source: ${file.fileName} - use the title and surrounding project context as reference. Transcript extraction is not available yet.]`
-
+        // URLs are fetched live — content may have changed since upload
+        text = await fetchUrlText(file.fileUrl, context)
       } else {
-        // DOCX, XLSX, or other — use filename as context
-        content = `[Document: ${file.fileName}]`
+        // All other types: text was extracted at upload time and saved in DB
+        text = (file.extractedText ?? '').trim()
+        if (!text) {
+          context.warn(`${file.fileName}: extractedText is empty — file may be a scanned image`)
+        }
       }
 
-      if (!content) {
-        context.warn(`No text extracted from ${file.fileName} — skipping`)
-        contentParts.push(`--- Source: ${file.fileName} ---\n[No readable text found — may be a scanned image PDF]`)
-      } else {
-        contentParts.push(`--- Source: ${file.fileName} ---\n${content}`)
+      if (text) {
+        context.log(`${file.fileName}: ${text.length} chars from DB`)
+        return `=== ${file.fileName} ===\n${text}`
       }
-    }
+      return `=== ${file.fileName} ===\n[No readable text — file may be a scanned PDF or unsupported format]`
+    }))
 
     const combinedContent = contentParts.join('\n\n')
-    context.log(`Total extracted content: ${combinedContent.length} characters`)
+    context.log(`Total content length: ${combinedContent.length} chars`)
 
-    // ── Fail early if no real content was extracted ─────────────────────
-    const realContentLength = combinedContent
-      .replace(/--- Source:.*?---/g, '')
-      .replace(/\[No readable text.*?\]/g, '')
-      .trim().length
+    // ── Fail early if nothing useful was extracted ────────────────────────────
+    const realLength = contentParts
+      .filter(p => !p.includes('[No readable text'))
+      .join('').replace(/=== .* ===/g, '').trim().length
 
-    if (realContentLength < 100) {
+    if (realLength < 100) {
       return {
         status: 400,
         jsonBody: {
           error:
             'Could not extract readable text from your uploaded files. ' +
-            'Make sure you upload a text-based PDF (not a scanned image). ' +
-            'You can also try uploadi
+            'Please upload a text-based PDF (not a scanned image), a .txt file, or a URL.',
+        },
+      }
+    }
+
+    // ── LLM: create course modules strictly from source content ──────────────
+    const systemPrompt = `You are an expert instructional designer.
+Analyze the professor's source materials and create a structured Learning Journey for a video course.
+CRITICAL RULES:
+1. Base the course ENTIRELY on the provided source materials.
+2. Module titles must come directly from topics found in the source — use the same terminology.
+3. Do NOT create generic modules like "Introduction to the Course" or "Future Directions" unless the source explicitly covers them.
+4. If the source has specific named topics (e.g. "Le paradigme Objet"), those MUST become module titles.
+Always respond with valid JSON only — no markdown, no explanation.`
+
+    const userPrompt = `Analyze the source materials below and create a Learning Journey course structure.
+
+SOURCE MATERIALS:
+${combinedContent.slice(0, 6000)}
+
+INSTRUCTIONS:
+- Identify the main topics/chapters from the source above
+- Create between 3 and 5 modules — each must match a real topic from the source
+- Use EXACT names and terms from the source as module titles
+- Do NOT invent topics not present in the source
+
+Return ONLY this JSON:
+{
+  "course_title": "string (derived from source content)",
+  "modules": [
+    {
+      "title":                      "exact topic name from source",
+      "objective":                  "what students will learn about this specific topic",
+      "key_points":                 ["specific fact from source", "specific concept", "specific example"],
+      "estimated_duration_minutes": 6
+    }
+  ]
+}`
+
+    context.log('Calling LLM to build course structure…')
+    // 2048 was too tight — the model's response (5 modules x objective + 3
+    // key_points each) regularly ran past it and got cut off mid-string,
+    // which is what caused both "Unexpected end of JSON" and "Unterminated
+    // string" parse failures (truncation, not actually malformed JSON).
+    const journey = await generateJson<LearningJourney>(systemPrompt, userPrompt, 8192)
+    context.log(`LLM returned ${journey.modules?.length ?? 0} modules`)
+
+    if (!journey.modules?.length) {
+      throw new Error('LLM returned no modules — check source content')
+    }
+
+    // ── Save modules to DB ────────────────────────────────────────────────────
+    await prisma.module.deleteMany({ where: { projectId } })
+
+    const createdModules = []
+    for (let i = 0; i < journey.modules.length; i++) {
+      const mod = journey.modules[i]
+      const objective = [
+        mod.objective,
+        mod.key_points?.length ? 'Key points: ' + mod.key_points.join(' | ') : '',
+      ].filter(Boolean).join('\n')
+
+      const created = await prisma.module.create({
+        data: { projectId, title: mod.title, objective, orderIndex: i, status: 'proposed' },
+      })
+      createdModules.push(created)
+      context.log(`Module ${i + 1}: ${mod.title}`)
+    }
+
+    await prisma.project.update({
+      where: { id: projectId },
+      data:  { status: 'pending_director_approval' },
+    })
+
+    return {
+      status:   200,
+      jsonBody: {
+        success:         true,
+        course_title:    journey.course_title,
+        modules_created: createdModules.length,
+        modules:         createdModules,
+      },
+    }
+
+  } catch (error: any) {
+    context.error('librarianAgent error:', error)
+    if (projectId) {
+      await prisma.project.update({ where: { id: projectId }, data: { status: 'draft' } }).catch(() => {})
+    }
+    return { status: 500, jsonBody: { error: error.message ?? 'Librarian agent failed' } }
+  }
+}
+
+app.http('librarianAgent', {
+  methods:     ['POST'],
+  route:       'librarianAgent',
+  authLevel:   'anonymous',
+  handler:     librarianAgentHandler,
+})

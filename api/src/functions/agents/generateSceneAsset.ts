@@ -7,71 +7,86 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/fu
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { uploadBuffer } from '../../lib/storage'
+import { buildSlide, SlideContent } from '../../lib/slideRenderer'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Handler ─────────────────────────────────────────────────────────────────
 
-interface SlideBullet { text: string; level?: number }
-interface SlideBlock {
-  type: 'bullets' | 'definition' | 'quote' | 'two-column' | 'key-concept' | 'summary'
-  items?: SlideBullet[]
-  term?: string; definition?: string; examples?: string[]
-  quote?: string; attribution?: string
-  concept?: string
-  left?: SlideBullet[]; right?: SlideBullet[]
+async function generateSceneAssetHandler(
+  request: HttpRequest,
+  context: InvocationContext
+): Promise<HttpResponseInit> {
+  const user = getUser(request)
+  if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
+
+  try {
+    const body = (await request.json()) as { scene_id?: string }
+    if (!body.scene_id) return { status: 400, jsonBody: { error: 'scene_id is required' } }
+
+    const scene = await prisma.scene.findUnique({
+      where: { id: body.scene_id },
+      include: { module: true },
+    })
+    if (!scene) return { status: 404, jsonBody: { error: 'Scene not found' } }
+
+    const moduleTitle = scene.module?.title || 'Module'
+    const sceneIndex = scene.orderIndex ?? 0
+    const totalScenes = scene.moduleId
+      ? await prisma.scene.count({ where: { moduleId: scene.moduleId } })
+      : 1
+
+    context.log(`Generating slide for scene ${body.scene_id}`)
+
+    // Parse slide content
+    let slideContent: SlideContent = {}
+    try {
+      slideContent = JSON.parse(scene.slideDeckContent || '{}')
+    } catch {}
+
+    // Fallback if no structured content yet
+    if (!slideContent.title) {
+      slideContent.title = scene.visualPrompt?.split(/[.,]/)[0].trim() || 'Slide'
+    }
+    if (!slideContent.blocks?.length) {
+      // Generate basic bullets from script
+      const sentences = (scene.scriptContent || '')
+        .replace(/\n+/g, ' ')
+        .split(/(?<=[.!?])\s+/)
+        .filter(s => s.length > 20 && s.length < 200)
+        .slice(0, 4)
+      slideContent.blocks = [{ type: 'bullets', items: sentences.map(t => ({ text: t, level: 1 })) }]
+    }
+
+    // Build SVG
+    const svg = buildSlide(slideContent, moduleTitle, sceneIndex, totalScenes)
+    const svgBuffer = Buffer.from(svg, 'utf-8')
+
+    let finalBuffer: Buffer
+    let ext = 'svg'
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const sharp = require('sharp')
+      finalBuffer = await sharp(svgBuffer).png().toBuffer()
+      ext = 'png'
+    } catch {
+      finalBuffer = svgBuffer
+      ext = 'svg'
+      context.warn('sharp not installed — serving SVG (run: cd api && npm install sharp)')
+    }
+
+    const savedUrl = await uploadBuffer(finalBuffer, ext, ext === 'png' ? 'image/png' : 'image/svg+xml')
+    await prisma.scene.update({ where: { id: body.scene_id }, data: { visualAssetUrl: savedUrl } })
+
+    return { status: 200, jsonBody: { success: true, scene_id: body.scene_id, visual_asset_url: savedUrl } }
+  } catch (error: any) {
+    context.error('generateSceneAsset error:', error)
+    return { status: 500, jsonBody: { error: error.message || 'Slide generation failed' } }
+  }
 }
-interface SlideContent {
-  title?: string
-  subtitle?: string
-  layout?: string
-  theme?: string
-  blocks?: SlideBlock[]
-  imagePrompt?: string
-}
 
-// ─── Themes ───────────────────────────────────────────────────────────────────
-
-const THEMES: Record<string, {
-  bg1: string; bg2: string; bg3: string
-  accent: string; accentLight: string
-  title: string; body: string; muted: string
-  glow: string
-}> = {
-  'dark-navy': {
-    bg1: '#020C1B', bg2: '#0A1628', bg3: '#0F1F3D',
-    accent: '#3B82F6', accentLight: '#3B82F620',
-    title: '#F8FAFC', body: '#CBD5E1', muted: '#64748B',
-    glow: '#3B82F6',
-  },
-  'ocean': {
-    bg1: '#041A2E', bg2: '#062D4F', bg3: '#083B66',
-    accent: '#06B6D4', accentLight: '#06B6D420',
-    title: '#F0FDFF', body: '#BAE6FD', muted: '#7DD3FC',
-    glow: '#06B6D4',
-  },
-  'academic': {
-    bg1: '#0A1A0A', bg2: '#0D2B0D', bg3: '#133913',
-    accent: '#10B981', accentLight: '#10B98120',
-    title: '#F0FDF4', body: '#BBF7D0', muted: '#6EE7B7',
-    glow: '#10B981',
-  },
-  'light': {
-    bg1: '#F8FAFC', bg2: '#F1F5F9', bg3: '#E2E8F0',
-    accent: '#6366F1', accentLight: '#6366F120',
-    title: '#0F172A', body: '#334155', muted: '#94A3B8',
-    glow: '#6366F1',
-  },
-  'corporate': {
-    bg1: '#111827', bg2: '#1F2937', bg3: '#374151',
-    accent: '#F59E0B', accentLight: '#F59E0B20',
-    title: '#F9FAFB', body: '#D1D5DB', muted: '#6B7280',
-    glow: '#F59E0B',
-  },
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function esc(str: string): string {
-  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
-}
-
-function wrap(text: string, max
+app.http('generateSceneAsset', {
+  methods: ['POST'],
+  route: 'generateSceneAsset',
+  authLevel: 'anonymous',
+  handler: generateSceneAssetHandler,
+})

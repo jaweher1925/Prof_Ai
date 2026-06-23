@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { projectsService } from '@/services/projects'
 import { agentsService } from '@/services/agents'
 import { Video, Sparkles, BookOpen, FileText, Palette, CheckCircle, AlertTriangle, ChevronRight } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Card, CardContent } from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
@@ -82,32 +82,32 @@ export default function Director() {
   ]
 
   const colorMap = {
-    blue:   'bg-blue-500/10 text-blue-300 border-blue-500/20',
-    indigo: 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20',
-    green:  'bg-green-500/10 text-green-300 border-green-500/20',
-    yellow: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20',
+    blue:   'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-500/20',
+    indigo: 'bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-300 border-indigo-100 dark:border-indigo-500/20',
+    green:  'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-100 dark:border-emerald-500/20',
+    yellow: 'bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-300 border-amber-100 dark:border-amber-500/20',
   }
 
   return (
     <div className="p-6 max-w-4xl">
       {/* Header */}
       <div className="flex items-center gap-3 mb-1">
-        <Video className="w-5 h-5 text-indigo-400" />
-        <h1 className="text-2xl font-light text-white tracking-wide">Director</h1>
+        <Video className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+        <h1 className="text-2xl font-light text-slate-900 dark:text-white tracking-wide">Director</h1>
       </div>
-      <p className="text-slate-500 text-sm mb-8">
+      <p className="text-slate-500 dark:text-slate-400 text-sm mb-8">
         Select a project and run AI agents to generate your learning content.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Project selector */}
         <div className="lg:col-span-1">
-          <p className="text-xs text-slate-400 uppercase tracking-widest mb-3">Select Project</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Select Project</p>
           {isLoading ? (
             <div className="flex justify-center py-8"><Spinner /></div>
           ) : projects.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-slate-500 text-sm mb-4">No projects yet.</p>
+              <p className="text-slate-500 dark:text-slate-400 text-sm mb-4">No projects yet.</p>
               <Button size="sm" onClick={() => navigate('/')}>Create one</Button>
             </div>
           ) : (
@@ -118,8 +118,8 @@ export default function Director() {
                   onClick={() => { setSelectedId(p.id); setAgentError(null); setAgentSuccess(null) }}
                   className={`flex items-center justify-between px-3 py-3 rounded-xl border cursor-pointer transition-all ${
                     selectedId === p.id
-                      ? 'bg-indigo-600/20 border-indigo-500/30 text-white'
-                      : 'bg-slate-900/40 border-white/[0.06] text-slate-400 hover:text-white hover:border-white/20'
+                      ? 'bg-blue-50 dark:bg-blue-500/20 border-blue-200 dark:border-blue-500/30 text-slate-900 dark:text-white'
+                      : 'bg-gradient-to-br from-blue-50/60 to-sky-50/30 dark:bg-white/5 dark:from-transparent dark:to-transparent border-blue-100/70 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:border-blue-200 dark:hover:border-white/20'
                   }`}
                 >
                   <span className="text-sm truncate">{p.title}</span>
@@ -132,27 +132,27 @@ export default function Director() {
 
         {/* Agent pipeline */}
         <div className="lg:col-span-2">
-          <p className="text-xs text-slate-400 uppercase tracking-widest mb-3">Agent Pipeline</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Agent Pipeline</p>
 
           {!selected ? (
             <Card>
               <CardContent className="flex flex-col items-center py-12 text-center">
-                <Sparkles className="w-10 h-10 text-slate-700 mb-3" />
-                <p className="text-slate-500 text-sm">Select a project to see the agent pipeline.</p>
+                <Sparkles className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
+                <p className="text-slate-500 dark:text-slate-400 text-sm">Select a project to see the agent pipeline.</p>
               </CardContent>
             </Card>
           ) : (
             <div className="space-y-3">
               {agentError && (
-                <div className="flex items-start gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20">
-                  <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-red-300">{agentError}</p>
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20">
+                  <AlertTriangle className="w-4 h-4 text-rose-500 dark:text-rose-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-rose-600 dark:text-rose-300">{agentError}</p>
                 </div>
               )}
               {agentSuccess && (
-                <div className="flex items-start gap-2 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-                  <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-green-300">{agentSuccess}</p>
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20">
+                  <CheckCircle className="w-4 h-4 text-emerald-500 dark:text-emerald-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-emerald-600 dark:text-emerald-300">{agentSuccess}</p>
                 </div>
               )}
 
@@ -162,8 +162,8 @@ export default function Director() {
                 return (
                   <div key={agent.id} className={`p-4 rounded-xl border transition-all ${
                     isRunning
-                      ? 'bg-indigo-500/10 border-indigo-500/30'
-                      : 'bg-slate-900/40 border-white/[0.06]'
+                      ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30'
+                      : 'bg-gradient-to-br from-blue-50/60 to-sky-50/30 dark:bg-white/5 dark:from-transparent dark:to-transparent border-blue-100/70 dark:border-white/10'
                   }`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-3">
@@ -172,12 +172,12 @@ export default function Director() {
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium text-white">{agent.name}</p>
+                            <p className="text-sm font-medium text-slate-900 dark:text-white">{agent.name}</p>
                             {agent.comingSoon && (
                               <Badge variant="default">Coming soon</Badge>
                             )}
                           </div>
-                          <p className="text-xs text-slate-500 mt-1 leading-relaxed">{agent.description}</p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">{agent.description}</p>
                         </div>
                       </div>
 
@@ -194,7 +194,7 @@ export default function Director() {
                     </div>
 
                     {i < agents.length - 1 && (
-                      <div className="flex items-center gap-2 mt-3 ml-11 text-xs text-slate-600">
+                      <div className="flex items-center gap-2 mt-3 ml-11 text-xs text-slate-400 dark:text-slate-500">
                         <CheckCircle className="w-3 h-3" />
                         <span>Human approval checkpoint</span>
                       </div>

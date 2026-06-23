@@ -27,12 +27,12 @@ export default function NewProjectModal({ open, onClose, onCreated }) {
 
   return (
     <Modal open={open} onClose={onClose} title="New Learning Journey">
-      <p className="text-sm text-slate-400 mb-5 -mt-2">
+      <p className="text-sm text-slate-500 mb-5 -mt-2">
         Give your project a name. You'll upload source materials next.
       </p>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-xs text-slate-400 mb-1.5 tracking-wide">Project Title</label>
+          <label className="block text-xs text-slate-500 mb-1.5 tracking-wide">Project Title</label>
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}

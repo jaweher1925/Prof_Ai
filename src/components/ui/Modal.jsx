@@ -14,12 +14,12 @@ export default function Modal({ open, onClose, title, children, className }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className={cn('relative z-10 w-full max-w-md rounded-2xl bg-slate-900 border border-white/[0.08] shadow-2xl', className)}>
+      <div className="absolute inset-0 bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className={cn('relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-white/10 shadow-2xl', className)}>
         {title && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
-            <h2 className="text-lg font-light tracking-wide text-white">{title}</h2>
-            <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-white/10">
+            <h2 className="text-lg font-medium tracking-wide text-slate-900 dark:text-white">{title}</h2>
+            <button onClick={onClose} className="text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-white transition-colors">
               <X className="w-4 h-4" />
             </button>
           </div>

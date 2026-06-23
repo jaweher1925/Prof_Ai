@@ -21,14 +21,24 @@ export const agentsService = {
 
   // ── Stage 2 → Voice (Text to Audio) ──────────────────────────────────────
 
-  /** Generate TTS audio for a single scene using Voice AI */
-  runGenerateTTS: (sceneId, voiceId, overrideText, voiceSettings) =>
+  /** Generate TTS audio for a single scene using Voice AI.
+   *  Pass segmentId to regenerate just one segment of a multi-segment scene
+   *  (#32) — e.g. after editing that segment's narration text — instead of
+   *  every segment on the scene. Ignored for segment-less (legacy) scenes. */
+  runGenerateTTS: (sceneId, voiceId, overrideText, voiceSettings, segmentId) =>
     apiClient.post('/generateTTS', {
       scene_id: sceneId,
       voice_id: voiceId || undefined,
       override_text: overrideText || undefined,
       voice_settings: voiceSettings || undefined,
+      segment_id: segmentId || undefined,
     }),
+
+  /** Edit one scene segment's narration text / slide title / elements (#32).
+   *  Clears that segment's stale tts_audio_url server-side so the UI knows
+   *  to prompt a voice regenerate before the next render. */
+  updateSceneSegment: (segmentId, fields) =>
+    apiClient.patch(`/sceneSegments/${segmentId}`, fields),
 
   /** Generate a short TTS sample without changing any scene */
   runPreviewTTS: (voiceId, text, voiceSettings) =>
@@ -44,9 +54,9 @@ export const agentsService = {
   runGenerateAsset: (sceneId) =>
     apiClient.post('/generateSceneAsset', { scene_id: sceneId }),
 
-  // ── Storyboard ───────────────────────────────────────────────────────────────
+  // ── Storyboard ────────────────────────────────────────────────────────────
 
-  /** Generate storyboard (visual prompt + motion style + text cues + slide content) for a project or module */
+  /** Generate storyboard data for a project or module */
   runStoryboard: (projectId, moduleId) =>
     apiClient.post('/storyboardAgent', {
       project_id: projectId || undefined,
@@ -55,12 +65,14 @@ export const agentsService = {
 
   // ── Stage 4 → Video (Voice to Video — expensive, last) ────────────────────
 
-  /** Generate Video AI avatar video for a single scene */
-  runHeyGenAvatar: (sceneId, avatarId, voiceId) =>
+  /** Generate Video AI avatar video for a single scene.
+   *  Pass useAvatar=false to render voice-only (no HeyGen call, no avatar). */
+  runHeyGenAvatar: (sceneId, avatarId, voiceId, useAvatar = true) =>
     apiClient.post('/generateHeyGenAvatar', {
       scene_id: sceneId,
       avatar_id: avatarId || undefined,
       voice_id: voiceId || undefined,
+      use_avatar: useAvatar,
     }),
 
   /** Check Video AI video render status */
@@ -69,6 +81,10 @@ export const agentsService = {
       video_id: videoId,
       scene_id: sceneId,
     }),
+
+  /** Concatenate every scene video in a module into one full module video */
+  runMergeModuleVideo: (moduleId) =>
+    apiClient.post('/mergeModuleVideo', { module_id: moduleId }),
 
   // ── Bulk ──────────────────────────────────────────────────────────────────
 
@@ -81,4 +97,9 @@ export const agentsService = {
       generate_visual: opts.visual !== false,
     }),
 
-  // ── Export ───────────────────────�
+  // ── Export ────────────────────────────────────────────────────────────────
+
+  /** Export project as SCORM package */
+  exportSCORM: (projectId) =>
+    apiClient.post('/exportSCORM', { project_id: projectId }),
+}

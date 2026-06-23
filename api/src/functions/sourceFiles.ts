@@ -15,7 +15,14 @@ app.http('createSourceFile', {
       if (!body.project_id || !body.file_name || !body.file_url)
         return { status: 400, jsonBody: { error: 'project_id, file_name, file_url required' } }
       const file = await prisma.sourceFile.create({
-        data: { projectId: body.project_id, fileName: body.file_name, fileUrl: body.file_url, fileType: body.file_type || 'other', fileSize: body.file_size },
+        data: {
+          projectId:     body.project_id,
+          fileName:      body.file_name,
+          fileUrl:       body.file_url,
+          fileType:      body.file_type ?? 'other',
+          fileSize:      body.file_size ?? null,
+          extractedText: body.extracted_text ?? null,  // saved once at upload time
+        },
       })
       return { status: 201, jsonBody: file }
     } catch (e) { ctx.error(e); return err500(e) }

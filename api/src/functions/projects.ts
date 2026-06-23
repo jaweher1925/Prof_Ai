@@ -61,6 +61,20 @@ app.http('updateProject', {
           ...(body.hilt_gates !== undefined && { hiltGates: body.hilt_gates }),
           ...(body.default_avatar_id !== undefined && { defaultAvatarId: body.default_avatar_id }),
           ...(body.default_voice_id !== undefined && { defaultVoiceId: body.default_voice_id }),
+          // Avatar Studio (#37) — style/background/voice-settings are saved as
+          // JSON strings (SQLite has no native JSON column); accept either an
+          // already-stringified value or a plain object from the caller.
+          ...(body.avatar_style !== undefined && { avatarStyle: body.avatar_style }),
+          ...(body.avatar_background !== undefined && {
+            avatarBackground: body.avatar_background === null
+              ? null
+              : typeof body.avatar_background === 'string' ? body.avatar_background : JSON.stringify(body.avatar_background),
+          }),
+          ...(body.voice_settings !== undefined && {
+            voiceSettings: body.voice_settings === null
+              ? null
+              : typeof body.voice_settings === 'string' ? body.voice_settings : JSON.stringify(body.voice_settings),
+          }),
         },
       })
       return { status: 200, jsonBody: project }

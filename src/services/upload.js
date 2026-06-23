@@ -6,5 +6,5 @@ export async function uploadFile(file) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.error || `Upload failed: ${res.status}`)
   }
-  return res.json() // { file_url: string }
+  return res.json() // { file_url: string, extracted_text: string }
 }

@@ -5,7 +5,7 @@ import { sourceFilesService } from '@/services/sourceFiles'
 import { uploadFile } from '@/services/upload'
 import {
   BookOpen, FileText, Globe, FileSpreadsheet, Upload,
-  Trash2, Loader2, Search, FolderOpen, Link
+  Trash2, Loader2, Search, FolderOpen, Link, Eye
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/Card'
 import Button from '@/components/ui/Button'
@@ -15,12 +15,12 @@ import Spinner from '@/components/ui/Spinner'
 import { useNavigate } from 'react-router-dom'
 
 const TYPE_CONFIG = {
-  pdf:   { icon: FileText,        color: 'text-red-400',    badge: 'red',     label: 'PDF' },
-  docx:  { icon: FileText,        color: 'text-blue-400',   badge: 'blue',    label: 'DOCX' },
-  xlsx:  { icon: FileSpreadsheet, color: 'text-green-400',  badge: 'green',   label: 'XLSX' },
-  txt:   { icon: FileText,        color: 'text-slate-400',  badge: 'default', label: 'TXT' },
-  url:   { icon: Globe,           color: 'text-indigo-400', badge: 'indigo',  label: 'URL' },
-  other: { icon: FileText,        color: 'text-slate-400',  badge: 'default', label: 'File' },
+  pdf:   { icon: FileText,        color: 'text-rose-500 dark:text-rose-400',    badge: 'red',     label: 'PDF' },
+  docx:  { icon: FileText,        color: 'text-blue-600 dark:text-blue-400',    badge: 'blue',    label: 'DOCX' },
+  xlsx:  { icon: FileSpreadsheet, color: 'text-emerald-500 dark:text-emerald-400', badge: 'green', label: 'XLSX' },
+  txt:   { icon: FileText,        color: 'text-slate-400 dark:text-slate-500',  badge: 'default', label: 'TXT' },
+  url:   { icon: Globe,           color: 'text-blue-600 dark:text-blue-400',    badge: 'indigo',  label: 'URL' },
+  other: { icon: FileText,        color: 'text-slate-400 dark:text-slate-500',  badge: 'default', label: 'File' },
 }
 
 function formatSize(bytes) {
@@ -95,9 +95,9 @@ function ProjectSection({ project, onDeleted }) {
       {/* Project header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <FolderOpen className="w-4 h-4 text-indigo-400" />
-          <h2 className="text-sm font-medium text-white tracking-wide">{project.title}</h2>
-          <span className="text-xs text-slate-600">({sources.length} file{sources.length !== 1 ? 's' : ''})</span>
+          <FolderOpen className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          <h2 className="text-sm font-medium text-slate-900 dark:text-white tracking-wide">{project.title}</h2>
+          <span className="text-xs text-slate-400 dark:text-slate-500">({sources.length} file{sources.length !== 1 ? 's' : ''})</span>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -147,7 +147,7 @@ function ProjectSection({ project, onDeleted }) {
       {isLoading ? (
         <div className="flex justify-center py-6"><Spinner size="sm" /></div>
       ) : sources.length === 0 ? (
-        <div className="flex items-center justify-center py-6 rounded-xl border border-dashed border-white/[0.06] text-slate-600 text-sm">
+        <div className="flex items-center justify-center py-6 rounded-xl border border-dashed border-blue-200 dark:border-white/10 bg-blue-50/30 dark:bg-transparent text-slate-400 dark:text-slate-500 text-sm">
           No files yet — upload a PDF, DOCX, or add a URL
         </div>
       ) : (
@@ -159,29 +159,40 @@ function ProjectSection({ project, onDeleted }) {
             return (
               <div
                 key={src.id}
-                className="flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-900/40 border border-white/[0.06] group hover:border-white/10 transition-colors"
+                className="flex items-center gap-3 px-4 py-3 rounded-xl bg-gradient-to-br from-blue-50/70 to-sky-50/40 dark:bg-white/5 dark:from-transparent dark:to-transparent border border-blue-100/70 dark:border-white/10 group hover:border-blue-200 dark:hover:border-white/20 hover:shadow-sm transition-all"
               >
                 <Icon className={`w-4 h-4 flex-shrink-0 ${cfg.color}`} />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{src.fileName}</p>
+                  <p className="text-sm text-slate-900 dark:text-white truncate">{src.fileName}</p>
                   {src.fileType === 'url' && (
                     <a
                       href={src.fileUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-indigo-400 hover:underline truncate block"
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline truncate block"
                     >
                       {src.fileUrl}
                     </a>
                   )}
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
-                  {size && <span className="text-xs text-slate-600">{size}</span>}
+                  {size && <span className="text-xs text-slate-400 dark:text-slate-500">{size}</span>}
                   <Badge variant={cfg.badge}>{cfg.label}</Badge>
+                  {src.fileUrl && src.fileType !== 'url' && (
+                    <a
+                      href={src.fileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="View file"
+                      className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                    </a>
+                  )}
                   <button
                     onClick={() => deleteMutation.mutate(src.id)}
                     disabled={deleteMutation.isPending}
-                    className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all"
+                    className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-all"
                   >
                     {deleteMutation.isPending
                       ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -217,10 +228,10 @@ export default function Library() {
     <div className="p-6 max-w-4xl">
       {/* Header */}
       <div className="flex items-center gap-3 mb-1">
-        <BookOpen className="w-5 h-5 text-indigo-400" />
-        <h1 className="text-2xl font-light text-white tracking-wide">Library</h1>
+        <BookOpen className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+        <h1 className="text-2xl font-light text-slate-900 dark:text-white tracking-wide">Library</h1>
       </div>
-      <p className="text-slate-500 text-sm mb-6">
+      <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
         All source files across your projects. Upload PDFs, docs, or web URLs to feed the AI agents.
       </p>
 
@@ -229,8 +240,8 @@ export default function Library() {
       ) : projects.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center py-16 text-center">
-            <BookOpen className="w-10 h-10 text-slate-700 mb-3" />
-            <p className="text-slate-500 mb-4">No projects yet. Create one first.</p>
+            <BookOpen className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
+            <p className="text-slate-500 dark:text-slate-400 mb-4">No projects yet. Create one first.</p>
             <Button onClick={() => navigate('/')}>
               Go to Projects
             </Button>
@@ -240,7 +251,7 @@ export default function Library() {
         <>
           {projects.length > 3 && (
             <div className="relative mb-6 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500" />
               <Input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
@@ -259,7 +270,7 @@ export default function Library() {
           ))}
 
           {filtered.length === 0 && search && (
-            <p className="text-slate-500 text-sm">No projects match "{search}"</p>
+            <p className="text-slate-500 dark:text-slate-400 text-sm">No projects match "{search}"</p>
           )}
         </>
       )}

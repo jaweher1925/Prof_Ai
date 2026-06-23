@@ -18,6 +18,11 @@ model Project {
   hiltGates       String?      @map("hilt_gates")   // JSON string in SQLite
   defaultAvatarId String?      @map("default_avatar_id")
   defaultVoiceId  String?      @map("default_voice_id")
+  // Full HeyGen-style avatar studio settings (#37) — set on the dedicated
+  // Avatar Studio stage, applied uniformly to every scene at video-render time.
+  avatarStyle      String?     @default("normal") @map("avatar_style")       // "normal" | "circle" | "closeUp"
+  avatarBackground String?     @map("avatar_background")                      // JSON string: {"type":"color","value":"#1E293B"}
+  voiceSettings    String?     @map("voice_settings")                         // JSON string: {stability, similarity_boost, style, speed}
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
   modules         Module[]
@@ -28,17 +33,18 @@ model Project {
 }
 
 model Module {
-  id         String   @id @default(uuid())
-  projectId  String   @map("project_id")
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title      String
-  objective  String?
-  orderIndex Int      @map("order_index")
-  status     String   @default("proposed")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
-  scenes     Scene[]
-  scripts    Script[]
+  id            String   @id @default(uuid())
+  projectId     String   @map("project_id")
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title         String
+  objective     String?
+  orderIndex    Int      @map("order_index")
+  status        String   @default("proposed")
+  fullVideoUrl  String?  @map("full_video_url") // all scene videos concatenated into one module video
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  scenes        Scene[]
+  scripts       Script[]
 
   @@map("modules")
 }
@@ -48,12 +54,18 @@ model Scene {
   moduleId          String    @map("module_id")
   module            Module    @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   orderIndex        Int       @map("order_index")
+  // "welcome" (hook+objectives, #29) | "content" (default) | "quiz" (#31).
+  // Drives which prompt template generated this scene and how the frontend/
+  // renderer should treat it — see scriptGeneratorAgent.ts.
+  sceneKind         String    @default("content") @map("scene_kind")
   scriptContent     String?   @map("script_content")
-  slideDeckContent  String?   @map("slide_deck_content")  // JSON string
+  slideDeckContent  String?   @map("slide_deck_content")  // JSON string — legacy/aggregate single-slide view, kept for back-compat with panels that haven't moved to segments yet
   visualPrompt      String?   @map("visual_prompt")
   visualAssetUrl    String?   @map("visual_asset_url")
   textAnimationType String    @default("none") @map("text_animation_type")
   textCues          String?   @map("text_cues")            // JSON string
+  // JSON string of QuizQuestion[] — only populated when sceneKind === "quiz" (#31).
+  quizData          String?   @map("quiz_data")
   presenterPosition String    @default("bottom-right") @map("presenter_position")
   avatarPositionX   Float?    @map("avatar_position_x")
   avatarPositionY   Float?    @map("avatar_position_y")
@@ -64,8 +76,45 @@ model Scene {
   approvedAt        DateTime? @map("approved_at")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
+  segments          SceneSegment[]
 
   @@map("scenes")
+}
+
+/// A scene is rendered from one or more ordered sub-slide segments — each
+/// with its own narration text (one ElevenLabs TTS call each, per #29) and
+/// its own slide elements/animation hints. A simple content scene has exactly
+/// one segment (segmentType "content"); the welcome scene (#29) has five
+/// (hook/content/content/interaction/recap); the quiz scene (#31) has one
+/// "question" segment per question. The render pipeline renders each segment
+/// to its own image+audio clip, then concatenates them into the scene's
+/// single avatarVideoUrl — see api/src/lib/ffmpegVideo.ts.
+model SceneSegment {
+  id              String    @id @default(uuid())
+  sceneId         String    @map("scene_id")
+  scene           Scene     @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  orderIndex      Int       @map("order_index")
+  // "hook" | "content" | "interaction" | "recap" | "question" | "answer"
+  segmentType     String    @map("segment_type")
+  text            String    // narration script for this segment's own TTS call
+  slideTitle      String?   @map("slide_title")
+  elements        String    @default("[]") // JSON string of SlideElement[]
+  // Full Visual Designer slide design for THIS segment alone (#38) — same
+  // shape as Scene.slideDeckContent (title/subtitle/layout/theme/blocks),
+  // so each segment (hook/content/content/interaction/recap) can have its
+  // own independent slide instead of sharing the whole scene's one design.
+  // "{}" (empty) means this segment hasn't been individually designed yet —
+  // the render pipeline falls back to the old simple per-segment slide in
+  // that case. See api/src/lib/slideRenderer.ts + ffmpegVideo.ts.
+  slideDesign     String    @default("{}") @map("slide_design")
+  imagePrompt     String?   @map("image_prompt")
+  animation       String?   // top-level entrance animation for this segment, e.g. "fade-in"
+  ttsAudioUrl     String?   @map("tts_audio_url")
+  durationSeconds Float?    @map("duration_seconds")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@map("scene_segments")
 }
 
 model Script {
@@ -93,8 +142,9 @@ model SourceFile {
   fileName  String   @map("file_name")
   fileType  String   @map("file_type")
   fileUrl   String   @map("file_url")
-  fileSize  Int?     @map("file_size")
-  createdAt DateTime @default(now()) @map("created_at")
+  fileSize      Int?     @map("file_size")
+  extractedText String?  @map("extracted_text")  // text extracted from PDF/TXT at upload time
+  createdAt     DateTime @default(now()) @map("created_at")
 
   @@map("source_files")
 }

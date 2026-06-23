@@ -8,6 +8,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
+import { compositeAvatarOverlay } from '../../lib/ffmpegVideo'
 
 const HEYGEN_API = 'https://api.heygen.com'
 
@@ -50,12 +51,65 @@ async function pollHeyGenVideoHandler(
 
     context.log(`Video ${body.video_id} status: ${status}`)
 
-    // If completed and we have a scene_id, update the scene
+    // Tracks what we actually save/return — the raw HeyGen clip unless/until
+    // it gets composited onto the slide below.
+    let finalVideoUrl = videoUrl
+
+    // If completed and we have a scene_id: HeyGen's clip is just the raw
+    // talking-head avatar on a solid background. Composite it locally with
+    // ffmpeg into the corner of the actual slide video (slide + TTS audio
+    // is the real content; avatar is the small picture-in-picture overlay).
+    // This is what actually makes the avatar show up — previously the raw
+    // HeyGen clip (or a mis-positioned one) was saved directly, which is why
+    // generated videos looked "voice only."
     if (status === 'completed' && videoUrl && body.scene_id) {
+      const scene = await prisma.scene.findUnique({
+        where: { id: body.scene_id },
+        include: { module: { include: { project: true } } },
+      })
+
+      if (scene?.ttsAudioUrl) {
+        try {
+          let parsedCues: { text: string; duration_seconds?: number }[] | null = null
+          try { parsedCues = scene.textCues ? JSON.parse(scene.textCues) : null } catch { /* no cues, ignore */ }
+
+          // Avatar Studio's Layout (Original/Circle) + Radius controls (#37)
+          // are saved as extra keys on Project.avatarBackground's JSON blob —
+          // pull them out here so the locally-composited PiP actually reflects
+          // what was chosen in Avatar Studio instead of always being a plain box.
+          let avatarLayout: 'original' | 'circle' | null = null
+          let avatarRadius: number | null = null
+          try {
+            const bg = scene.module?.project?.avatarBackground ? JSON.parse(scene.module.project.avatarBackground) : null
+            if (bg?.layout === 'circle') avatarLayout = 'circle'
+            if (typeof bg?.radius === 'number') avatarRadius = bg.radius
+          } catch { /* malformed JSON — keep default rectangular PiP */ }
+
+          finalVideoUrl = await compositeAvatarOverlay({
+            audioUrl: scene.ttsAudioUrl,
+            avatarVideoUrl: videoUrl,
+            slideImageUrl: scene.visualAssetUrl,
+            textAnimationType: scene.textAnimationType,
+            textCues: parsedCues,
+            avatarLayout,
+            avatarRadius,
+          })
+          context.log(`Scene ${body.scene_id}: composited avatar onto slide locally`)
+        } catch (compositeErr: any) {
+          // Fall back to the raw HeyGen clip rather than failing the whole
+          // job — the user still gets a video, just without the slide
+          // merged in. Logged so it's visible this path was hit.
+          context.warn(`Scene ${body.scene_id}: local avatar composite failed, falling back to raw HeyGen clip — ${compositeErr?.message}`)
+          finalVideoUrl = videoUrl
+        }
+      } else {
+        context.warn(`Scene ${body.scene_id}: no ttsAudioUrl found, cannot composite — saving raw HeyGen clip`)
+      }
+
       await prisma.scene.update({
         where: { id: body.scene_id },
         data: {
-          avatarVideoUrl: videoUrl,
+          avatarVideoUrl: finalVideoUrl,
           status: 'approved',
         },
       })
@@ -72,7 +126,7 @@ async function pollHeyGenVideoHandler(
       jsonBody: {
         video_id: body.video_id,
         status,
-        video_url: videoUrl || null,
+        video_url: finalVideoUrl || null,
         thumbnail_url: thumbnailUrl || null,
         completed: status === 'completed',
       },

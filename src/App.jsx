@@ -5,6 +5,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { queryClient } from '@/lib/queryClient'
 import { AuthProvider, useAuth } from '@/lib/AuthContext'
+import { ThemeProvider, useTheme } from '@/lib/ThemeContext'
 import AppLayout from '@/components/layout/AppLayout'
 import { PageTransition } from '@/components/layout/PageTransition'
 import Spinner from '@/components/ui/Spinner'
@@ -25,7 +26,7 @@ function AnimatedRoutes() {
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-slate-950">
+      <div className="fixed inset-0 flex items-center justify-center bg-[#f5f7fb] dark:bg-[#0a0e1a]">
         <Spinner size="lg" />
       </div>
     )
@@ -94,20 +95,27 @@ function AnimatedRoutes() {
   )
 }
 
+function ThemedToaster() {
+  const { theme } = useTheme()
+  return <Toaster position="bottom-right" theme={theme} />
+}
+
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter
-          future={{
-            v7_startTransition: true,
-            v7_relativeSplatPath: true,
-          }}
-        >
-          <AnimatedRoutes />
-          <Toaster position="bottom-right" theme="dark" />
-        </BrowserRouter>
-      </AuthProvider>
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <BrowserRouter
+            future={{
+              v7_startTransition: true,
+              v7_relativeSplatPath: true,
+            }}
+          >
+            <AnimatedRoutes />
+            <ThemedToaster />
+          </BrowserRouter>
+        </AuthProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   )
 }

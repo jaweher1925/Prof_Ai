@@ -48,5 +48,16 @@ async function serveUploadHandler(
     headers: {
       'Content-Type':        contentType,
       'Content-Length':      String(buffer.length),
-      'Content-Disposition': 'inline',           // render in browser, never download
-      'Cache-Control':       'public, max
+      'Content-Disposition': 'inline',
+      'Cache-Control':       'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+    },
+  }
+}
+
+app.http('serveUpload', {
+  methods: ['GET'],
+  route: 'uploads/{filename}',
+  authLevel: 'anonymous',
+  handler: serveUploadHandler,
+})
