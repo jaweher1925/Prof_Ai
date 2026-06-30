@@ -14,7 +14,7 @@
  * design data.
  */
 
-export interface SlideBullet { text: string; level?: number }
+export interface SlideBullet { text: string; level?: number; color?: string; bold?: boolean; italic?: boolean }
 export interface SlideBlock {
   type: 'bullets' | 'definition' | 'quote' | 'two-column' | 'key-concept' | 'summary'
   items?: SlideBullet[]
@@ -30,6 +30,15 @@ export interface SlideContent {
   theme?: string
   blocks?: SlideBlock[]
   imagePrompt?: string
+  // FEATURE: Store uploaded image + styling in design
+  imageUrl?: string
+  imageWidth?: number  // % of available space (0-100)
+  imageShape?: 'rounded' | 'circle' | 'sharp'  // Rounded, Circle, or Sharp corners
+  positions?: Record<string, any>  // Layer positioning from Visual Designer
+  showLogo?: boolean
+  // FEATURE: Transparent background option
+  bgTransparent?: boolean  // Use transparent background instead of gradient
+  bgColor?: string  // Override background color (hex)
 }
 
 export const THEMES: Record<string, {
@@ -99,12 +108,16 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
     const lvl2 = item.level === 2
     const x = lvl2 ? 160 : 108
     const fs = lvl2 ? 30 : 36
-    const color = lvl2 ? t.muted : t.body
+    // FEATURE: Support custom text color from item.color (user can set via color picker in VD)
+    const color = item.color || (lvl2 ? t.muted : t.body)
     const dotColor = lvl2 ? t.muted : t.accent
+    // FEATURE: Support bold (item.bold) and italic (item.italic) styling
+    const fontWeight = item.bold ? '700' : (lvl2 ? '400' : '500')
+    const fontStyle = item.italic ? 'italic' : 'normal'
     const lines = wrap(esc(item.text), lvl2 ? 72 : 65)
     svg += `<circle cx="${x}" cy="${y - 8}" r="${lvl2 ? 4 : 6}" fill="${dotColor}"/>`
     for (let i = 0; i < lines.length; i++) {
-      svg += `<text x="${x + 22}" y="${y + i * 42}" font-family="Arial,sans-serif" font-size="${fs}" fill="${color}">${lines[i]}</text>`
+      svg += `<text x="${x + 22}" y="${y + i * 42}" font-family="Arial,sans-serif" font-size="${fs}" fill="${color}" font-weight="${fontWeight}" font-style="${fontStyle}">${lines[i]}</text>`
     }
     y += lines.length > 1 ? (lvl2 ? 100 : 115) : (lvl2 ? 72 : 88)
     if (y > 990) break
@@ -315,6 +328,49 @@ ${subtitleText ? `<text x="100" y="${SUBTITLE_Y}" font-family="Arial,sans-serif"
 
 <!-- Content -->
 ${contentSvg}
+
+<!-- FEATURE: Uploaded image with styling from Visual Designer -->
+${slide.imageUrl ? (() => {
+  const imgW = Math.min(90, slide.imageWidth || 36)  // % of width, capped at 90%
+  const imgH = Math.round(imgW * 0.67)  // 3:2 aspect ratio
+  const imgX = (100 - imgW) / 2  // Center horizontally
+  const imgY = CONTENT_Y + 200  // Below content
+  
+  // SVG clip path requires inline radius specification (no % in rx/ry for clip paths)
+  // Convert percentages to absolute pixels for clip path
+  const imgXPx = (W * imgX) / 100
+  const imgYPx = imgY
+  const imgWPx = (W * imgW) / 100
+  const imgHPx = imgH
+  
+  const cornerRadius = slide.imageShape === 'circle' 
+    ? Math.min(imgWPx, imgHPx) / 2 
+    : slide.imageShape === 'rounded' 
+    ? 30
+    : 8
+  
+  // Safe image URL handling - escape special chars for SVG
+  const safeImageUrl = (slide.imageUrl || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+  
+  return `<!-- Image layer -->
+<defs>
+  <clipPath id="imgClip">
+    <rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+      rx="${cornerRadius}" ry="${cornerRadius}"/>
+  </clipPath>
+</defs>
+<image x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+  href="${safeImageUrl}" preserveAspectRatio="xMidYMid slice" 
+  clip-path="url(#imgClip)" opacity="0.95"/>
+<!-- Image border for definition -->
+<rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+  fill="none" stroke="${t.accent}" stroke-width="3" rx="${cornerRadius}" ry="${cornerRadius}" opacity="0.5"/>`
+})() : ''}
 
 <!-- Branding -->
 <text x="100" y="${H - 40}" font-family="Arial,sans-serif" font-size="16" fill="${t.muted}"

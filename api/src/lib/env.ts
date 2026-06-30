@@ -29,6 +29,10 @@ export const env = {
   OPENAI_MODEL:        process.env.OPENAI_MODEL || 'gpt-4o',
   HEYGEN_API_KEY:      process.env.HEYGEN_API_KEY || '',
   ELEVENLABS_API_KEY:  process.env.ELEVENLABS_API_KEY || '',
+  // Optional — enables HyperFrames animated slide backgrounds.
+  // Get your key from https://app.heygen.com → Settings → API.
+  // Leave blank to use the default static SVG→PNG slide renderer.
+  HYPERFRAMES_API_KEY: process.env.HYPERFRAMES_API_KEY || '',
   AZURE_STORAGE_CONNECTION_STRING: process.env.AZURE_STORAGE_CONNECTION_STRING || '',
   AZURE_STORAGE_CONTAINER:         process.env.AZURE_STORAGE_CONTAINER || 'uploads',
 }

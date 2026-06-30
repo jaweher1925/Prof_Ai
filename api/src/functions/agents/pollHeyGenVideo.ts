@@ -73,17 +73,21 @@ async function pollHeyGenVideoHandler(
           let parsedCues: { text: string; duration_seconds?: number }[] | null = null
           try { parsedCues = scene.textCues ? JSON.parse(scene.textCues) : null } catch { /* no cues, ignore */ }
 
-          // Avatar Studio's Layout (Original/Circle) + Radius controls (#37)
+          // Avatar Studio's Layout (Original/Circle) + Radius + Background controls (#37)
           // are saved as extra keys on Project.avatarBackground's JSON blob —
           // pull them out here so the locally-composited PiP actually reflects
           // what was chosen in Avatar Studio instead of always being a plain box.
           let avatarLayout: 'original' | 'circle' | null = null
           let avatarRadius: number | null = null
+          let avatarBgType: 'color' | 'transparent' | null = null
+          let avatarBgColor: string | null = null
           try {
             const bg = scene.module?.project?.avatarBackground ? JSON.parse(scene.module.project.avatarBackground) : null
             if (bg?.layout === 'circle') avatarLayout = 'circle'
             if (typeof bg?.radius === 'number') avatarRadius = bg.radius
-          } catch { /* malformed JSON — keep default rectangular PiP */ }
+            if (bg?.type === 'transparent') avatarBgType = 'transparent'
+            else if (bg?.type === 'color' && bg?.value) { avatarBgType = 'color'; avatarBgColor = bg.value }
+          } catch { /* malformed JSON — keep defaults */ }
 
           finalVideoUrl = await compositeAvatarOverlay({
             audioUrl: scene.ttsAudioUrl,
@@ -93,6 +97,8 @@ async function pollHeyGenVideoHandler(
             textCues: parsedCues,
             avatarLayout,
             avatarRadius,
+            avatarBgType: avatarBgType || 'color',
+            avatarBgColor: avatarBgColor || '#1E293B',
           })
           context.log(`Scene ${body.scene_id}: composited avatar onto slide locally`)
         } catch (compositeErr: any) {

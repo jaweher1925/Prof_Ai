@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
-import { Plus, Search, WifiOff, BookOpen, CheckCircle, Loader2, FileText, GraduationCap, Sparkles, Mic, Video, Image as ImageIcon } from 'lucide-react'
+import { Plus, Search, WifiOff, BookOpen, CheckCircle, Loader2, FileText, Sparkles, Mic, Video, Image as ImageIcon } from 'lucide-react'
+import LogoBadge from '@/components/ui/LogoBadge'
 import { projectsService } from '@/services/projects'
 import ProjectCard from '@/components/projects/ProjectCard'
 import NewProjectModal from '@/components/projects/NewProjectModal'
@@ -50,7 +51,7 @@ export default function Dashboard() {
   const stats = {
     total:      projects.length,
     drafts:     projects.filter(p => p.status === 'draft').length,
-    inProgress: projects.filter(p => ['ingesting_sources','in_production','pending_director_approval'].includes(p.status)).length,
+    inProgress: projects.filter(p => ['ingesting_sources','in_production','pending_director_approval','journey_approved'].includes(p.status)).length,
     completed:  projects.filter(p => p.status === 'completed').length,
   }
 
@@ -84,7 +85,7 @@ export default function Dashboard() {
 
         {/* Illustrated welcome banner */}
         <motion.div
-          className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-700 via-blue-600 to-sky-500 px-8 py-7 mb-8"
+          className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-700 via-indigo-600 to-indigo-500 px-8 py-7 mb-8"
           {...fadeUp(0.05)}
         >
           <div className="absolute -right-8 -top-8 w-40 h-40 rounded-full bg-white/10" />
@@ -96,7 +97,7 @@ export default function Dashboard() {
             animate={{ y: [0, -10, 0], rotate: [0, 4, 0] }}
             transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
           >
-            <Mic className="w-5 h-5 text-blue-600" />
+            <Mic className="w-5 h-5 text-indigo-600" />
           </motion.div>
           <motion.div
             className="hidden md:flex absolute right-40 top-16 w-10 h-10 rounded-xl bg-white shadow-lg items-center justify-center"
@@ -117,7 +118,7 @@ export default function Dashboard() {
             animate={{ y: [0, 6, 0], rotate: [0, -4, 0] }}
             transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut', delay: 1.2 }}
           >
-            <FileText className="w-4 h-4 text-violet-500" />
+            <FileText className="w-4 h-4 text-indigo-500" />
           </motion.div>
 
           <div className="relative flex items-center gap-2 mb-2">
@@ -126,12 +127,12 @@ export default function Dashboard() {
               transition={{ duration: 2.5, repeat: Infinity, ease: 'easeInOut' }}
               className="inline-flex"
             >
-              <Sparkles className="w-4 h-4 text-blue-200" />
+              <Sparkles className="w-4 h-4 text-indigo-200" />
             </motion.span>
-            <span className="text-xs text-blue-100 tracking-widest uppercase font-medium">ProfAI Studio</span>
+            <span className="text-xs text-indigo-100 tracking-widest uppercase font-medium">ProfAI Studio</span>
           </div>
           <h1 className="relative text-2xl md:text-3xl font-bold text-white">{greeting}, Professor</h1>
-          <p className="relative text-blue-100 mt-1 text-sm max-w-md">
+          <p className="relative text-indigo-100 mt-1 text-sm max-w-md">
             {isLoading ? 'Loading your courses…' : isError ? 'Connect the backend to load data' : `You have ${projects.length} course${projects.length !== 1 ? 's' : ''} in total — keep the momentum going.`}
           </p>
         </motion.div>
@@ -152,7 +153,7 @@ export default function Dashboard() {
         {/* Stats row */}
         {!isLoading && !isError && projects.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
-            <StatCard icon={BookOpen}    label="Total Courses"  value={stats.total}      color="bg-blue-600"    index={0} />
+            <StatCard icon={BookOpen}    label="Total Courses"  value={stats.total}      color="bg-indigo-600"    index={0} />
             <StatCard icon={FileText}    label="Drafts"         value={stats.drafts}     color="bg-slate-400"   index={1} />
             <StatCard icon={Loader2}     label="In Progress"    value={stats.inProgress} color="bg-amber-500"   index={2} />
             <StatCard icon={CheckCircle} label="Completed"      value={stats.completed}  color="bg-emerald-500" index={3} />
@@ -170,11 +171,14 @@ export default function Dashboard() {
             {...fadeUp(0.1)}
           >
             <motion.div
-              className="w-20 h-20 rounded-2xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-white/10 shadow-sm flex items-center justify-center mb-6"
               animate={{ y: [0, -6, 0] }}
               transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+              className="mb-6"
             >
-              <GraduationCap className="w-9 h-9 text-blue-500 dark:text-blue-400" />
+              <LogoBadge
+                size="w-20 h-20"
+                className="border border-slate-100 dark:border-white/10 shadow-sm"
+              />
             </motion.div>
             <h2 className="text-2xl font-semibold text-slate-900 dark:text-white mb-3">Create your first course</h2>
             <p className="text-slate-500 dark:text-slate-400 max-w-md leading-relaxed mb-8 text-sm">

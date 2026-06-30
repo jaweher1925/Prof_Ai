@@ -258,7 +258,8 @@ function buildQuizNarration(quiz: QuizSceneOutput): string {
   return quiz.questions
     .map((q, i) => {
       const opts = q.options.map(o => `${o.label}) ${o.text}`).join('. ')
-      return `Question ${i + 1}: ${q.question} ${opts}. The correct answer is ${q.correct_option_label}. ${q.explanation}`
+      // FIXED: Don't include the correct answer in the narration - questions only!
+      return `Question ${i + 1}: ${q.question} ${opts}.`
     })
     .join(' ')
 }
@@ -267,7 +268,8 @@ function buildQuestionSegment(q: QuizQuestion, idx: number): GeneratedSegment {
   const opts = q.options.map(o => `${o.label}) ${o.text}`).join('. ')
   return {
     segment_type: 'question',
-    text:         `Question ${idx + 1}: ${q.question} ${opts}. The correct answer is ${q.correct_option_label}. ${q.explanation}`,
+    // FIXED: Don't include the correct answer in the segment text - questions only!
+    text:         `Question ${idx + 1}: ${q.question} ${opts}.`,
     slide_title:  `Question ${idx + 1}`,
     elements: [
       { type: 'title', text: q.question, animation: 'fade-in' },

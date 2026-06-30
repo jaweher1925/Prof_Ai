@@ -161,10 +161,29 @@ async function generateHeyGenAvatarHandler(
     // endpoint always used before Avatar Studio existed, so projects that
     // never visited that stage keep behaving exactly as before.
     const avatarStyle = scene.module?.project?.avatarStyle || 'normal'
+
+    // Build the HeyGen-compatible background object.
+    // HeyGen only accepts type: 'color' | 'image' | 'video' — never 'transparent'.
+    // We also strip our internal-only keys (layout, radius) before sending.
+    // When the user picks "transparent/none", we send black (#000000) which
+    // disappears entirely after ffmpeg composites the PiP over the slide.
     let avatarBackground: { type: string; value: string } = { type: 'color', value: '#1E293B' }
     try {
       const raw = scene.module?.project?.avatarBackground
-      if (raw) avatarBackground = { ...avatarBackground, ...JSON.parse(raw) }
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>
+        const bgType  = typeof parsed.type  === 'string' ? parsed.type  : 'color'
+        const bgValue = typeof parsed.value === 'string' ? parsed.value : '#1E293B'
+        // Map 'transparent' → 'color' with black; pass 'image'/'video' through as-is
+        if (bgType === 'transparent' || bgType === 'color') {
+          avatarBackground = {
+            type:  'color',
+            value: bgType === 'transparent' ? '#000000' : bgValue,
+          }
+        } else if (bgType === 'image' || bgType === 'video') {
+          avatarBackground = { type: bgType, value: bgValue }
+        }
+      }
     } catch { /* malformed JSON — keep default background */ }
 
     context.log(`Generating video for scene ${body.scene_id} with avatar ${avatarId} (style: ${avatarStyle})`)

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/ThemeContext'
+import LogoBadge from '@/components/ui/LogoBadge'
 
 const FEATURES = [
   { icon: FileText,  title: 'Script Generation', desc: 'AI reads your PDFs and writes engaging lecture scripts automatically' },
@@ -53,35 +54,33 @@ export default function Welcome() {
           transition={{ duration: 0.4 }}
         >
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 bg-gradient-to-br from-blue-600 to-blue-800 rounded-xl flex items-center justify-center shadow-md shadow-blue-500/30">
-              <GraduationCap className="w-5 h-5 text-white" />
-            </div>
+            <LogoBadge size="w-9 h-9" />
             <span className="font-bold text-lg tracking-tight">ProfAI</span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-500 dark:text-slate-400">
             {NAV_LINKS.map((l) => (
-              <span key={l} className="hover:text-blue-700 dark:hover:text-blue-400 transition-colors cursor-default">{l}</span>
+              <span key={l} className="hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors cursor-default">{l}</span>
             ))}
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={toggleTheme}
               title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="w-9 h-9 rounded-xl flex items-center justify-center bg-blue-50 dark:bg-white/10 border border-blue-100 dark:border-white/10 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-white/15 transition-colors flex-shrink-0"
+              className="w-9 h-9 rounded-xl flex items-center justify-center bg-indigo-50 dark:bg-white/10 border border-indigo-100 dark:border-white/10 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-white/15 transition-colors flex-shrink-0"
             >
               <span className="relative w-4 h-4 block">
                 <Sun className={cn('w-4 h-4 absolute inset-0 transition-all', isDark ? 'opacity-0 -rotate-90 scale-50' : 'opacity-100 rotate-0 scale-100')} />
                 <Moon className={cn('w-4 h-4 absolute inset-0 transition-all', isDark ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 rotate-90 scale-50')} />
               </span>
             </button>
-            <button onClick={enter} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-400 transition-colors hidden sm:block">
+            <button onClick={enter} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors hidden sm:block">
               Sign in
             </button>
             <motion.button
               onClick={enter}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.97 }}
-              className="px-4 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-600 rounded-xl transition-colors shadow-md shadow-blue-500/20"
+              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-700 hover:bg-indigo-600 rounded-xl transition-colors shadow-md shadow-indigo-500/20"
             >
               Free Trial
             </motion.button>
@@ -90,7 +89,7 @@ export default function Welcome() {
 
         {/* Hero */}
          <motion.div
-          className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-blue-800 via-blue-700 to-blue-500 px-8 md:px-12 py-12 md:py-16 mb-20 shadow-xl"
+          className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-800 via-indigo-700 to-indigo-500 px-8 md:px-12 py-12 md:py-16 mb-20 shadow-xl"
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
@@ -105,7 +104,7 @@ export default function Welcome() {
             {/* Direct Copywriting parameters */}
             <div className="lg:col-span-7">
               <motion.div
-                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/15 text-blue-50 text-xs font-medium mb-6"
+                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/15 text-indigo-50 text-xs font-medium mb-6"
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.2 }}
@@ -116,7 +115,7 @@ export default function Welcome() {
               <h1 className="text-4xl md:text-6xl font-display font-black text-white leading-[1.05] tracking-tight mb-8">
                 Turn your lecture<br />into a video course
               </h1>
-              <p className="text-blue-100 text-base max-w-sm mb-8 leading-relaxed">
+              <p className="text-indigo-100 text-base max-w-sm mb-8 leading-relaxed">
                 Upload your PDFs, slides, or notes. ProfAI turns them into a complete
                 video lecture, automatically.
               </p>
@@ -124,7 +123,7 @@ export default function Welcome() {
                 onClick={enter}
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.97 }}
-                className="flex items-center gap-2 px-6 py-3 text-sm font-semibold text-blue-800 bg-white hover:bg-slate-50 rounded-xl shadow-lg transition-colors"
+                className="flex items-center gap-2 px-6 py-3 text-sm font-semibold text-indigo-800 bg-white hover:bg-slate-50 rounded-xl shadow-lg transition-colors"
               >
                 Get Started <ArrowRight className="w-4 h-4" />
               </motion.button>
@@ -158,7 +157,7 @@ export default function Welcome() {
                       <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
                       Live Preview
                     </span>
-                    <Video className="w-3.5 h-3.5 text-blue-400" />
+                    <Video className="w-3.5 h-3.5 text-indigo-400" />
                   </div>
 
                   {/* Core Visual Presenter Center Area */}
@@ -167,10 +166,10 @@ export default function Welcome() {
                       <Sparkles className="w-2.5 h-2.5" /> Course AI
                     </div>
 
-                    <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 mb-2 relative">
+                    <div className="w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 mb-2 relative">
                       <User className="w-8 h-8" />
                       <motion.div
-                        className="absolute inset-0 rounded-full border border-blue-400/50"
+                        className="absolute inset-0 rounded-full border border-indigo-400/50"
                         animate={{ scale: [1, 1.3, 1], opacity: [0.8, 0, 0.8] }}
                         transition={{ duration: 2.5, repeat: Infinity }}
                       />
@@ -183,11 +182,11 @@ export default function Welcome() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-[9px] font-mono text-slate-400">
                       <span>02:45 / 15:00</span>
-                      <span className="text-blue-400">FPS: 60</span>
+                      <span className="text-indigo-400">FPS: 60</span>
                     </div>
                     <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                       <motion.div
-                        className="h-full bg-blue-500 rounded-full"
+                        className="h-full bg-indigo-500 rounded-full"
                         animate={{ width: ["20%", "72%", "20%"] }}
                         transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
                       />
@@ -197,7 +196,7 @@ export default function Welcome() {
 
                 {/* Simulated Generator Card 2: Voice Synthesizer / Audio Waveform simulation */}
                 <motion.div
-                  className="absolute z-30 shadow-xl rounded-xl border border-slate-700/40 bg-zinc-950 text-left p-3.5 flex flex-col justify-between"
+                  className="absolute z-30 shadow-xl rounded-xl border border-slate-700/40 bg-slate-950 text-left p-3.5 flex flex-col justify-between"
                   style={{ width: "140px", height: "185px", right: "2%", bottom: "5%" }}
                   initial={{ opacity: 0, scale: 0.8, rotate: 6 }}
                   animate={{
@@ -213,17 +212,17 @@ export default function Welcome() {
                     rotate: { duration: 5, repeat: Infinity, ease: "easeInOut" }
                   }}
                 >
-                  <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5">
-                    <span className="text-[8px] font-mono font-medium text-zinc-400">Voice Generation</span>
-                    <Mic className="w-3 h-3 text-sky-400" />
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                    <span className="text-[8px] font-mono font-medium text-slate-400">Voice Generation</span>
+                    <Mic className="w-3 h-3 text-indigo-400" />
                   </div>
 
                   {/* Stylized Visual Equalizer bars */}
-                  <div className="my-3 flex items-end justify-center gap-1 h-12 bg-zinc-900/45 rounded-lg border border-zinc-800/50 px-2 py-1">
+                  <div className="my-3 flex items-end justify-center gap-1 h-12 bg-slate-900/45 rounded-lg border border-slate-800/50 px-2 py-1">
                     {[0.8, 0.4, 0.9, 0.5, 0.7, 0.3, 0.6].map((multiplier, idx) => (
                       <motion.div
                         key={idx}
-                        className="w-1.5 bg-gradient-to-t from-sky-400 to-indigo-500 rounded-t-sm"
+                        className="w-1.5 bg-gradient-to-t from-indigo-400 to-indigo-500 rounded-t-sm"
                         animate={{ height: ["15%", `${multiplier * 100}%`, "15%"] }}
                         transition={{
                           duration: 1.2 + idx * 0.15,
@@ -235,12 +234,12 @@ export default function Welcome() {
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between text-[8px] font-mono text-zinc-400">
+                    <div className="flex justify-between text-[8px] font-mono text-slate-400">
                       <span>Synthesis</span>
                       <span className="text-emerald-400 font-bold">ACTIVE</span>
                     </div>
-                    <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-                      <div className="h-full w-4/5 bg-sky-400" />
+                    <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+                      <div className="h-full w-4/5 bg-indigo-400" />
                     </div>
                   </div>
                 </motion.div>
@@ -294,13 +293,13 @@ export default function Welcome() {
               transition={{ delay: 0.1 }}
             >
               <motion.div
-                className="relative w-32 h-32 md:w-40 md:h-40 rounded-[2rem] bg-gradient-to-br from-blue-700 to-blue-500 shadow-xl shadow-blue-500/25 flex items-center justify-center"
+                className="relative w-32 h-32 md:w-40 md:h-40 rounded-[2rem] bg-gradient-to-br from-indigo-700 to-indigo-500 shadow-xl shadow-indigo-500/25 flex items-center justify-center"
                 animate={{ y: [0, -8, 0] }}
                 transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
               >
                 <User className="w-14 h-14 md:w-16 md:h-16 text-white" strokeWidth={1.5} />
                 <div className="absolute -bottom-2 -right-2 w-10 h-10 md:w-11 md:h-11 rounded-xl bg-white dark:bg-slate-900 shadow-md flex items-center justify-center">
-                  <Presentation className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  <Presentation className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 </div>
               </motion.div>
               <p className="text-base font-semibold text-slate-900 dark:text-white mt-4">Professor</p>
@@ -317,16 +316,16 @@ export default function Welcome() {
             >
               <div className="relative w-24 h-24 md:w-32 md:h-32 flex items-center justify-center">
                 <motion.div
-                  className="absolute inset-0 rounded-full border-2 border-blue-300"
+                  className="absolute inset-0 rounded-full border-2 border-indigo-300"
                   animate={{ scale: [1, 1.5], opacity: [0.6, 0] }}
                   transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }}
                 />
                 <motion.div
-                  className="relative w-20 h-20 md:w-28 md:h-28 rounded-full bg-white dark:bg-slate-900 border-2 border-blue-200 dark:border-blue-500/30 shadow-2xl flex items-center justify-center"
+                  className="relative w-20 h-20 md:w-28 md:h-28 rounded-full bg-white dark:bg-slate-900 border-2 border-indigo-200 dark:border-indigo-500/30 shadow-2xl flex items-center justify-center"
                   animate={{ scale: [1, 1.08, 1] }}
                   transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
                 >
-                  <Bot className="w-9 h-9 md:w-12 md:h-12 text-blue-600 dark:text-blue-400" strokeWidth={1.5} />
+                  <Bot className="w-9 h-9 md:w-12 md:h-12 text-indigo-600 dark:text-indigo-400" strokeWidth={1.5} />
                   <motion.div
                     className="absolute -top-1 -right-1"
                     animate={{ rotate: 360 }}
@@ -336,7 +335,7 @@ export default function Welcome() {
                   </motion.div>
                 </motion.div>
               </div>
-              <p className="text-sm font-semibold text-blue-600 dark:text-blue-400 mt-4 tracking-wide uppercase">AI Studio</p>
+              <p className="text-sm font-semibold text-indigo-600 dark:text-indigo-400 mt-4 tracking-wide uppercase">AI Studio</p>
               <p className="text-xs text-slate-400 dark:text-slate-500">Script · Voice · Video</p>
             </motion.div>
 
@@ -349,13 +348,13 @@ export default function Welcome() {
               transition={{ delay: 0.1 }}
             >
               <motion.div
-                className="relative w-32 h-32 md:w-40 md:h-40 rounded-[2rem] bg-gradient-to-br from-sky-500 to-blue-400 shadow-xl shadow-blue-500/25 flex items-center justify-center"
+                className="relative w-32 h-32 md:w-40 md:h-40 rounded-[2rem] bg-gradient-to-br from-indigo-500 to-indigo-400 shadow-xl shadow-indigo-500/25 flex items-center justify-center"
                 animate={{ y: [0, 8, 0] }}
                 transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut', delay: 0.5 }}
               >
                 <GraduationCap className="w-14 h-14 md:w-16 md:h-16 text-white" strokeWidth={1.5} />
                 <div className="absolute -bottom-2 -right-2 w-10 h-10 md:w-11 md:h-11 rounded-xl bg-white dark:bg-slate-900 shadow-md flex items-center justify-center">
-                  <PlayCircle className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  <PlayCircle className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
                 </div>
               </motion.div>
               <p className="text-base font-semibold text-slate-900 dark:text-white mt-4">Student</p>
@@ -379,8 +378,8 @@ export default function Welcome() {
               variants={{ hidden: { opacity: 0, y: 24 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4 } } }}
               whileHover={{ y: -4, transition: { duration: 0.15 } }}
             >
-              <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 flex items-center justify-center mb-4">
-                <Icon className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 flex items-center justify-center mb-4">
+                <Icon className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
               </div>
               <p className="text-sm font-semibold text-slate-900 dark:text-white mb-1.5">{title}</p>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{desc}</p>
@@ -391,7 +390,7 @@ export default function Welcome() {
 
       <footer className="text-center py-6 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-white/10">
         © {new Date().getFullYear()} ProfAI Studio AI course creation for educators
-      </footer>
+          </footer>
     </div>
   )
 }

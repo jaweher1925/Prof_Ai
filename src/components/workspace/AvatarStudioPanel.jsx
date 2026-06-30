@@ -1,22 +1,4 @@
-/**
- * Avatar Studio (#37) — dedicated pipeline step before Video generation.
- *
- * Restyled (#29) to mirror HeyGen's own "create video" right-rail layout:
- * a stack of collapsible summary cards (Avatar, Voice) instead of tabs, a
- * Motion Engine dropdown, an Avatar Background thumbnail row, an Original/
- * Circle Layout segmented toggle, and a Radius slider that only appears for
- * Circle layout — finishing with a single primary "Render Scene" action.
- *
- * Layout + Radius are new presentation controls: they're saved as extra keys
- * on Project.avatarBackground's JSON blob (round-trips fine — see
- * projects.ts) and consumed by ffmpegVideo.ts's compositeAvatarOverlay to
- * actually crop the locally-composited presenter PiP into a circle, so this
- * isn't just decorative — see pollHeyGenVideo.ts for the wiring.
- *
- * This sits between Visual Designer and Video in the stage rail. The
- * existing gear-icon CastingSettings popup is left as-is for a quick
- * avatar/voice swap; this panel is the full "set it up properly" step.
- */
+
 import React, { useState, useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { projectsService } from '@/services/projects'
@@ -31,9 +13,7 @@ import Spinner from '@/components/ui/Spinner'
 const DEFAULT_AVATAR_ID = 'Daisy-inskirt-20220818' // HeyGen's free default avatar — always available
 
 // "Motion Engine" — HeyGen's own avatar_style param, sent straight to their
-// /v2/video/generate call (generateHeyGenAvatar.ts). Circle used to live
-// here too, but it's now its own Layout toggle below since that's a local
-// presentation choice (how WE crop the PiP), not a HeyGen render mode.
+
 const MOTION_ENGINES = [
   { id: 'normal',  label: 'Standard',  desc: 'Natural framing & motion' },
   { id: 'closeUp', label: 'Close Up',  desc: 'Tighter, face-forward crop' },
@@ -48,12 +28,24 @@ const BACKGROUND_PRESETS = [
   { value: '#0F1F3D', label: 'Navy' },
 ]
 
-// Same shared react-query cache keys used in CastingSettings.jsx and
-// VisualDesignerPanel's SceneEditor — all three avatar/voice pickers across
-// the app hit one cached fetch instead of each re-fetching from HeyGen/
-// ElevenLabs independently, which is what made avatar selection feel slow.
-const AVATARS_QUERY = { queryKey: ['heygen-avatars'], queryFn: () => mediaService.listAvatars(), staleTime: 10 * 60 * 1000 }
-const VOICES_QUERY  = { queryKey: ['elevenlabs-voices'], queryFn: () => mediaService.listVoices(),  staleTime: 10 * 60 * 1000 }
+const AVATARS_QUERY = { 
+  queryKey: ['heygen-avatars'], 
+  queryFn: () => mediaService.listAvatars(),
+  staleTime: 30 * 60 * 1000, // 30 minutes (increased from 10 - reduces API calls)
+  refetchInterval: 60 * 60 * 1000, // Refetch every 60 minutes
+  retry: 1, // Only retry once on failure
+  retryDelay: 2000, // Wait 2s before retry
+  gcTime: 60 * 60 * 1000, // Keep in cache for 60 minutes
+}
+const VOICES_QUERY  = { 
+  queryKey: ['elevenlabs-voices'], 
+  queryFn: () => mediaService.listVoices(),
+  staleTime: 30 * 60 * 1000, // 30 minutes (increased from 10 - reduces API calls)
+  refetchInterval: 60 * 60 * 1000, // Refetch every 60 minutes
+  retry: 1, // Only retry once on failure
+  retryDelay: 2000, // Wait 2s before retry
+  gcTime: 60 * 60 * 1000, // Keep in cache for 60 minutes
+}
 
 function normGender(raw) {
   const g = (raw || '').toString().toLowerCase()
@@ -162,9 +154,7 @@ function AvatarGrid({ value, onChange, avatars, loading, error }) {
 }
 
 // ─── Voice list + fine-tune sliders ──────────────────────────────────────────
-// genderHint (the selected avatar's gender) defaults the list to voices that
-// match the presenter's apparent gender — fixes "I pick a man avatar and the
-// voice turns out to be a woman" by no longer leaving the match to chance.
+
 function VoiceList({ value, onChange, genderHint, voices, loading, error }) {
   const [playingId, setPlayingId] = useState(null)
   const [showAllGenders, setShowAllGenders] = useState(false)
@@ -250,9 +240,7 @@ function Slider({ label, value, onChange, min = 0, max = 1, step = 0.05, hint, f
 }
 
 // ─── HeyGen-style collapsible summary card ───────────────────────────────────
-// Collapsed: thumbnail + title + sub-label + chevron, exactly like HeyGen's
-// own Avatar/Voice rows in its create-video right rail. Expanded: whatever
-// picker content is passed as children.
+
 function SummaryCard({ icon: thumb, title, subtitle, expanded, onToggle, children }) {
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/40 overflow-hidden">

@@ -6,7 +6,7 @@ import apiClient from '@/api/apiClient'
 
 export const agentsService = {
 
-  // ── Stage 1 → Script ──────────────────────────────────────────────────────
+  // Stage 1: Script
 
   /** Analyze source files and create Learning Journey module structure */
   runLibrarian: (projectId) =>
@@ -19,12 +19,11 @@ export const agentsService = {
       special_instructions: instructions || undefined,
     }),
 
-  // ── Stage 2 → Voice (Text to Audio) ──────────────────────────────────────
+  // Stage 2: Voice (Text to Audio)
 
   /** Generate TTS audio for a single scene using Voice AI.
    *  Pass segmentId to regenerate just one segment of a multi-segment scene
-   *  (#32) — e.g. after editing that segment's narration text — instead of
-   *  every segment on the scene. Ignored for segment-less (legacy) scenes. */
+   *  instead of every segment on the scene. Ignored for segment-less scenes. */
   runGenerateTTS: (sceneId, voiceId, overrideText, voiceSettings, segmentId) =>
     apiClient.post('/generateTTS', {
       scene_id: sceneId,
@@ -34,7 +33,7 @@ export const agentsService = {
       segment_id: segmentId || undefined,
     }),
 
-  /** Edit one scene segment's narration text / slide title / elements (#32).
+  /** Edit one scene segment's narration text / slide title / elements.
    *  Clears that segment's stale tts_audio_url server-side so the UI knows
    *  to prompt a voice regenerate before the next render. */
   updateSceneSegment: (segmentId, fields) =>
@@ -48,13 +47,13 @@ export const agentsService = {
       voice_settings: voiceSettings || undefined,
     }),
 
-  // ── Stage 3 → Visual (Generate Images) ───────────────────────────────────
+  // Stage 3: Visual (Generate Images)
 
   /** Generate Image AI background image for a single scene */
   runGenerateAsset: (sceneId) =>
     apiClient.post('/generateSceneAsset', { scene_id: sceneId }),
 
-  // ── Storyboard ────────────────────────────────────────────────────────────
+  // Storyboard
 
   /** Generate storyboard data for a project or module */
   runStoryboard: (projectId, moduleId) =>
@@ -63,7 +62,7 @@ export const agentsService = {
       module_id: moduleId || undefined,
     }),
 
-  // ── Stage 4 → Video (Voice to Video — expensive, last) ────────────────────
+  // Stage 4: Video (Voice to Video)
 
   /** Generate Video AI avatar video for a single scene.
    *  Pass useAvatar=false to render voice-only (no HeyGen call, no avatar). */
@@ -86,7 +85,7 @@ export const agentsService = {
   runMergeModuleVideo: (moduleId) =>
     apiClient.post('/mergeModuleVideo', { module_id: moduleId }),
 
-  // ── Bulk ──────────────────────────────────────────────────────────────────
+  // Bulk
 
   /** Trigger TTS + Visual generation for all scenes in a project/module */
   runProduceScenes: (projectId, moduleId, opts = {}) =>
@@ -97,7 +96,7 @@ export const agentsService = {
       generate_visual: opts.visual !== false,
     }),
 
-  // ── Export ────────────────────────────────────────────────────────────────
+  // Export
 
   /** Export project as SCORM package */
   exportSCORM: (projectId) =>

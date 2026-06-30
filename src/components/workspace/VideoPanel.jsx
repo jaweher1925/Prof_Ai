@@ -29,7 +29,7 @@ export default function VideoPanel({ project, onUpdate }) {
   const [generating, setGenerating] = useState({})
   const [polling, setPolling] = useState({})
   const [errors, setErrors] = useState({})
-  const [useAvatar, setUseAvatar] = useState(false)
+  const [useAvatar, setUseAvatar] = useState(true)
 
   const { data: scripts = [], isLoading } = useQuery({
     queryKey: ['scripts', project?.id],

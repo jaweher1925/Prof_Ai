@@ -75,8 +75,14 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
   const queryClient = useQueryClient()
   const [runningLibrarian, setRunningLibrarian] = useState(false)
   const [runningScripts, setRunningScripts] = useState(false)
-  const [instructions, setInstructions] = useState('')
-  const [showInstructions, setShowInstructions] = useState(false)
+  // Default to a brevity instruction so scripts come back short out of the
+  // box — especially the first scene, which tends to run long with welcome
+  // text + objectives. Still fully editable/clearable by the user.
+  const [instructions, setInstructions] = useState(
+    'Keep every scene concise — aim for short, tightly-written narration (roughly 60-100 words per scene). ' +
+    'The first scene (welcome/intro) must be especially brief and to the point, no more than 50-60 words.'
+  )
+  const [showInstructions, setShowInstructions] = useState(true)
   const [librarianError, setLibrarianError] = useState(null)
   const [scriptError, setScriptError] = useState(null)
   const [expandedScript, setExpandedScript] = useState(null)

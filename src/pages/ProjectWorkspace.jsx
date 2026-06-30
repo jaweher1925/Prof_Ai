@@ -170,7 +170,7 @@ export default function ProjectWorkspace() {
       <div className="flex items-center justify-center h-full bg-[#f5f7fb] dark:bg-[#0a0e1a]">
         <div className="text-center">
           <p className="text-slate-500 dark:text-slate-400 mb-4">No project selected.</p>
-          <Button onClick={() => navigate('/')}>Back to Projects</Button>
+          <Button onClick={() => navigate('/dashboard')}>Back to Projects</Button>
         </div>
       </div>
     )
@@ -194,7 +194,7 @@ export default function ProjectWorkspace() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('/')}
+            onClick={() => navigate('/dashboard')}
             className="w-full justify-start mb-2"
           >
             <ArrowLeft className="w-4 h-4" />

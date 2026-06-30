@@ -34,9 +34,12 @@ import Spinner from '@/components/ui/Spinner'
 // narration-synced caption reveals on screen, which is the actually
 // attractive/legible effect: text appearing in step with the voiceover.
 const MOTION_STYLES = [
-  { id: 'word-by-word', label: 'Word by Word', icon: '✦', cls: '', desc: 'Captions reveal one word at a time as the voiceover speaks' },
-  { id: 'line-by-line', label: 'Line by Line',  icon: '☰', cls: '', desc: 'Each sentence fades in together as it’s spoken' },
-  { id: 'all-at-once',  label: 'All at Once',   icon: '■', cls: '', desc: 'Full caption shown immediately once narration starts' },
+  { id: 'progressive-fade', label: 'Progressive Fade', icon: '❆', cls: 'motion-progressive-fade', desc: 'Title then bullets fade in one by one' },
+  { id: 'slide-in-left',    label: 'Slide In',         icon: '→', cls: 'motion-slide-in-left',    desc: 'Elements slide in from the left' },
+  { id: 'scale-pop',        label: 'Scale Pop',        icon: '●', cls: 'motion-scale-pop',        desc: 'Elements pop in with a scale bounce' },
+  { id: 'word-by-word',     label: 'Word by Word',     icon: '⚡', cls: '', desc: 'Captions reveal one word at a time as the voiceover speaks' },
+  { id: 'line-by-line',     label: 'Line by Line',     icon: '☰', cls: '', desc: 'Each sentence fades in as it’s spoken' },
+  { id: 'all-at-once',      label: 'All at Once',      icon: '■', cls: '', desc: 'Full caption shown immediately once narration starts' },
 ]
 
 const LAYOUTS = [
@@ -166,6 +169,35 @@ const SLIDE_CSS = `
 /* Draggable layer hover ring */
 .pa-drag-layer:hover > .pa-drag-ring { outline: 2px solid #60A5FA; outline-offset: 3px; border-radius: 4px; }
 .pa-drag-layer:hover > .pa-drag-label { display: flex; }
+
+/* Slide entrance motion styles */
+@keyframes pa-slideLeft  { from{opacity:0;transform:translateX(-28px)} to{opacity:1;transform:translateX(0)} }
+@keyframes pa-scalePop   { from{opacity:0;transform:scale(0.82)}       to{opacity:1;transform:scale(1)} }
+
+.motion-progressive-fade .pa-title { animation:pa-fadeUp   0.55s 0.05s ease-out both }
+.motion-progressive-fade .pa-sub   { animation:pa-fadeUp   0.50s 0.30s ease-out both }
+.motion-progressive-fade .pa-b0    { animation:pa-fadeUp   0.45s 0.50s ease-out both }
+.motion-progressive-fade .pa-b1    { animation:pa-fadeUp   0.45s 0.65s ease-out both }
+.motion-progressive-fade .pa-b2    { animation:pa-fadeUp   0.45s 0.80s ease-out both }
+.motion-progressive-fade .pa-b3    { animation:pa-fadeUp   0.45s 0.95s ease-out both }
+.motion-progressive-fade .pa-b4    { animation:pa-fadeUp   0.45s 1.10s ease-out both }
+.motion-progressive-fade .pa-icon  { animation:pa-fadeUp   0.50s 0.15s ease-out both }
+.motion-slide-in-left .pa-title { animation:pa-slideLeft 0.50s 0.05s ease-out both }
+.motion-slide-in-left .pa-sub   { animation:pa-slideLeft 0.45s 0.20s ease-out both }
+.motion-slide-in-left .pa-b0    { animation:pa-slideLeft 0.40s 0.35s ease-out both }
+.motion-slide-in-left .pa-b1    { animation:pa-slideLeft 0.40s 0.48s ease-out both }
+.motion-slide-in-left .pa-b2    { animation:pa-slideLeft 0.40s 0.61s ease-out both }
+.motion-slide-in-left .pa-b3    { animation:pa-slideLeft 0.40s 0.74s ease-out both }
+.motion-slide-in-left .pa-b4    { animation:pa-slideLeft 0.40s 0.87s ease-out both }
+.motion-slide-in-left .pa-icon  { animation:pa-slideLeft 0.45s 0.10s ease-out both }
+.motion-scale-pop .pa-title { animation:pa-scalePop 0.45s 0.05s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-sub   { animation:pa-scalePop 0.40s 0.22s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-b0    { animation:pa-scalePop 0.38s 0.38s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-b1    { animation:pa-scalePop 0.38s 0.52s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-b2    { animation:pa-scalePop 0.38s 0.66s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-b3    { animation:pa-scalePop 0.38s 0.80s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-b4    { animation:pa-scalePop 0.38s 0.94s cubic-bezier(0.34,1.56,0.64,1) both }
+.motion-scale-pop .pa-icon  { animation:pa-scalePop 0.42s 0.12s cubic-bezier(0.34,1.56,0.64,1) both }
 `
 function injectCSS() {
   if (!document.getElementById('pa-css')) {
@@ -557,22 +589,35 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   const [narrationPlaying,  setNarrationPlaying]  = useState(false)
   const [narrationProgress, setNarrationProgress] = useState(0) // 0..1
   const scriptWords = (scriptText || '').trim() ? scriptText.trim().split(/\s+/) : []
+  // Real sentence-based lines (not fixed-size word chunks) so "line by line"
+  // actually means one spoken sentence per line, matching how a narrator
+  // naturally pauses — e.g. "Welcome to the course. Today we'll cover X."
+  // reveals as two lines, not an arbitrary 8-word cut mid-sentence.
+  const scriptLines = (scriptText || '').trim()
+    ? scriptText.trim().split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean)
+    : []
+  const lineWordCounts = scriptLines.map(l => l.split(/\s+/).filter(Boolean).length)
   // Text Motion mode controls how far ahead of the raw audio progress the
   // reveal jumps: word-by-word reveals exactly proportional to progress,
-  // line-by-line snaps forward in sentence-sized chunks, all-at-once shows
-  // the full caption the instant narration starts.
+  // line-by-line reveals a whole sentence as soon as its first word is
+  // reached, all-at-once shows the full caption the instant narration starts.
   const rawRevealCount = narrationPlaying || narrationProgress > 0
     ? Math.min(scriptWords.length, Math.max(1, Math.ceil(narrationProgress * scriptWords.length)))
     : 0
   const revealedWordCount = (() => {
     if (rawRevealCount === 0) return 0
     if (motion.id === 'all-at-once') return scriptWords.length
-    if (motion.id === 'line-by-line') {
-      // Snap forward to the end of the current ~8-word "line" chunk.
-      const chunk = 8
-      return Math.min(scriptWords.length, Math.ceil(rawRevealCount / chunk) * chunk)
+    return rawRevealCount // word-by-word (and the base count line-by-line maps from)
+  })()
+  const revealedLineCount = (() => {
+    if (rawRevealCount === 0) return 0
+    if (motion.id === 'all-at-once') return scriptLines.length
+    let cum = 0, count = 0
+    for (let i = 0; i < lineWordCounts.length; i++) {
+      if (rawRevealCount > cum) count = i + 1
+      cum += lineWordCounts[i]
     }
-    return rawRevealCount // word-by-word
+    return count
   })()
   const captionPreview = scriptWords.slice(0, revealedWordCount).join(' ')
 
@@ -893,17 +938,39 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           </div>
         )}
 
-        {/* Synced narration caption — words appear one at a time as the
-            voiceover plays, instead of dumping the whole script at once. */}
-        {narrationPlaying && scriptWords.length > 0 && (
+        {/* Synced narration caption — reveal style follows the Text Motion
+            picker: word-by-word highlights words as spoken, line-by-line
+            reveals one full sentence at a time (capped to the last 3 so a
+            long script doesn't stack into a tall wall of text), all-at-once
+            shows the full caption the instant narration starts. */}
+        {narrationPlaying && (motion.id === 'line-by-line' ? scriptLines.length > 0 : scriptWords.length > 0) && (
           <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
-            <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
-              {scriptWords.slice(0, revealedWordCount).map((w, i) => (
-                <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
-                  {w}{' '}
-                </span>
-              ))}
-            </p>
+            {motion.id === 'line-by-line' ? (
+              <div className="flex flex-col items-center gap-1">
+                {scriptLines.slice(Math.max(0, revealedLineCount - 3), revealedLineCount).map((line, i, arr) => (
+                  <p key={i}
+                    className="px-4 py-1.5 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm"
+                    style={{
+                      animation: i === arr.length - 1 ? 'pa-fadeUp 0.35s ease-out both' : undefined,
+                      opacity: i === arr.length - 1 ? 1 : 0.55,
+                    }}>
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ) : motion.id === 'all-at-once' ? (
+              <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
+                {scriptText}
+              </p>
+            ) : (
+              <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
+                {scriptWords.slice(0, revealedWordCount).map((w, i) => (
+                  <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
+                    {w}{' '}
+                  </span>
+                ))}
+              </p>
+            )}
           </div>
         )}
 
@@ -911,6 +978,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           <audio ref={narrationAudioRef} src={scene.ttsAudioUrl} preload="metadata" className="hidden" />
         )}
       </div>
+
 
       {/* Drag hint */}
       <p className="text-[10px] text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
@@ -1380,7 +1448,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
   return (
     <div
       ref={containerRef}
-      className="relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none"
+      className={`relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none ${motionCls || ''}`}
       style={{ aspectRatio:'16/9', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
     >
       {/* Geometric background (animated) */}
@@ -1471,10 +1539,11 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
       <div
         className="absolute pointer-events-none overflow-hidden"
         style={{
-          bottom: '2%', right: '1.5%',
-          width: '22%', height: '38%',
-          border: avatarImageUrl ? '1.5px solid rgba(255,255,255,0.35)' : '1.5px dashed rgba(255,255,255,0.25)',
-          borderRadius: '10px',
+          bottom: '0%', right: '0%',
+          width: '34%', height: '62%',
+          border: avatarImageUrl ? '2px solid rgba(255,255,255,0.4)' : '1.5px dashed rgba(255,255,255,0.25)',
+          borderRadius: '14px 0 0 0',
+          boxShadow: avatarImageUrl ? '-8px 0 28px rgba(0,0,0,0.35)' : 'none',
           background: avatarImageUrl ? '#0f172a' : 'rgba(0,0,0,0.18)',
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
@@ -1486,10 +1555,10 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
           <img src={avatarImageUrl} alt="Presenter avatar" className="w-full h-full object-cover" />
         ) : (
           <>
-            <svg viewBox="0 0 24 24" style={{ width:'18%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
+            <svg viewBox="0 0 24 24" style={{ width:'22%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
               <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
             </svg>
-            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(5px,0.8vw,9px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
+            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(6px,1vw,11px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
               PRESENTER<br/>AVATAR
             </span>
           </>
@@ -1652,48 +1721,26 @@ function SlideBackground({ theme }) {
 
 // ─── GVSU Logo ────────────────────────────────────────────────────────────────
 // Uses /gvsu-logo.png (the actual circular GV emblem — blue mark on black bg).
+// Always rendered bare — no frame/badge/box around it on either theme, so
+// dragging it on the slide just moves the logo itself.
 //
 // Dark slides  → grayscale + max-brightness makes the mark white,
 //                mix-blend-mode:screen removes the black background.
-// Light slide  → white mark on a GVSU-blue pill (filter:invert removes
-//                the black bg inside the blue container).
-
-const GVSU_BLUE = '#0032A0'
+// Light slide  → shown in its native blue, unboxed — reads fine directly
+//                on a light background without needing a colored pill.
 
 function GVSULogoSVG({ isDark = true }) {
-  if (isDark) {
-    return (
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'grayscale(1) brightness(20)',
-          mixBlendMode: 'screen',
-        }}
-      />
-    )
-  }
-  // Light theme — white mark inside a GVSU-blue rounded badge
   return (
-    <div style={{
-      background: GVSU_BLUE,
-      borderRadius: '16%',
-      padding: '10%',
-      lineHeight: 0,
-      display: 'block',
-    }}>
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'brightness(0) invert(1)',
-        }}
-      />
-    </div>
+    <img
+      src="/gvsu-logo.png"
+      alt="GVSU"
+      draggable={false}
+      style={{
+        width: '100%', height: 'auto', display: 'block',
+        filter: isDark ? 'grayscale(1) brightness(20)' : 'none',
+        mixBlendMode: isDark ? 'screen' : 'normal',
+      }}
+    />
   )
 }
 

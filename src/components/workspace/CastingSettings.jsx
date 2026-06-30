@@ -397,7 +397,6 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
           />
           <span>
             Also regenerate audio for scenes that already have voice, using the new voice
-            <span className="block text-slate-400 dark:text-slate-600">Uses your voice API credits for every scene that already has audio.</span>
           </span>
         </label>
 
