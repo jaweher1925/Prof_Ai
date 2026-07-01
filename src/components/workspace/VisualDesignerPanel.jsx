@@ -241,17 +241,29 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
   }, [firstModuleScenes, selected, scripts])
 
   // Does the currently selected scene's module still need the theme gate?
-  // Skipped if the module already has customized content (parsed.positions
-  // present means a real person already designed it) — only genuinely fresh
-  // modules get prompted, and only once per module per session.
+  // Skipped if the module already has customized content (parsed.theme is set
+  // in the main scene's slideDeckContent means a real person already chose a
+  // theme) — only genuinely fresh modules get prompted, and only once per
+  // module per session. Once chosen, the theme persists for the entire module.
   const selectedModuleId = selected?.script?.moduleId
   const selectedParsed = selected ? (() => { try { return JSON.parse(selected.scene.slideDeckContent || '{}') } catch { return {} } })() : {}
   const needsThemeGate = !!selected && !!selectedModuleId
-    && !selectedParsed.positions
+    && !selectedParsed.theme // Theme not yet chosen for this module
     && moduleThemes[selectedModuleId] === undefined
 
-  const resolveModuleTheme = (themeId) => {
-    if (selectedModuleId) setModuleThemes(p => ({ ...p, [selectedModuleId]: themeId }))
+  const resolveModuleTheme = async (themeId) => {
+    if (!selectedModuleId || !selected?.scene?.id) return
+    setModuleThemes(p => ({ ...p, [selectedModuleId]: themeId }))
+    try {
+      // Apply the theme to all segments in the scene
+      await fetch(`/api/scenes/${selected.scene.id}/apply-theme-to-segments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ theme: themeId }),
+      })
+      // Refresh scene data to show updated designs
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (e) { console.error('Failed to apply theme:', e) }
   }
 
   const handleGenerate = async (sceneId) => {

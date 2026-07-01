@@ -156,3 +156,59 @@ Return JSON with rewritten bullets:
     } catch (e: any) { ctx.error(e); return err500(e) }
   },
 })
+
+// POST /api/scenes/{id}/apply-theme-to-segments
+// Applies a theme to ALL segments in a scene at once
+app.http('applyThemeToSegments', {
+  methods: ['POST'], route: 'scenes/{id}/apply-theme-to-segments', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const sceneId = req.params.id
+      const body = (await req.json()) as { theme: string }
+      if (!body.theme) return { status: 400, jsonBody: { error: 'theme is required' } }
+
+      // Get all segments for this scene
+      const segments = await prisma.sceneSegment.findMany({
+        where: { sceneId },
+        orderBy: { orderIndex: 'asc' },
+      })
+
+      // Apply theme to each segment's slideDesign
+      const updated = await Promise.all(
+        segments.map(seg => {
+          try {
+            const design = JSON.parse(seg.slideDesign || '{}')
+            design.theme = body.theme
+            return prisma.sceneSegment.update({
+              where: { id: seg.id },
+              data: { slideDesign: JSON.stringify(design) },
+            })
+          } catch {
+            return prisma.sceneSegment.update({
+              where: { id: seg.id },
+              data: { slideDesign: JSON.stringify({ theme: body.theme }) },
+            })
+          }
+        })
+      )
+
+      // Also update the main scene slideDeckContent theme if it's a roadmap
+      const scene = await prisma.scene.findUnique({ where: { id: sceneId } })
+      if (scene) {
+        try {
+          const mainDesign = JSON.parse(scene.slideDeckContent || '{}')
+          if (mainDesign.layout === 'roadmap' || mainDesign.segments) {
+            mainDesign.theme = body.theme
+            await prisma.scene.update({
+              where: { id: sceneId },
+              data: { slideDeckContent: JSON.stringify(mainDesign) },
+            })
+          }
+        } catch {}
+      }
+
+      return { status: 200, jsonBody: { success: true, updatedCount: updated.length } }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
