@@ -33,8 +33,8 @@ const STAGES = [
   { id: 'library',         label: 'Library',         icon: Library,  desc: 'Upload sources',        grad: 'from-blue-500 to-blue-700'    },
   { id: 'script',          label: 'Script',          icon: FileText, desc: 'Generate scripts',      grad: 'from-indigo-500 to-blue-700'  },
   { id: 'voice',           label: 'Voice',           icon: Mic2,     desc: 'Text to audio',         grad: 'from-sky-500 to-blue-700'     },
-  { id: 'visual-designer', label: 'Visual Designer', icon: Image,    desc: 'Animated slides',       grad: 'from-cyan-500 to-blue-700'    },
   { id: 'avatar-studio',   label: 'Avatar Studio',   icon: Wand2,    desc: 'Avatar, voice & style',  grad: 'from-blue-500 to-indigo-700'  },
+  { id: 'visual-designer', label: 'Visual Designer', icon: Image,    desc: 'Animated slides',       grad: 'from-cyan-500 to-blue-700'    },
   { id: 'video',           label: 'Video',           icon: Video,    desc: 'Avatar videos',         grad: 'from-blue-600 to-sky-700'     },
 ]
 
@@ -158,8 +158,8 @@ export default function ProjectWorkspace() {
       case 'library':         return <SourcesPanel project={project} onStageChange={setActiveStage} />
       case 'script':          return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
       case 'voice':           return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
+      case 'avatar-studio':   return <AvatarStudioPanel project={project} onUpdate={invalidate} onContinue={() => setActiveStage('visual-designer')} />
       case 'visual-designer': return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
-      case 'avatar-studio':   return <AvatarStudioPanel project={project} onUpdate={invalidate} onContinue={() => setActiveStage('video')} />
       case 'video':           return <VideoPanel project={project} onUpdate={invalidate} />
       default:                return null
     }

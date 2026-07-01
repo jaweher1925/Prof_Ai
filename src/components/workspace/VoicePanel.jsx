@@ -15,7 +15,7 @@ import { agentsService } from '@/services/agents'
 import {
   Mic2, Play, Square, Loader2, CheckCircle, Sparkles, Edit2, X,
   ArrowRight, Image, SlidersHorizontal, ChevronDown, ChevronUp,
-  Volume2, RotateCcw
+  Volume2, RotateCcw, Wand2
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Badge from '@/components/ui/Badge'
@@ -278,11 +278,11 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-400">Ready to design your slides?</p>
           <button
-            onClick={() => onContinue?.('visual-designer')}
+            onClick={() => onContinue?.('avatar-studio')}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors"
           >
-            <Image className="w-4 h-4" />
-            Continue to Visual Designer
+            <Wand2 className="w-4 h-4" />
+            Continue to Avatar Studio
             <ArrowRight className="w-4 h-4" />
           </button>
         </div>

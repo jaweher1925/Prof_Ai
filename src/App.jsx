@@ -15,8 +15,6 @@ import Welcome from '@/pages/Welcome'
 import Dashboard from '@/pages/Dashboard'
 import ProjectWorkspace from '@/pages/ProjectWorkspace'
 import Library from '@/pages/Library'
-import Integrations from '@/pages/Integrations'
-import DigitalTwinVault from '@/pages/DigitalTwinVault'
 import Director from '@/pages/Director'
 import NotFound from '@/pages/NotFound'
 
@@ -71,20 +69,6 @@ function AnimatedRoutes() {
           <AppLayout>
             <PageTransition>
               <Director />
-            </PageTransition>
-          </AppLayout>
-        } />
-        <Route path="/vault" element={
-          <AppLayout>
-            <PageTransition>
-              <DigitalTwinVault />
-            </PageTransition>
-          </AppLayout>
-        } />
-        <Route path="/integrations" element={
-          <AppLayout>
-            <PageTransition>
-              <Integrations />
             </PageTransition>
           </AppLayout>
         } />

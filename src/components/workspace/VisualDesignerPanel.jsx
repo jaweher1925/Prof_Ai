@@ -34,12 +34,9 @@ import Spinner from '@/components/ui/Spinner'
 // narration-synced caption reveals on screen, which is the actually
 // attractive/legible effect: text appearing in step with the voiceover.
 const MOTION_STYLES = [
-  { id: 'progressive-fade', label: 'Progressive Fade', icon: '❆', cls: 'motion-progressive-fade', desc: 'Title then bullets fade in one by one' },
-  { id: 'slide-in-left',    label: 'Slide In',         icon: '→', cls: 'motion-slide-in-left',    desc: 'Elements slide in from the left' },
-  { id: 'scale-pop',        label: 'Scale Pop',        icon: '●', cls: 'motion-scale-pop',        desc: 'Elements pop in with a scale bounce' },
-  { id: 'word-by-word',     label: 'Word by Word',     icon: '⚡', cls: '', desc: 'Captions reveal one word at a time as the voiceover speaks' },
-  { id: 'line-by-line',     label: 'Line by Line',     icon: '☰', cls: '', desc: 'Each sentence fades in as it’s spoken' },
-  { id: 'all-at-once',      label: 'All at Once',      icon: '■', cls: '', desc: 'Full caption shown immediately once narration starts' },
+  { id: 'word-by-word', label: 'Word by Word', icon: '✦', cls: '', desc: 'Captions reveal one word at a time as the voiceover speaks' },
+  { id: 'line-by-line', label: 'Line by Line',  icon: '☰', cls: '', desc: 'Each sentence fades in together as it’s spoken' },
+  { id: 'all-at-once',  label: 'All at Once',   icon: '■', cls: '', desc: 'Full caption shown immediately once narration starts' },
 ]
 
 const LAYOUTS = [
@@ -169,35 +166,6 @@ const SLIDE_CSS = `
 /* Draggable layer hover ring */
 .pa-drag-layer:hover > .pa-drag-ring { outline: 2px solid #60A5FA; outline-offset: 3px; border-radius: 4px; }
 .pa-drag-layer:hover > .pa-drag-label { display: flex; }
-
-/* Slide entrance motion styles */
-@keyframes pa-slideLeft  { from{opacity:0;transform:translateX(-28px)} to{opacity:1;transform:translateX(0)} }
-@keyframes pa-scalePop   { from{opacity:0;transform:scale(0.82)}       to{opacity:1;transform:scale(1)} }
-
-.motion-progressive-fade .pa-title { animation:pa-fadeUp   0.55s 0.05s ease-out both }
-.motion-progressive-fade .pa-sub   { animation:pa-fadeUp   0.50s 0.30s ease-out both }
-.motion-progressive-fade .pa-b0    { animation:pa-fadeUp   0.45s 0.50s ease-out both }
-.motion-progressive-fade .pa-b1    { animation:pa-fadeUp   0.45s 0.65s ease-out both }
-.motion-progressive-fade .pa-b2    { animation:pa-fadeUp   0.45s 0.80s ease-out both }
-.motion-progressive-fade .pa-b3    { animation:pa-fadeUp   0.45s 0.95s ease-out both }
-.motion-progressive-fade .pa-b4    { animation:pa-fadeUp   0.45s 1.10s ease-out both }
-.motion-progressive-fade .pa-icon  { animation:pa-fadeUp   0.50s 0.15s ease-out both }
-.motion-slide-in-left .pa-title { animation:pa-slideLeft 0.50s 0.05s ease-out both }
-.motion-slide-in-left .pa-sub   { animation:pa-slideLeft 0.45s 0.20s ease-out both }
-.motion-slide-in-left .pa-b0    { animation:pa-slideLeft 0.40s 0.35s ease-out both }
-.motion-slide-in-left .pa-b1    { animation:pa-slideLeft 0.40s 0.48s ease-out both }
-.motion-slide-in-left .pa-b2    { animation:pa-slideLeft 0.40s 0.61s ease-out both }
-.motion-slide-in-left .pa-b3    { animation:pa-slideLeft 0.40s 0.74s ease-out both }
-.motion-slide-in-left .pa-b4    { animation:pa-slideLeft 0.40s 0.87s ease-out both }
-.motion-slide-in-left .pa-icon  { animation:pa-slideLeft 0.45s 0.10s ease-out both }
-.motion-scale-pop .pa-title { animation:pa-scalePop 0.45s 0.05s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-sub   { animation:pa-scalePop 0.40s 0.22s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-b0    { animation:pa-scalePop 0.38s 0.38s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-b1    { animation:pa-scalePop 0.38s 0.52s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-b2    { animation:pa-scalePop 0.38s 0.66s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-b3    { animation:pa-scalePop 0.38s 0.80s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-b4    { animation:pa-scalePop 0.38s 0.94s cubic-bezier(0.34,1.56,0.64,1) both }
-.motion-scale-pop .pa-icon  { animation:pa-scalePop 0.42s 0.12s cubic-bezier(0.34,1.56,0.64,1) both }
 `
 function injectCSS() {
   if (!document.getElementById('pa-css')) {
@@ -322,8 +290,8 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left: scene list */}
-        <div className="w-72 flex-shrink-0 border-r border-white/[0.06] overflow-y-auto bg-slate-950/60">
+        {/* Left: scene list - Clean inline layout */}
+        <div className="w-72 flex-shrink-0 border-r border-gray-700 overflow-y-auto bg-slate-950">
           {scripts.map((script, vi) => (
             <SceneGroupList key={script.id} script={script} videoIndex={vi}
               selectedId={selected?.scene?.id} generating={generating}
@@ -374,16 +342,16 @@ function ModuleThemeGate({ moduleTitle, onChoose }) {
           <Sparkles className="w-6 h-6 text-indigo-400" />
         </div>
         <p className="text-white font-medium mb-1">Choose a theme for this module</p>
-        <p className="text-slate-500 text-sm mb-6">
-          "{moduleTitle}" — applies to every scene in this module. You can still change it later per scene.
+        <p className="text-slate-500 text-sm mb-5">
+          "{moduleTitle}" — applies to every scene in this module
         </p>
-        <div className="grid grid-cols-1 gap-2">
+        <div className="space-y-1.5">
           {THEMES.map(th => (
             <button key={th.id} onClick={() => onChoose(th.id)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-white/[0.08] hover:border-white/25 transition-all text-left"
-              style={{ background: `linear-gradient(135deg, ${th.bg}, ${th.bgGrad})` }}>
-              <div className="w-4 h-4 rounded-full flex-shrink-0 border border-white/20" style={{ background: th.accent }} />
-              <span className="text-sm font-medium" style={{ color: th.text }}>{th.label}</span>
+              className="w-full flex items-center gap-3 px-3 py-2 rounded border border-white/[0.10] hover:border-indigo-400/40 hover:bg-white/[0.03] transition-all text-left"
+              style={{ background: th.isDark ? 'transparent' : 'rgba(248,250,252,0.05)' }}>
+              <div className="w-3 h-3 rounded-full flex-shrink-0 border border-white/20" style={{ background: th.accent }} />
+              <span className="text-sm font-medium text-white">{th.label}</span>
             </button>
           ))}
         </div>
@@ -434,12 +402,12 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
 
   return (
     <div>
-      <div className="px-3 py-2.5 sticky top-0 bg-slate-950/90 backdrop-blur-sm border-b border-white/[0.04] z-10">
-        <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Video {videoIndex + 1}</p>
-        <p className="text-xs text-white font-medium truncate">{script.title}</p>
+      <div className="px-3 py-2 sticky top-0 bg-slate-950 backdrop-blur-sm border-b border-gray-700 z-10">
+        <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
+        <p className="text-xs text-white font-medium truncate mt-0.5">{script.title}</p>
       </div>
       {isLoading
-        ? <div className="py-4 flex justify-center"><Spinner size="sm" /></div>
+        ? <div className="py-3 flex justify-center"><Spinner size="sm" /></div>
         : scenes.map((scene, i) => {
             const isSel  = selectedId === scene.id
             const hasAst = !!scene.visualAssetUrl
@@ -450,36 +418,35 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
             const layoutId   = parsed.layout || 'bullets'
             return (
               <button key={scene.id} onClick={() => onSelect(scene, scenes.length)}
-                className={`group w-full text-left border-b border-white/[0.03] transition-all ${
-                  isSel ? 'bg-indigo-600/10 border-l-2 border-l-indigo-500' : 'hover:bg-white/[0.03]'
+                className={`group w-full text-left border-b border-gray-800 transition-all ${
+                  isSel ? 'bg-indigo-500/15 border-l-2 border-l-indigo-500' : 'hover:bg-white/[0.02]'
                 }`}>
-                <div className="flex items-center gap-2.5 px-3 py-2.5">
-                  {/* Mini thumbnail */}
-                  <div className="w-14 h-9 rounded-lg overflow-hidden flex-shrink-0 relative border border-white/10"
-                    style={{ background: `linear-gradient(135deg, ${th.bg}, ${th.bgGrad})` }}>
-                    {hasAst
-                      ? <img src={scene.visualAssetUrl} className="w-full h-full object-cover" alt="" />
-                      : <>
-                          <div className="absolute" style={{ top:'-20%',right:'-15%',width:'55%',aspectRatio:'1',borderRadius:'50%',background:th.accent,opacity:0.12 }} />
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <span style={{ color:th.accent, fontSize:8, opacity:0.7 }}>{LAYOUTS.find(l=>l.id===layoutId)?.icon||'≡'}</span>
-                          </div>
-                          <div className="absolute bottom-0 left-0 right-0 px-1 pb-0.5"
-                            style={{ background:`linear-gradient(to top,${th.bg}cc,transparent)` }}>
-                            <p style={{ fontSize:4, color:th.text, fontWeight:600, lineHeight:1.3, opacity:0.9 }}>
-                              {slideTitle.slice(0,22)}
-                            </p>
-                          </div>
-                        </>
-                    }
+                <div className="flex items-center gap-2 px-3 py-2">
+                  {/* Compact inline layout - 3D styled icon */}
+                  <div className="w-8 h-8 rounded flex-shrink-0 flex items-center justify-center relative" 
+                    style={{ 
+                      background: `${th.accent}20`,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
+                      transform: 'perspective(600px) rotateX(5deg) rotateY(-5deg)',
+                      transformStyle: 'preserve-3d',
+                    }}>
+                    <span style={{ 
+                      color: th.accent, 
+                      fontSize: 11, 
+                      fontWeight: 700,
+                      textShadow: '0 2px 4px rgba(0,0,0,0.3)',
+                      transform: 'translateZ(8px)',
+                    }}>
+                      {LAYOUTS.find(l=>l.id===layoutId)?.icon||'≡'}
+                    </span>
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium text-white truncate">{slideTitle}</p>
-                    <p className="text-[10px] text-slate-600">
-                      {hasAst ? '✓ Asset ready' : isGen ? 'Generating…' : (LAYOUTS.find(l=>l.id===layoutId)?.label||'Bullets')}
+                    <p className="text-[10px] text-slate-500 truncate">
+                      {hasAst ? '✓ Ready' : isGen ? 'Generating...' : 'Draft'}
                     </p>
                   </div>
-                  {isGen    && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin flex-shrink-0" />}
+                  {isGen && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin flex-shrink-0" />}
                   {hasAst && !isGen && <CheckCircle className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
                   <button onClick={(e) => handleDeleteScene(e, scene.id)} title="Delete scene"
                     className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all flex-shrink-0">
@@ -589,35 +556,22 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   const [narrationPlaying,  setNarrationPlaying]  = useState(false)
   const [narrationProgress, setNarrationProgress] = useState(0) // 0..1
   const scriptWords = (scriptText || '').trim() ? scriptText.trim().split(/\s+/) : []
-  // Real sentence-based lines (not fixed-size word chunks) so "line by line"
-  // actually means one spoken sentence per line, matching how a narrator
-  // naturally pauses — e.g. "Welcome to the course. Today we'll cover X."
-  // reveals as two lines, not an arbitrary 8-word cut mid-sentence.
-  const scriptLines = (scriptText || '').trim()
-    ? scriptText.trim().split(/(?<=[.!?])\s+|\n+/).map(l => l.trim()).filter(Boolean)
-    : []
-  const lineWordCounts = scriptLines.map(l => l.split(/\s+/).filter(Boolean).length)
   // Text Motion mode controls how far ahead of the raw audio progress the
   // reveal jumps: word-by-word reveals exactly proportional to progress,
-  // line-by-line reveals a whole sentence as soon as its first word is
-  // reached, all-at-once shows the full caption the instant narration starts.
+  // line-by-line snaps forward in sentence-sized chunks, all-at-once shows
+  // the full caption the instant narration starts.
   const rawRevealCount = narrationPlaying || narrationProgress > 0
     ? Math.min(scriptWords.length, Math.max(1, Math.ceil(narrationProgress * scriptWords.length)))
     : 0
   const revealedWordCount = (() => {
     if (rawRevealCount === 0) return 0
     if (motion.id === 'all-at-once') return scriptWords.length
-    return rawRevealCount // word-by-word (and the base count line-by-line maps from)
-  })()
-  const revealedLineCount = (() => {
-    if (rawRevealCount === 0) return 0
-    if (motion.id === 'all-at-once') return scriptLines.length
-    let cum = 0, count = 0
-    for (let i = 0; i < lineWordCounts.length; i++) {
-      if (rawRevealCount > cum) count = i + 1
-      cum += lineWordCounts[i]
+    if (motion.id === 'line-by-line') {
+      // Snap forward to the end of the current ~8-word "line" chunk.
+      const chunk = 8
+      return Math.min(scriptWords.length, Math.ceil(rawRevealCount / chunk) * chunk)
     }
-    return count
+    return rawRevealCount // word-by-word
   })()
   const captionPreview = scriptWords.slice(0, revealedWordCount).join(' ')
 
@@ -938,39 +892,17 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           </div>
         )}
 
-        {/* Synced narration caption — reveal style follows the Text Motion
-            picker: word-by-word highlights words as spoken, line-by-line
-            reveals one full sentence at a time (capped to the last 3 so a
-            long script doesn't stack into a tall wall of text), all-at-once
-            shows the full caption the instant narration starts. */}
-        {narrationPlaying && (motion.id === 'line-by-line' ? scriptLines.length > 0 : scriptWords.length > 0) && (
+        {/* Synced narration caption — words appear one at a time as the
+            voiceover plays, instead of dumping the whole script at once. */}
+        {narrationPlaying && scriptWords.length > 0 && (
           <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
-            {motion.id === 'line-by-line' ? (
-              <div className="flex flex-col items-center gap-1">
-                {scriptLines.slice(Math.max(0, revealedLineCount - 3), revealedLineCount).map((line, i, arr) => (
-                  <p key={i}
-                    className="px-4 py-1.5 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm"
-                    style={{
-                      animation: i === arr.length - 1 ? 'pa-fadeUp 0.35s ease-out both' : undefined,
-                      opacity: i === arr.length - 1 ? 1 : 0.55,
-                    }}>
-                    {line}
-                  </p>
-                ))}
-              </div>
-            ) : motion.id === 'all-at-once' ? (
-              <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
-                {scriptText}
-              </p>
-            ) : (
-              <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
-                {scriptWords.slice(0, revealedWordCount).map((w, i) => (
-                  <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
-                    {w}{' '}
-                  </span>
-                ))}
-              </p>
-            )}
+            <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
+              {scriptWords.slice(0, revealedWordCount).map((w, i) => (
+                <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
+                  {w}{' '}
+                </span>
+              ))}
+            </p>
           </div>
         )}
 
@@ -978,7 +910,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           <audio ref={narrationAudioRef} src={scene.ttsAudioUrl} preload="metadata" className="hidden" />
         )}
       </div>
-
 
       {/* Drag hint */}
       <p className="text-[10px] text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
@@ -1207,36 +1138,39 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           )}
         </div>
 
-        {/* Layout + Theme */}
-        <div className="grid grid-cols-2 gap-5 pt-1">
+        {/* Layout + Theme - Inline horizontal layout */}
+        <div className="space-y-2 pt-1">
           <div>
-            <p className="text-xs font-semibold text-white mb-2">Layout</p>
-            <div className="grid grid-cols-3 gap-1.5">
+            <p className="text-xs font-semibold text-white mb-1.5">Layout</p>
+            <div className="flex gap-1 overflow-x-auto pb-1">
               {LAYOUTS.map(l => (
                 <button key={l.id} onClick={()=>handleLayoutChange(l.id)}
-                  className={`p-2 rounded-xl border text-center transition-all ${
+                  title={l.label}
+                  className={`flex-shrink-0 w-8 h-8 rounded-lg border transition-all flex items-center justify-center ${
                     layout===l.id
-                      ?'border-indigo-500/50 bg-indigo-500/10 text-white'
-                      :'border-white/[0.06] bg-slate-800/40 text-slate-500 hover:border-white/20 hover:text-slate-300'
-                  }`}>
-                  <div className="text-sm mb-0.5">{l.icon}</div>
-                  <div className="text-[9px] font-medium">{l.label}</div>
+                      ?'border-indigo-500 bg-indigo-500/20 text-white shadow-lg shadow-indigo-500/20'
+                      :'border-white/[0.10] bg-slate-800/50 text-slate-400 hover:border-white/25 hover:bg-slate-800/80 hover:text-slate-200'
+                  }`}
+                  style={{
+                    transform: layout===l.id ? 'translateZ(4px) perspective(600px)' : 'none',
+                    textShadow: layout===l.id ? '0 2px 4px rgba(0,0,0,0.3)' : 'none',
+                  }}>
+                  <div className="text-sm font-bold">{l.icon}</div>
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-white mb-2">Theme</p>
-            <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-white mb-1.5">Theme</p>
+            <div className="flex gap-1 overflow-x-auto pb-1">
               {THEMES.map(th => (
                 <button key={th.id} onClick={()=>{ setTheme(th.id); saveContent() }}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border transition-all ${
-                    theme===th.id?'border-white/25':'border-white/[0.06] hover:border-white/15'}`}
-                  style={{ background: theme===th.id ? th.bg+'60' : undefined }}>
-                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background:th.accent }} />
-                  <span className="text-xs text-slate-300">{th.label}</span>
-                  {theme===th.id && <CheckCircle className="w-3 h-3 text-white ml-auto" />}
+                  title={th.label}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded border transition-all text-xs whitespace-nowrap ${
+                    theme===th.id?'border-indigo-400 bg-indigo-500/15 text-white shadow-lg shadow-indigo-500/15':'border-white/[0.10] bg-slate-800/50 text-slate-300 hover:border-white/25 hover:bg-slate-800/80'}`}>
+                  <span>{th.label}</span>
+                  {theme===th.id && <span className="ml-1">✓</span>}
                 </button>
               ))}
             </div>
@@ -1448,7 +1382,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
   return (
     <div
       ref={containerRef}
-      className={`relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none ${motionCls || ''}`}
+      className="relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none"
       style={{ aspectRatio:'16/9', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
     >
       {/* Geometric background (animated) */}
@@ -1539,11 +1473,10 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
       <div
         className="absolute pointer-events-none overflow-hidden"
         style={{
-          bottom: '0%', right: '0%',
-          width: '34%', height: '62%',
-          border: avatarImageUrl ? '2px solid rgba(255,255,255,0.4)' : '1.5px dashed rgba(255,255,255,0.25)',
-          borderRadius: '14px 0 0 0',
-          boxShadow: avatarImageUrl ? '-8px 0 28px rgba(0,0,0,0.35)' : 'none',
+          bottom: '2%', right: '1.5%',
+          width: '22%', height: '38%',
+          border: avatarImageUrl ? '1.5px solid rgba(255,255,255,0.35)' : '1.5px dashed rgba(255,255,255,0.25)',
+          borderRadius: '10px',
           background: avatarImageUrl ? '#0f172a' : 'rgba(0,0,0,0.18)',
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
@@ -1555,10 +1488,10 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
           <img src={avatarImageUrl} alt="Presenter avatar" className="w-full h-full object-cover" />
         ) : (
           <>
-            <svg viewBox="0 0 24 24" style={{ width:'22%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
+            <svg viewBox="0 0 24 24" style={{ width:'18%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
               <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
             </svg>
-            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(6px,1vw,11px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
+            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(5px,0.8vw,9px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
               PRESENTER<br/>AVATAR
             </span>
           </>
@@ -1721,26 +1654,48 @@ function SlideBackground({ theme }) {
 
 // ─── GVSU Logo ────────────────────────────────────────────────────────────────
 // Uses /gvsu-logo.png (the actual circular GV emblem — blue mark on black bg).
-// Always rendered bare — no frame/badge/box around it on either theme, so
-// dragging it on the slide just moves the logo itself.
 //
 // Dark slides  → grayscale + max-brightness makes the mark white,
 //                mix-blend-mode:screen removes the black background.
-// Light slide  → shown in its native blue, unboxed — reads fine directly
-//                on a light background without needing a colored pill.
+// Light slide  → white mark on a GVSU-blue pill (filter:invert removes
+//                the black bg inside the blue container).
+
+const GVSU_BLUE = '#0032A0'
 
 function GVSULogoSVG({ isDark = true }) {
+  if (isDark) {
+    return (
+      <img
+        src="/gvsu-logo.png"
+        alt="GVSU"
+        draggable={false}
+        style={{
+          width: '100%', height: 'auto', display: 'block',
+          filter: 'grayscale(1) brightness(20)',
+          mixBlendMode: 'screen',
+        }}
+      />
+    )
+  }
+  // Light theme — white mark inside a GVSU-blue rounded badge
   return (
-    <img
-      src="/gvsu-logo.png"
-      alt="GVSU"
-      draggable={false}
-      style={{
-        width: '100%', height: 'auto', display: 'block',
-        filter: isDark ? 'grayscale(1) brightness(20)' : 'none',
-        mixBlendMode: isDark ? 'screen' : 'normal',
-      }}
-    />
+    <div style={{
+      background: GVSU_BLUE,
+      borderRadius: '16%',
+      padding: '10%',
+      lineHeight: 0,
+      display: 'block',
+    }}>
+      <img
+        src="/gvsu-logo.png"
+        alt="GVSU"
+        draggable={false}
+        style={{
+          width: '100%', height: 'auto', display: 'block',
+          filter: 'brightness(0) invert(1)',
+        }}
+      />
+    </div>
   )
 }
 

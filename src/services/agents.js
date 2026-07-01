@@ -85,6 +85,15 @@ export const agentsService = {
   runMergeModuleVideo: (moduleId) =>
     apiClient.post('/mergeModuleVideo', { module_id: moduleId }),
 
+  // Image Generation
+
+  /** Generate AI background image for slide using Gemini */
+  generateSlideImage: (sceneId, customPrompt) =>
+    apiClient.post('/generateSlideImage', { 
+      scene_id: sceneId,
+      custom_prompt: customPrompt || undefined,
+    }),
+
   // Bulk
 
   /** Trigger TTS + Visual generation for all scenes in a project/module */

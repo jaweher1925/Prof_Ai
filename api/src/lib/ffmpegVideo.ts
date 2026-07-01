@@ -635,8 +635,21 @@ function buildSegmentSlideSvg(segment: RenderableSegment, moduleTitle = '', segI
   try { design = JSON.parse(segment.slideDesign || '{}') } catch { /* malformed JSON — use fallback render */ }
   
   // ENFORCE: Always use saved design if it exists, never fall back to legacy
-  // This ensures user's Visual Designer work is NEVER silently ignored
-  if (design.title || design.subtitle || design.blocks?.length || design.theme) {
+  // This ensures user's Visual Designer work is NEVER silently ignored.
+  // Check for ANY design attributes: title, subtitle, layout, theme, blocks, imageUrl, positions, etc.
+  // If ANY of these exist, the user has designed this slide and we must use it.
+  const hasDesign = !!(
+    design.title || 
+    design.subtitle || 
+    design.blocks?.length || 
+    design.theme ||
+    design.layout ||
+    design.imageUrl ||
+    design.positions ||
+    Object.keys(design).length > 0  // Any other keys indicate design was touched
+  )
+  
+  if (hasDesign) {
     return buildSlide(design, moduleTitle, segIndex, segTotal)
   }
   
