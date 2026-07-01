@@ -160,9 +160,38 @@ The roadmap SVG renders identically in both:
 - `src/components/workspace/VisualDesignerPanel.jsx` (frontend roadmap display + avatar pass-through)
 - `api/src/functions/media.ts` (avatar image URL normalization)
 
+## Additional Improvements: Theme Application & Gate Management
+
+### Theme Application to All Segments (Latest)
+**Files**: `api/src/functions/scenes.ts`, `src/components/workspace/VisualDesignerPanel.jsx`
+
+**Changes**:
+1. Added new endpoint `POST /api/scenes/{id}/apply-theme-to-segments`
+   - Applies chosen theme to ALL segments in a scene at once
+   - Updates both segment designs and main scene slideDeckContent
+   - Ensures visual consistency across all slides
+
+2. Updated theme gate logic
+   - Now checks `slideDeckContent.theme` instead of `positions` to determine if theme is customized
+   - Once a theme is chosen, it's applied to all 5 segments
+   - Theme gate no longer reappears when navigating back to the module
+
+3. User experience flow:
+   - User opens Visual Designer → Theme gate appears once
+   - User chooses theme → Applied to all segments automatically
+   - User navigates away and back → No theme gate shown again
+   - Segments maintain the chosen theme for entire module
+
+### Benefits
+- **Consistency**: All segments use the same theme instead of individually assigned themes
+- **Efficiency**: Theme applied once to all segments instead of per-segment
+- **Simplicity**: No repeated prompts - choose theme once per module
+- **Clarity**: Visual flow (roadmap + segments) maintains design coherence
+
 ## Git Commits
 
 ```
+df66ab0 - feat: apply theme to all segments at once and prevent repeated theme gate prompts
 f4cba57 - fix: ensure avatar preview_image_url is available from HeyGen API response
 af8a3fb - feat: implement roadmap visualization for welcome scenes and improve visual designer
 ```
@@ -173,4 +202,6 @@ af8a3fb - feat: implement roadmap visualization for welcome scenes and improve v
 - Frontend builds successfully
 - Backend compiles without errors
 - All changes pushed to GitHub main branch
+- Theme now applies to all segments automatically
+- Theme gate shows once per module, not per session
 - Ready for testing in staging environment
