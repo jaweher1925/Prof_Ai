@@ -850,71 +850,77 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   }
 
   return (
-    <div className="p-6 max-w-3xl pa-page-enter">
+    <div className="p-6 max-w-none pa-page-enter">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* LEFT COLUMN: Preview (2/3 width on desktop) */}
+        <div className="lg:col-span-2">
+          {/* ── LIVE DRAGGABLE PREVIEW ───────────────────────────────────────── */}
+          <div className="mb-3 relative">
+            <EditableSlide
+              key={previewKey}
+              title={title} subtitle={subtitle} bullets={bullets}
+              layout={layout} theme={themeObj} motionCls={motion.cls}
+              positions={positions} showLogo={showLogo}
+              imageUrl={imageUrl} imageWidth={imageWidth} imageShape={imageShape}
+              moduleTitle={moduleTitle} sceneIndex={scene.orderIndex ?? 0} totalScenes={totalScenes}
+              onPositionChange={handlePositionChange}
+              onDragEnd={saveContent}
+              textCues={textCues}
+              avatarImageUrl={avatarImageUrl}
+              onDeleteLayer={handleDeleteLayer}
+            />
+            {/* Overlay buttons */}
+            <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
+              {scene.ttsAudioUrl && (
+                <button onClick={toggleNarration} title={narrationPlaying ? 'Stop narration' : 'Play narration with synced captions'}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                    narrationPlaying ? 'bg-red-500/80 hover:bg-red-500' : 'bg-black/60 hover:bg-black/80'}`}>
+                  {narrationPlaying ? <Square className="w-3 h-3 text-white" /> : <Volume2 className="w-3.5 h-3.5 text-white" />}
+                </button>
+              )}
+              <button onClick={() => setPreviewKey(k=>k+1)} title="Replay animations"
+                className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
+                <Play className="w-3.5 h-3.5 text-white" />
+              </button>
+              <button onClick={() => { setPositions(DEFAULT_POSITIONS[layout]||DEFAULT_POSITIONS.bullets); saveContent() }}
+                title="Reset element positions to layout defaults"
+                className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
+                <Move className="w-3.5 h-3.5 text-white" />
+              </button>
+            </div>
+            {saving && (
+              <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-400">
+                <Loader2 className="w-3 h-3 animate-spin" /> Saving…
+              </div>
+            )}
 
-      {/* ── LIVE DRAGGABLE PREVIEW ───────────────────────────────────────── */}
-      <div className="mb-3 relative">
-        <EditableSlide
-          key={previewKey}
-          title={title} subtitle={subtitle} bullets={bullets}
-          layout={layout} theme={themeObj} motionCls={motion.cls}
-          positions={positions} showLogo={showLogo}
-          imageUrl={imageUrl} imageWidth={imageWidth} imageShape={imageShape}
-          moduleTitle={moduleTitle} sceneIndex={scene.orderIndex ?? 0} totalScenes={totalScenes}
-          onPositionChange={handlePositionChange}
-          onDragEnd={saveContent}
-          textCues={textCues}
-          avatarImageUrl={avatarImageUrl}
-          onDeleteLayer={handleDeleteLayer}
-        />
-        {/* Overlay buttons */}
-        <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
-          {scene.ttsAudioUrl && (
-            <button onClick={toggleNarration} title={narrationPlaying ? 'Stop narration' : 'Play narration with synced captions'}
-              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-                narrationPlaying ? 'bg-red-500/80 hover:bg-red-500' : 'bg-black/60 hover:bg-black/80'}`}>
-              {narrationPlaying ? <Square className="w-3 h-3 text-white" /> : <Volume2 className="w-3.5 h-3.5 text-white" />}
-            </button>
-          )}
-          <button onClick={() => setPreviewKey(k=>k+1)} title="Replay animations"
-            className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-            <Play className="w-3.5 h-3.5 text-white" />
-          </button>
-          <button onClick={() => { setPositions(DEFAULT_POSITIONS[layout]||DEFAULT_POSITIONS.bullets); saveContent() }}
-            title="Reset element positions to layout defaults"
-            className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-            <Move className="w-3.5 h-3.5 text-white" />
-          </button>
+            {/* Synced narration caption — words appear one at a time as the
+                voiceover plays, instead of dumping the whole script at once. */}
+            {narrationPlaying && scriptWords.length > 0 && (
+              <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
+                <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
+                  {scriptWords.slice(0, revealedWordCount).map((w, i) => (
+                    <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
+                      {w}{' '}
+                    </span>
+                  ))}
+                </p>
+              </div>
+            )}
+
+            {scene.ttsAudioUrl && (
+              <audio ref={narrationAudioRef} src={scene.ttsAudioUrl} preload="metadata" className="hidden" />
+            )}
+          </div>
+
+          {/* Drag hint */}
+          <p className="text-[10px] text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
+            <Move className="w-3 h-3" /> Hover any element on the slide and drag to reposition it
+          </p>
         </div>
-        {saving && (
-          <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-400">
-            <Loader2 className="w-3 h-3 animate-spin" /> Saving…
-          </div>
-        )}
 
-        {/* Synced narration caption — words appear one at a time as the
-            voiceover plays, instead of dumping the whole script at once. */}
-        {narrationPlaying && scriptWords.length > 0 && (
-          <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
-            <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
-              {scriptWords.slice(0, revealedWordCount).map((w, i) => (
-                <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
-                  {w}{' '}
-                </span>
-              ))}
-            </p>
-          </div>
-        )}
-
-        {scene.ttsAudioUrl && (
-          <audio ref={narrationAudioRef} src={scene.ttsAudioUrl} preload="metadata" className="hidden" />
-        )}
-      </div>
-
-      {/* Drag hint */}
-      <p className="text-[10px] text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
-        <Move className="w-3 h-3" /> Hover any element on the slide and drag to reposition it
-      </p>
+        {/* RIGHT COLUMN: Controls (1/3 width on desktop) */}
+        <div className="lg:col-span-1 space-y-4 max-h-[calc(100vh-150px)] overflow-y-auto pr-2">
 
       {/* ── LOGO TOGGLE ────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-3 p-3 rounded-xl bg-slate-900/40 border border-white/[0.06]">
@@ -1313,6 +1319,8 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
               ? <><RotateCcw className="w-4 h-4"/>Regenerate Slide Image</>
               : <><Sparkles className="w-4 h-4"/>Generate Slide Image</>}
           </Button>
+        </div>
+      </div>
         </div>
       </div>
     </div>
