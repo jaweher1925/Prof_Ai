@@ -38,10 +38,25 @@ export default function VideoPanel({ project, onUpdate }) {
   })
 
   const handleGenerateVideo = async (scene) => {
-    if (!scene.ttsAudioUrl) {
-      setErrors(prev => ({ ...prev, [scene.id]: 'Generate voice audio first (Stage 3)' }))
-      return
+    // Check if scene has segments
+    if (scene.segments && scene.segments.length > 0) {
+      // For segmented scenes, check if ALL segments have TTS
+      const missingSegments = scene.segments.filter(s => !s.ttsAudioUrl)
+      if (missingSegments.length > 0) {
+        setErrors(prev => ({
+          ...prev,
+          [scene.id]: `${missingSegments.length} segments missing audio. Generate voice for all segments first (Stage 3)`
+        }))
+        return
+      }
+    } else {
+      // For non-segmented scenes, check scene-level TTS
+      if (!scene.ttsAudioUrl) {
+        setErrors(prev => ({ ...prev, [scene.id]: 'Generate voice audio first (Stage 3)' }))
+        return
+      }
     }
+    
     setGenerating(prev => ({ ...prev, [scene.id]: true }))
     setErrors(prev => ({ ...prev, [scene.id]: null }))
     try {
@@ -273,8 +288,17 @@ function SceneVideoList({ scenes, generating, polling, errors, onGenerate, onPol
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{scene.scriptContent?.slice(0, 80)}…</p>
                 <div className="flex items-center gap-2 mt-1">
-                  <span className={`text-xs ${scene.ttsAudioUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600'}`}>
-                    {scene.ttsAudioUrl ? '✓ Audio ready' : '✗ No audio'}
+                  <span className={`text-xs ${
+                    scene.segments?.length > 0
+                      ? (scene.segments.every(s => s.ttsAudioUrl) ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600')
+                      : (scene.ttsAudioUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600')
+                  }`}>
+                    {scene.segments?.length > 0
+                      ? (scene.segments.every(s => s.ttsAudioUrl)
+                          ? `✓ Audio ready (${scene.segments.length} segments)`
+                          : `✗ Audio incomplete (${scene.segments.filter(s => !s.ttsAudioUrl).length}/${scene.segments.length} missing)`)
+                      : (scene.ttsAudioUrl ? '✓ Audio ready' : '✗ No audio')
+                    }
                   </span>
                   <span className={`text-xs ${scene.visualAssetUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600'}`}>
                     {scene.visualAssetUrl ? '✓ Visual ready' : '✗ No visual'}
