@@ -23,7 +23,11 @@ app.http('listHeyGenAvatars', {
       if (!key) return { status: 500, jsonBody: { error: 'HEYGEN_API_KEY not configured' } }
       const res = await fetch('https://api.heygen.com/v2/avatars', { headers: { 'x-api-key': key } })
       const data: any = await res.json()
-      const avatars = data?.data?.avatars ?? []
+      const avatars = (data?.data?.avatars ?? []).map((a: any) => ({
+        ...a,
+        // HeyGen returns 'preview_image_url' in their response, but ensure it's available
+        preview_image_url: a.preview_image_url || a.preview_picture_url || a.thumbnail_url || a.image_url || ''
+      }))
       avatarsCache = { at: Date.now(), data: avatars }
       return { status: 200, jsonBody: { avatars } }
     } catch (e: any) { ctx.error(e); return { status: 500, jsonBody: { error: e?.message } } }
