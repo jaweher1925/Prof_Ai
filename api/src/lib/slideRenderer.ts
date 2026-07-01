@@ -39,6 +39,8 @@ export interface SlideContent {
   // FEATURE: Transparent background option
   bgTransparent?: boolean  // Use transparent background instead of gradient
   bgColor?: string  // Override background color (hex)
+  // FEATURE: Roadmap layout - for welcome scenes with segments
+  segments?: Array<{ segment_type: string; slide_title?: string; text?: string }>
 }
 
 export const THEMES: Record<string, {
@@ -100,6 +102,11 @@ const TITLE_LINE_H    = 78
 const SUBTITLE_Y      = 330
 const DIVIDER_Y        = 380
 const CONTENT_Y        = 460
+
+// Roadmap layout constants (for visual flow diagrams)
+const ROADMAP_CIRCLE_RADIUS = 70
+const ROADMAP_START_Y = 450
+const ROADMAP_CIRCLE_SPACING = 360
 
 function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], startY: number): string {
   const items = blocks.find(b => b.type === 'bullets')?.items || []
@@ -214,6 +221,60 @@ function renderSummary(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
   return svg
 }
 
+/** Render a welcome scene roadmap with 5 circles showing the learning flow */
+function renderRoadmap(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], segments?: any[]): string {
+  if (!segments || segments.length === 0) return ''
+  
+  // Map segment types to colors and icons
+  const segmentConfig: Record<string, { color: string; icon: string; label: string }> = {
+    hook:        { color: '#06B6D4', icon: '📌', label: 'Hook' },
+    content:     { color: '#10B981', icon: '📚', label: 'Content' },
+    interaction: { color: '#F59E0B', icon: '💡', label: 'Think' },
+    recap:       { color: '#EC4899', icon: '✓', label: 'Recap' },
+  }
+  
+  const circleRadius = 70
+  const startX = 150
+  const centerY = 550
+  const spacing = 340
+  
+  let svg = ''
+  
+  // Draw connecting lines first (behind circles)
+  for (let i = 0; i < segments.length - 1; i++) {
+    const x1 = startX + i * spacing + circleRadius
+    const x2 = startX + (i + 1) * spacing - circleRadius
+    svg += `<line x1="${x1}" y1="${centerY}" x2="${x2}" y2="${centerY}" stroke="${t.accent}" stroke-width="3" opacity="0.3"/>`
+    svg += `<polygon points="${x2},${centerY} ${x2-15},${centerY-8} ${x2-15},${centerY+8}" fill="${t.accent}" opacity="0.3"/>`
+  }
+  
+  // Draw circles with segment info
+  for (let i = 0; i < Math.min(segments.length, 5); i++) {
+    const seg = segments[i]
+    const x = startX + i * spacing
+    const config = segmentConfig[seg.segment_type] || { color: t.accent, icon: '●', label: 'Step' }
+    
+    // Circle background gradient
+    svg += `<defs><radialGradient id="grad${i}" cx="40%" cy="40%"><stop offset="0%" style="stop-color:${config.color};stop-opacity:0.3" /><stop offset="100%" style="stop-color:${config.color};stop-opacity:0.1" /></radialGradient></defs>`
+    svg += `<circle cx="${x}" cy="${centerY}" r="${circleRadius}" fill="url(#grad${i})" stroke="${config.color}" stroke-width="4" opacity="0.8"/>`
+    
+    // Icon
+    svg += `<text x="${x}" y="${centerY + 18}" font-family="Arial,sans-serif" font-size="56" text-anchor="middle" fill="${config.color}">${config.icon}</text>`
+    
+    // Label
+    svg += `<text x="${x}" y="${centerY + 130}" font-family="Arial,sans-serif" font-size="26" text-anchor="middle" fill="${t.title}" font-weight="700">${config.label}</text>`
+    
+    // Description
+    const description = seg.slide_title || config.label
+    const wrapped = wrap(description, 18)
+    wrapped.slice(0, 2).forEach((line, idx) => {
+      svg += `<text x="${x}" y="${centerY + 170 + idx * 28}" font-family="Arial,sans-serif" font-size="14" text-anchor="middle" fill="${t.body}" opacity="0.7">${esc(line)}</text>`
+    })
+  }
+  
+  return svg
+}
+
 /** Render a full themed 1920x1080 slide SVG from design data. Used for both
  *  the Visual Designer's still-image preview AND the video render pipeline. */
 export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex: number, totalScenes: number = 1): string {
@@ -270,6 +331,9 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
       break
     case 'summary':
       contentSvg = renderSummary(blocks, t)
+      break
+    case 'roadmap':
+      contentSvg = renderRoadmap(blocks, t, (slide as any).segments)
       break
     default:
       contentSvg = renderBullets(blocks, t, CONTENT_Y)

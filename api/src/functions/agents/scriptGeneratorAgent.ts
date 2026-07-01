@@ -284,6 +284,74 @@ function buildQuestionSegment(q: QuizQuestion, idx: number): GeneratedSegment {
   }
 }
 
+/** Generate auto-designed slides for welcome segment based on its type */
+function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: string): string {
+  const designs: Record<string, SlideContent> = {
+    hook: {
+      layout: 'title-hero',
+      theme: 'ocean',
+      title: segment.slide_title || 'Hook',
+      subtitle: 'Grab attention',
+      blocks: [{
+        type: 'bullets',
+        items: segment.elements
+          .filter(el => el.type === 'bullet' && el.text)
+          .map(el => ({ text: el.text || '', level: 1 }))
+      }],
+      imagePrompt: segment.image_prompt,
+    },
+    content: {
+      layout: 'bullets',
+      theme: 'academic',
+      title: segment.slide_title || 'Content',
+      subtitle: 'Key concepts',
+      blocks: [{
+        type: 'bullets',
+        items: segment.elements
+          .filter(el => el.type === 'bullet' && el.text)
+          .map((el, i) => ({ text: el.text || '', level: i === 0 ? 1 : 2 }))
+      }],
+      imagePrompt: segment.image_prompt,
+    },
+    interaction: {
+      layout: 'definition',
+      theme: 'corporate',
+      title: '💡 ' + (segment.slide_title || 'Think About This'),
+      subtitle: 'Pause and reflect',
+      blocks: [{
+        type: 'bullets',
+        items: [{text: segment.text || '', level: 1}]
+      }],
+    },
+    recap: {
+      layout: 'summary',
+      theme: 'dark-navy',
+      title: '✓ ' + (segment.slide_title || 'Recap'),
+      subtitle: 'Key takeaways',
+      blocks: [{
+        type: 'bullets',
+        items: segment.elements
+          .filter(el => el.type === 'bullet' && el.text)
+          .map(el => ({ text: el.text || '', level: 1 }))
+      }],
+    },
+    question: {
+      layout: 'bullets',
+      theme: 'corporate',
+      title: segment.slide_title || 'Question',
+      blocks: [{
+        type: 'bullets',
+        items: segment.elements
+          .filter(el => el.type === 'bullet' && el.text)
+          .map(el => ({ text: el.text || '', level: 1 }))
+      }],
+    },
+  }
+  
+  const design = designs[segment.segment_type] || designs.content
+  return JSON.stringify(design)
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 async function scriptGeneratorAgentHandler(
@@ -488,6 +556,8 @@ Return this exact JSON shape:
               elements:    JSON.stringify(seg.elements ?? []),
               imagePrompt: seg.image_prompt,
               animation:   seg.animation,
+              // AUTO-DESIGN: Each welcome segment gets a designed slide
+              slideDesign: buildWelcomeSegmentDesign(seg, mod.title),
             },
           })
         }
@@ -524,6 +594,18 @@ Return this exact JSON shape:
             ]),
             imagePrompt: s.slide_content?.imagePrompt,
             animation:   s.text_animation_type === 'static' ? 'fade-in' : undefined,
+            // AUTO-DESIGN: Create a designed slide for each content segment
+            slideDesign: JSON.stringify({
+              layout: 'bullets',
+              theme: 'academic',
+              title: s.slide_content?.title || 'Content',
+              subtitle: 'Key points to understand',
+              blocks: [{
+                type: 'bullets',
+                items: (bulletsBlock?.items ?? []).map((it, i) => ({ text: it.text, level: i === 0 ? 1 : 2 }))
+              }],
+              imagePrompt: s.slide_content?.imagePrompt,
+            }),
           },
         })
         scenes.push(scene)
@@ -557,6 +639,8 @@ Return this exact JSON shape:
               slideTitle:  seg.slide_title,
               elements:    JSON.stringify(seg.elements ?? []),
               animation:   seg.animation,
+              // AUTO-DESIGN: Each quiz segment gets a designed slide
+              slideDesign: buildWelcomeSegmentDesign(seg, mod.title),
             },
           })
         }
