@@ -1022,19 +1022,24 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           how the narration-synced caption reveals, which is the attractive
           effect: text appearing in step with the voiceover, not all at once. */}
       <div className="mb-5">
-        <p className="text-xs font-semibold text-white mb-1">Text Motion</p>
+        <p className="text-xs font-semibold text-white mb-1.5">Text Motion</p>
         <p className="text-[10px] text-slate-500 mb-2">How captions reveal while the voiceover plays</p>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5">
           {MOTION_STYLES.map(m => (
-            <button key={m.id} onClick={() => { setMotion(m); saveContent(); setPreviewKey(k=>k+1) }}
+            <button key={m.id} 
+              onClick={() => { 
+                setMotion(m)
+                saveContent()
+                setPreviewKey(k=>k+1) 
+              }}
               title={m.desc}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+              className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
                 motion.id===m.id
-                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                  : 'bg-slate-800/60 border-white/[0.06] text-slate-400 hover:border-white/20 hover:text-white'
+                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300 shadow-md shadow-indigo-500/20'
+                  : 'bg-slate-800/60 border-white/[0.06] text-slate-400 hover:border-white/20 hover:text-white hover:bg-slate-800/80'
               }`}>
-              <span className="text-[11px]">{m.icon}</span>
-              {m.label}
+              <div className="text-lg">{m.icon}</div>
+              <span className="text-[10px] leading-tight text-center">{m.label}</span>
             </button>
           ))}
         </div>
@@ -1163,14 +1168,15 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
           <div>
             <p className="text-xs font-semibold text-white mb-1.5">Theme</p>
-            <div className="flex gap-1 overflow-x-auto pb-1">
+            <div className="flex gap-2 overflow-x-auto pb-1">
               {THEMES.map(th => (
                 <button key={th.id} onClick={()=>{ setTheme(th.id); saveContent() }}
                   title={th.label}
-                  className={`flex-shrink-0 px-3 py-1.5 rounded border transition-all text-xs whitespace-nowrap ${
-                    theme===th.id?'border-indigo-400 bg-indigo-500/15 text-white shadow-lg shadow-indigo-500/15':'border-white/[0.10] bg-slate-800/50 text-slate-300 hover:border-white/25 hover:bg-slate-800/80'}`}>
-                  <span>{th.label}</span>
-                  {theme===th.id && <span className="ml-1">✓</span>}
+                  className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
+                    theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-lg shadow-indigo-500/15':'border-white/[0.10] bg-slate-800/50 hover:border-white/25 hover:bg-slate-800/80'}`}>
+                  <div className="w-4 h-4 rounded-full border border-white/30" style={{ backgroundColor: th.accent }}/>
+                  <span className={`text-xs font-medium whitespace-nowrap ${theme===th.id?'text-white':'text-slate-300'}`}>{th.label}</span>
+                  {theme===th.id && <span className="ml-0.5 text-white">✓</span>}
                 </button>
               ))}
             </div>
