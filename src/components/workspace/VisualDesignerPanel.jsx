@@ -446,10 +446,10 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
                   </div>
                   {isGen && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin flex-shrink-0" />}
                   {hasAst && !isGen && <CheckCircle className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
-                  <button onClick={(e) => handleDeleteScene(e, scene.id)} title="Delete scene"
-                    className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all flex-shrink-0">
+                  <div onClick={(e) => handleDeleteScene(e, scene.id)} title="Delete scene"
+                    className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all flex-shrink-0 cursor-pointer">
                     <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </div>
                 </div>
               </button>
             )
