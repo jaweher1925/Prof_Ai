@@ -283,9 +283,9 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
             Drag elements on the preview to reposition · 9 layouts · GVSU logo included
           </p>
         </div>
-        <button onClick={() => onContinue?.('avatar-studio')}
+        <button onClick={() => onContinue?.('video')}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors">
-          <Sparkles className="w-4 h-4" /> Continue to Avatar Studio <ArrowRight className="w-4 h-4" />
+          <Sparkles className="w-4 h-4" /> Continue to Video Generation <ArrowRight className="w-4 h-4" />
         </button>
       </div>
 
@@ -1029,7 +1029,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           effect: text appearing in step with the voiceover, not all at once. */}
       <div className="mb-5">
         <p className="text-xs font-semibold text-white mb-1.5">Text Motion</p>
-        <p className="text-[10px] text-slate-500 mb-2">How captions reveal while the voiceover plays</p>
+     
         <div className="grid grid-cols-3 gap-1.5">
           {MOTION_STYLES.map(m => (
             <button key={m.id} 
@@ -1058,7 +1058,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
         <div>
           <label className="block text-xs font-semibold text-white mb-1.5">
-            Slide Title <span className="font-normal text-slate-500">— 5-7 words</span>
+            Slide Title <span className="font-normal text-slate-500"></span>
           </label>
           <input value={title} onChange={e=>setTitle(e.target.value)} onBlur={saveContent}
             placeholder="Key concept students will learn"
@@ -1067,7 +1067,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
         <div>
           <label className="block text-xs font-semibold text-white mb-1.5">
-            Key Insight <span className="font-normal text-slate-500">— one-line takeaway</span>
+            Key Insight <span className="font-normal text-slate-500"></span>
           </label>
           <input value={subtitle} onChange={e=>setSubtitle(e.target.value)} onBlur={saveContent}
             placeholder="The main idea students should remember"
@@ -1078,7 +1078,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs font-semibold text-white">
-              Content Points <span className="font-normal text-slate-500">— drives chart / stats / grid too</span>
+              Content Points <span className="font-normal text-slate-500"></span>
             </label>
             <div className="flex items-center gap-1.5">
               {[
@@ -1269,9 +1269,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
             </div>
             {segments.filter(s => s.id === activeSegmentId).map(seg => (
               <div key={seg.id} className="p-3 rounded-xl bg-slate-800/30 border border-white/[0.04]">
-                <p className="flex items-center gap-1.5 text-[10px] text-indigo-300/80 mb-2">
-                  <Sparkles className="w-3 h-3" /> The canvas above is now this segment's own slide — edit title, layout, theme, bullets, and image just for it.
-                </p>
+              
                 {seg.slideTitle && (
                   <p className="text-[10px] text-blue-400/80 uppercase tracking-widest mb-1.5 font-semibold">
                     {seg.slideTitle}
