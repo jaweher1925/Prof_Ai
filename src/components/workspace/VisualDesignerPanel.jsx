@@ -877,6 +877,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
               textCues={textCues}
               avatarImageUrl={avatarImageUrl}
               onDeleteLayer={handleDeleteLayer}
+              segments={parsed.segments}
             />
             {/* Overlay buttons */}
             <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
@@ -1336,7 +1337,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
 // ─── Editable slide canvas (drag-to-reposition) ───────────────────────────────
 
-function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, onDeleteLayer }) {
+function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, onDeleteLayer, segments = [] }) {
   const containerRef  = useRef(null)
   const [activeDrag, setActiveDrag] = useState(null)
   const [activeResize, setActiveResize] = useState(null)
@@ -1484,7 +1485,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
       <DraggableLayer layerKey="content" pos={positions.content} width={LAYER_WIDTHS.content}
         isActive={activeDrag==='content'} isResizing={activeResize==='content'} label="Content"
         onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-        <ContentLayer layout={layout} bullets={bullets} subtitle={subtitle} theme={theme} />
+        <ContentLayer layout={layout} bullets={bullets} subtitle={subtitle} theme={theme} segments={segments} />
       </DraggableLayer>
 
       {/* Presenter avatar — shows the actually-selected avatar's thumbnail
@@ -1790,7 +1791,7 @@ function SubtitleLayer({ subtitle, layout, theme }) {
 
 // ─── Content layer (layout-specific, no title/subtitle) ──────────────────────
 
-function ContentLayer({ layout, bullets, subtitle, theme }) {
+function ContentLayer({ layout, bullets, subtitle, theme, segments }) {
   switch (layout) {
     case 'title-hero':  return <TitleHeroContent   theme={theme} />
     case 'bullets':     return <BulletsContent     bullets={bullets} theme={theme} />
@@ -1801,6 +1802,7 @@ function ContentLayer({ layout, bullets, subtitle, theme }) {
     case 'definition':  return <DefinitionContent  bullets={bullets} theme={theme} />
     case 'quote':       return <QuoteContent       bullets={bullets} theme={theme} />
     case 'summary':     return <SummaryContent     bullets={bullets} theme={theme} />
+    case 'roadmap':     return <RoadmapContent     segments={segments} theme={theme} />
     default:            return <BulletsContent     bullets={bullets} theme={theme} />
   }
 }
@@ -2054,3 +2056,58 @@ function SummaryContent({ bullets, theme }) {
     </div>
   )
 }
+
+function RoadmapContent({ segments, theme }) {
+  if (!segments || segments.length === 0) {
+    return <div style={{ color: theme.muted, textAlign: 'center', padding: '2em' }}>No segments configured</div>
+  }
+
+  const segmentConfig = {
+    hook:        { color: '#06B6D4', icon: '📌', label: 'Hook' },
+    content:     { color: '#10B981', icon: '📚', label: 'Content' },
+    interaction: { color: '#F59E0B', icon: '💡', label: 'Think' },
+    recap:       { color: '#EC4899', icon: '✓', label: 'Recap' },
+  }
+
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '2%' }}>
+      {segments.slice(0, 5).map((seg, i) => {
+        const config = segmentConfig[seg.segment_type] || { color: theme.accent, icon: '●', label: 'Step' }
+        return (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5em' }}>
+            {/* Arrow before circle (except first) */}
+            {i > 0 && (
+              <div style={{ color: theme.accent, opacity: 0.3, fontSize: '1.2em', marginBottom: '0.3em' }}>→</div>
+            )}
+            {/* Circle */}
+            <div style={{
+              width: FS(50, 6, 80),
+              height: FS(50, 6, 80),
+              borderRadius: '50%',
+              background: `${config.color}15`,
+              border: `2px solid ${config.color}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}>
+              <span style={{ fontSize: FS(20, 2.8, 36), lineHeight: 1 }}>{config.icon}</span>
+            </div>
+            {/* Label */}
+            <p style={{
+              color: config.color,
+              fontSize: FS(8, 1.2, 14),
+              fontWeight: 700,
+              textAlign: 'center',
+              margin: 0,
+              whiteSpace: 'nowrap',
+            }}>
+              {seg.slide_title || config.label}
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+

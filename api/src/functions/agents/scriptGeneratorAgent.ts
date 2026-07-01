@@ -73,10 +73,11 @@ interface SlideBlock   {
 interface SlideContent {
   title:        string
   subtitle?:    string
-  layout:       'title-hero' | 'bullets' | 'split' | 'quote' | 'definition' | 'summary'
+  layout:       'title-hero' | 'bullets' | 'split' | 'quote' | 'definition' | 'summary' | 'roadmap'
   theme?:       'dark-navy' | 'ocean' | 'academic' | 'light' | 'corporate'
   blocks:       SlideBlock[]
   imagePrompt?: string
+  segments?:    Array<{ segment_type: string; slide_title?: string; text?: string }>
 }
 
 interface ContentSceneOutput {
@@ -221,23 +222,21 @@ async function ensureSegmentElements(segment: GeneratedSegment): Promise<Generat
 
 function welcomeLegacySlide(welcome: WelcomeSceneOutput): SlideContent {
   const hook = welcome.segments.find(s => s.segment_type === 'hook')
-  const objectiveBullets = welcome.segments
-    .flatMap(s => s.elements.filter(el => el.type === 'bullet' && el.text))
-    .slice(0, 5)
-    .map((el, i) => ({ text: el.text as string, level: (i === 0 ? 1 : 2) as 1 | 2 }))
-
-  // NOTE: subtitle must never be the narration text (hook.text) — that's what
-  // the presenter SAYS, not what should be read on the slide. Showing it here
-  // duplicated the voiceover script directly under the slide title. Use the
-  // module's stated objective (if present) as a short, distinct tagline instead,
-  // and otherwise leave the subtitle blank rather than fall back to narration.
   const objectiveTagline = (welcome as any).objective || (welcome as any).learning_objective
+  
+  // Generate roadmap layout showing all 5 segments as a visual flow diagram
   return {
     title:    hook?.slide_title || welcome.title,
-    subtitle: typeof objectiveTagline === 'string' ? objectiveTagline.slice(0, 120) : undefined,
-    layout:   'title-hero',
+    subtitle: typeof objectiveTagline === 'string' ? objectiveTagline.slice(0, 120) : 'Module Overview',
+    layout:   'roadmap',
     theme:    'dark-navy',
-    blocks:   objectiveBullets.length ? [{ type: 'bullets', items: objectiveBullets }] : [],
+    blocks:   [],
+    // Pass segment metadata for roadmap rendering
+    segments: welcome.segments.map(s => ({
+      segment_type: s.segment_type,
+      slide_title: s.slide_title || s.segment_type.charAt(0).toUpperCase() + s.segment_type.slice(1),
+      text: s.text,
+    })),
     imagePrompt: hook?.image_prompt,
   }
 }
