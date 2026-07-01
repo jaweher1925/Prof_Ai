@@ -632,7 +632,9 @@ function wrapSvgText(text: string, max: number): string[] {
  */
 function buildSegmentSlideSvg(segment: RenderableSegment, moduleTitle = '', segIndex = 0, segTotal = 1): string {
   let design: SlideContent = {}
-  try { design = JSON.parse(segment.slideDesign || '{}') } catch { /* malformed JSON — use fallback render */ }
+  try { design = JSON.parse(segment.slideDesign || '{}') } catch (e) { 
+    console.warn(`[buildSegmentSlideSvg] Failed to parse slideDesign JSON for segment ${segment.id}: ${e}`)
+  }
   
   // ENFORCE: Always use saved design if it exists, never fall back to legacy
   // This ensures user's Visual Designer work is NEVER silently ignored.
@@ -650,9 +652,19 @@ function buildSegmentSlideSvg(segment: RenderableSegment, moduleTitle = '', segI
   )
   
   if (hasDesign) {
+    console.log(`[buildSegmentSlideSvg] Segment ${segment.id} (index ${segIndex}/${segTotal}): Using saved design`, {
+      hasTitle: !!design.title,
+      hasSubtitle: !!design.subtitle,
+      hasLayout: !!design.layout,
+      hasTheme: !!design.theme,
+      hasBlocks: design.blocks?.length || 0,
+      hasImageUrl: !!design.imageUrl,
+      imageUrl: design.imageUrl?.substring(0, 50),
+    })
     return buildSlide(design, moduleTitle, segIndex, segTotal)
   }
   
+  console.log(`[buildSegmentSlideSvg] Segment ${segment.id} (index ${segIndex}/${segTotal}): No design found, using legacy renderer`)
   return buildLegacySegmentSlideSvg(segment)
 }
 
@@ -737,6 +749,11 @@ export async function renderSceneSegmentsVideo(opts: {
   const missing = opts.segments.find(s => !s.ttsAudioUrl)
   if (missing) throw new Error(`Segment ${missing.id} has no narration audio yet — run TTS generation first.`)
 
+  console.log(`[renderSceneSegmentsVideo] Starting render for ${opts.segments.length} segments`, {
+    moduleTitle: opts.moduleTitle,
+    textAnimationType: opts.textAnimationType,
+  })
+
   const clipUrls: string[] = []
   const clipPaths: string[] = []
   const tmpSvgPaths: string[] = []
@@ -745,6 +762,12 @@ export async function renderSceneSegmentsVideo(opts: {
   try {
     for (let segIndex = 0; segIndex < opts.segments.length; segIndex++) {
       const seg = opts.segments[segIndex]
+      console.log(`[renderSceneSegmentsVideo] Processing segment ${segIndex}/${segTotal}`, {
+        segmentId: seg.id,
+        hasSlideDesign: !!seg.slideDesign,
+        slideDesignLength: seg.slideDesign?.length || 0,
+        slideDesignPreview: seg.slideDesign?.substring(0, 100),
+      })
       const svg = buildSegmentSlideSvg(seg, opts.moduleTitle || '', segIndex, segTotal)
       const imageUrl = writeSegmentSlideSvg(svg)
       const svgLocalPath = localPathFromUploadUrl(imageUrl)

@@ -222,11 +222,27 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const layout = slide.layout || 'bullets'
   const isLight = slide.theme === 'light'
 
+  console.log(`[buildSlide] Creating slide`, {
+    layout,
+    theme: slide.theme,
+    title: slide.title?.substring(0, 50),
+    subtitle: slide.subtitle?.substring(0, 50),
+    blocksCount: slide.blocks?.length,
+    imageUrl: !!slide.imageUrl,
+    imageUrlPreview: slide.imageUrl?.substring(0, 50),
+  })
+
   const titleY = layout === 'title-hero' ? 440 : TITLE_BASE_Y
   const titleFontSize = layout === 'title-hero' ? 84 : 64
   const titleText = esc((slide.title || '').slice(0, 90))
   const subtitleText = esc((slide.subtitle || '').slice(0, 90))
   const titleLines = layout === 'title-hero' ? [titleText] : wrap(titleText, 42)
+  
+  // Calculate subtitle Y based on number of title lines to avoid overlap
+  // If title is multi-line, push subtitle down further
+  const subtitleYAdjust = layout === 'title-hero' 
+    ? 330 
+    : Math.max(330, TITLE_BASE_Y + titleLines.length * TITLE_LINE_H + 30)
 
   let contentSvg = ''
   const blocks = slide.blocks || []
@@ -313,9 +329,9 @@ ${layout !== 'title-hero' ? (() => {
 
 <!-- Main title — fixed-height band, never overlaps content below -->
 ${titleLinesSvg}
-${subtitleText ? `<text x="100" y="${SUBTITLE_Y}" font-family="Arial,sans-serif" font-size="32"
+${subtitleText ? `<text x="100" y="${subtitleYAdjust}" font-family="Arial,sans-serif" font-size="32"
   fill="${t.accent}" font-weight="500" opacity="0.9">${subtitleText}</text>` : ''}
-<rect x="100" y="${DIVIDER_Y}" width="900" height="2" fill="${t.accent}" opacity="0.4" rx="1"/>
+<rect x="100" y="${Math.max(DIVIDER_Y, subtitleYAdjust + 50)}" width="900" height="2" fill="${t.accent}" opacity="0.4" rx="1"/>
 `
 })() : `
 <!-- Hero: module label centered at top -->

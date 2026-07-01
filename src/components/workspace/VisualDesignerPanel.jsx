@@ -664,13 +664,24 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
     }), {}))
   }
 
-  // File → base64 data URL
-  const handleFileUpload = (e) => {
+  // File → upload to server and get /api/uploads/... URL
+  // (not base64 data URL, since SVG rasterization doesn't handle embedded data URLs well)
+  const handleFileUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => { setImageUrl(ev.target.result); setTimeout(saveContent, 50) }
-    reader.readAsDataURL(file)
+    setImageUrl('')  // Clear while uploading
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/upload', { method: 'POST', body: formData })
+      if (res.ok) {
+        const data = await res.json()
+        setImageUrl(data.url || '')
+        setTimeout(saveContent, 50)
+      }
+    } catch (err) {
+      console.error('Image upload failed:', err)
+    }
     e.target.value = ''  // allow re-upload of same file
   }
 
