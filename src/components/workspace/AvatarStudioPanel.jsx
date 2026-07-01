@@ -591,33 +591,7 @@ export default function AvatarStudioPanel({ project, onUpdate, onContinue }) {
             in ffmpegVideo.ts actually uses, so Background/Layout/Radius
             changes are visible immediately instead of only as abstract
             swatches and a toggle. */}
-        <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/40 p-4">
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-3 tracking-wide font-medium">PREVIEW</label>
-          <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-950 border border-slate-700/60">
-            <div className="absolute inset-x-6 top-6 flex flex-col gap-1.5 opacity-30">
-              <div className="h-2 w-2/5 rounded bg-slate-400" />
-              <div className="h-1.5 w-1/3 rounded bg-slate-500" />
-            </div>
-            <div
-              className="absolute flex items-center justify-center"
-              style={{
-                right: '1.5%', bottom: '2%', width: '22%', height: '38%',
-                backgroundColor: background.type === 'transparent' ? 'transparent' : (background.value || '#1E293B'),
-                clipPath: isCircle ? `circle(${background.radius ?? 100}% at 50% 50%)` : 'none',
-                outline: background.type === 'transparent' ? '1px dashed rgba(255,255,255,0.35)' : 'none',
-                overflow: 'hidden',
-              }}
-            >
-              {avatarThumb
-                ? <img src={avatarThumb} className="w-full h-full object-cover" alt="" />
-                : <User className="w-6 h-6 text-slate-300" />}
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-400 dark:text-slate-600 mt-2">
-            Roughly how your presenter will sit over every scene's slide — {isCircle ? `circular, ${radiusPx}px radius` : 'square'},{' '}
-            {background.type === 'transparent' ? 'transparent background' : `on ${background.value}`}.
-          </p>
-        </div>
+       
         </div>
       </div>
     </div>

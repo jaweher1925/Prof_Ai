@@ -279,9 +279,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
           <h2 className="text-base font-semibold text-white flex items-center gap-2">
             <Layers className="w-4 h-4 text-indigo-400" /> Visual Designer
           </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Drag elements on the preview to reposition · 9 layouts · GVSU logo included
-          </p>
+         
         </div>
         <button onClick={() => onContinue?.('video')}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors">
@@ -850,10 +848,10 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   }
 
   return (
-    <div className="p-6 max-w-none pa-page-enter">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT COLUMN: Preview (2/3 width on desktop) */}
-        <div className="lg:col-span-2">
+    <div className="p-6 max-w-4xl pa-page-enter">
+      <div className="grid grid-cols-1 gap-6">
+        {/* PREVIEW - Full width on top */}
+        <div>
           {/* ── LIVE DRAGGABLE PREVIEW ───────────────────────────────────────── */}
           <div className="mb-3 relative">
             <EditableSlide
@@ -919,8 +917,8 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
           </p>
         </div>
 
-        {/* RIGHT COLUMN: Controls (1/3 width on desktop) */}
-        <div className="lg:col-span-1 space-y-4 max-h-[calc(100vh-150px)] overflow-y-auto pr-2">
+        {/* CONTROLS - Full width below preview */}
+        <div className="space-y-4">
 
       {/* ── LOGO TOGGLE ────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-3 p-3 rounded-xl bg-slate-900/40 border border-white/[0.06]">
