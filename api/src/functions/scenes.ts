@@ -174,41 +174,101 @@ app.http('applyThemeToSegments', {
         orderBy: { orderIndex: 'asc' },
       })
 
-      // Apply theme to each segment's slideDesign
+      // Apply theme to each segment's slideDesign, preserving layout and other properties
       const updated = await Promise.all(
         segments.map(seg => {
           try {
             const design = JSON.parse(seg.slideDesign || '{}')
+            // Update only the theme, keep layout, positions, and other properties
             design.theme = body.theme
             return prisma.sceneSegment.update({
               where: { id: seg.id },
               data: { slideDesign: JSON.stringify(design) },
             })
           } catch {
+            // If design is malformed, create a new one with just the theme
             return prisma.sceneSegment.update({
               where: { id: seg.id },
-              data: { slideDesign: JSON.stringify({ theme: body.theme }) },
+              data: { slideDesign: JSON.stringify({ theme: body.theme, layout: 'bullets' }) },
             })
           }
         })
       )
 
-      // Also update the main scene slideDeckContent theme if it's a roadmap
+      // Also update the main scene slideDeckContent theme if it exists
       const scene = await prisma.scene.findUnique({ where: { id: sceneId } })
       if (scene) {
         try {
           const mainDesign = JSON.parse(scene.slideDeckContent || '{}')
-          if (mainDesign.layout === 'roadmap' || mainDesign.segments) {
-            mainDesign.theme = body.theme
-            await prisma.scene.update({
-              where: { id: sceneId },
-              data: { slideDeckContent: JSON.stringify(mainDesign) },
-            })
-          }
+          // Update theme on main design too
+          mainDesign.theme = body.theme
+          await prisma.scene.update({
+            where: { id: sceneId },
+            data: { slideDeckContent: JSON.stringify(mainDesign) },
+          })
         } catch {}
       }
 
+      ctx.log(`Applied theme ${body.theme} to ${updated.length} segments in scene ${sceneId}`)
       return { status: 200, jsonBody: { success: true, updatedCount: updated.length } }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// POST /api/modules/{id}/change-theme
+// Allows changing theme for all scenes in a module
+app.http('changeModuleTheme', {
+  methods: ['POST'], route: 'modules/{id}/change-theme', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const moduleId = req.params.id
+      const body = (await req.json()) as { theme: string }
+      if (!body.theme) return { status: 400, jsonBody: { error: 'theme is required' } }
+
+      // Get all scenes in this module
+      const scenes = await prisma.scene.findMany({
+        where: { moduleId },
+        include: { segments: true },
+      })
+
+      let totalSegmentsUpdated = 0
+
+      // Update theme for all segments in all scenes
+      for (const scene of scenes) {
+        // Update all segments in this scene
+        for (const segment of scene.segments) {
+          try {
+            const design = JSON.parse(segment.slideDesign || '{}')
+            design.theme = body.theme
+            await prisma.sceneSegment.update({
+              where: { id: segment.id },
+              data: { slideDesign: JSON.stringify(design) },
+            })
+            totalSegmentsUpdated++
+          } catch {
+            // Try to update with minimal design
+            await prisma.sceneSegment.update({
+              where: { id: segment.id },
+              data: { slideDesign: JSON.stringify({ theme: body.theme }) },
+            })
+            totalSegmentsUpdated++
+          }
+        }
+
+        // Update main scene design
+        try {
+          const mainDesign = JSON.parse(scene.slideDeckContent || '{}')
+          mainDesign.theme = body.theme
+          await prisma.scene.update({
+            where: { id: scene.id },
+            data: { slideDeckContent: JSON.stringify(mainDesign) },
+          })
+        } catch {}
+      }
+
+      ctx.log(`Applied theme ${body.theme} to ${totalSegmentsUpdated} segments across module ${moduleId}`)
+      return { status: 200, jsonBody: { success: true, scenesUpdated: scenes.length, segmentsUpdated: totalSegmentsUpdated } }
     } catch (e) { ctx.error(e); return err500(e) }
   },
 })
