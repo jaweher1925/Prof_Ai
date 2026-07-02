@@ -23,7 +23,19 @@ app.http('listHeyGenAvatars', {
       if (!key) return { status: 500, jsonBody: { error: 'HEYGEN_API_KEY not configured' } }
       const res = await fetch('https://api.heygen.com/v2/avatars', { headers: { 'x-api-key': key } })
       const data: any = await res.json()
-      const avatars = (data?.data?.avatars ?? []).map((a: any) => ({
+      // Include talking photos too (custom photo avatars live in a separate
+      // array with a different id field) — normalized to avatar_id so the
+      // Visual Designer preview and video pipeline can find them by one key.
+      const rawList = [
+        ...(data?.data?.avatars ?? []),
+        ...(data?.data?.talking_photos ?? []).map((tp: any) => ({
+          ...tp,
+          avatar_id: tp.talking_photo_id,
+          avatar_name: tp.talking_photo_name || tp.name || 'Talking Photo',
+          is_talking_photo: true,
+        })),
+      ]
+      const avatars = rawList.map((a: any) => ({
         ...a,
         // HeyGen returns 'preview_image_url' in their response, but ensure it's available
         preview_image_url: a.preview_image_url || a.preview_picture_url || a.thumbnail_url || a.image_url || ''
@@ -45,13 +57,4 @@ app.http('listElevenLabsVoices', {
       }
       const key = process.env.ELEVENLABS_API_KEY
       if (!key) return { status: 500, jsonBody: { error: 'ELEVENLABS_API_KEY not configured' } }
-      const res = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } })
-      const data: any = await res.json()
-      ctx.log(`ElevenLabs returned ${data?.voices?.length ?? 0} voices, status: ${res.status}`)
-      if (!res.ok) return { status: res.status, jsonBody: { error: data?.detail?.message || 'Voice API error' } }
-      const voices = data?.voices ?? []
-      voicesCache = { at: Date.now(), data: voices }
-      return { status: 200, jsonBody: { voices } }
-    } catch (e: any) { ctx.error(e); return { status: 500, jsonBody: { error: e?.message } } }
-  },
-})
+      const res = await fetch('https://api.elevenlabs.io/v1/voices', { 

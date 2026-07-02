@@ -301,7 +301,7 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
   const { data: scenes = [], isLoading } = useQuery({
     queryKey: ['scenes', moduleId],
     queryFn:  () => moduleId
-      ? fetch(`/api/modules/${moduleId}/scenes`).then(r => r.json())
+      ? fetch(`/api/modules/${moduleId}/scenes`).then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       : Promise.resolve([]),
     enabled:  !!moduleId,
     refetchInterval: (data) =>

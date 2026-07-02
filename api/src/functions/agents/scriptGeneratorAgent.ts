@@ -10,8 +10,9 @@
  * Every scene is now made of one or more ordered "segments" (SceneSegment
  * rows): each segment has its own narration text (one ElevenLabs TTS call
  * each) and its own slide elements/animation hints. A plain content scene
- * has exactly one segment; the welcome scene has five (hook → content →
- * content → interaction → recap); the quiz scene has one "question" segment
+ * has exactly one segment; the welcome scene has four (hook → content →
+ * content → recap — interaction removed to keep it simple, #42); the quiz
+ * scene has one "question" segment
  * per question. The existing Scene.scriptContent/slideDeckContent fields are
  * still populated too (concatenated text / first-segment slide) so panels
  * that haven't moved to reading segments yet keep working unchanged.
@@ -91,7 +92,7 @@ interface ContentSceneOutput {
 
 interface WelcomeSceneOutput {
   title:    string
-  segments: GeneratedSegment[]   // hook, content, content, interaction, recap — in that order
+  segments: GeneratedSegment[]   // hook, content, content, recap — in that order (interaction removed, #42)
 }
 
 interface QuizSceneOutput {
@@ -289,26 +290,38 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
     hook: {
       layout: 'title-hero',
       theme: 'ocean',
-      title: segment.slide_title || 'Hook',
-      subtitle: 'Grab attention',
+      title: segment.slide_title || moduleTitle || 'Introduction',
+      subtitle: 'Course Overview: 4-step learning journey',
       blocks: [{
         type: 'bullets',
-        items: segment.elements
-          .filter(el => el.type === 'bullet' && el.text)
-          .map(el => ({ text: el.text || '', level: 1 }))
+        items: [{
+          text: '1. Hook - Get curious 🎯',
+          level: 1
+        }, {
+          text: '2. Content - Learn key concepts 📚',
+          level: 1
+        }, {
+          text: '3. Content - Dive deeper 🔍',
+          level: 1
+        }, {
+          text: '4. Recap - Key takeaways ✓',
+          level: 1
+        }]
       }],
       imagePrompt: segment.image_prompt,
     },
     content: {
       layout: 'bullets',
       theme: 'academic',
-      title: segment.slide_title || 'Content',
-      subtitle: 'Key concepts',
+      title: segment.slide_title || 'Key Learning Points',
+      subtitle: 'Essential concepts from this module',
       blocks: [{
         type: 'bullets',
-        items: segment.elements
-          .filter(el => el.type === 'bullet' && el.text)
-          .map((el, i) => ({ text: el.text || '', level: i === 0 ? 1 : 2 }))
+        items: segment.elements?.length
+          ? segment.elements
+              .filter(el => el.type === 'bullet' && el.text)
+              .map((el, i) => ({ text: el.text || '', level: i === 0 ? 1 : 2 }))
+          : [{text: segment.text || 'Key learning points', level: 1}]
       }],
       imagePrompt: segment.image_prompt,
     },
@@ -316,22 +329,24 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
       layout: 'definition',
       theme: 'corporate',
       title: '💡 ' + (segment.slide_title || 'Think About This'),
-      subtitle: 'Pause and reflect',
+      subtitle: 'Pause and reflect on what you learned',
       blocks: [{
         type: 'bullets',
-        items: [{text: segment.text || '', level: 1}]
+        items: [{text: segment.text || 'Take a moment to think about this concept', level: 1}]
       }],
     },
     recap: {
       layout: 'summary',
       theme: 'dark-navy',
-      title: '✓ ' + (segment.slide_title || 'Recap'),
-      subtitle: 'Key takeaways',
+      title: '✓ ' + (segment.slide_title || 'What You Learned'),
+      subtitle: 'Summary of key takeaways',
       blocks: [{
         type: 'bullets',
-        items: segment.elements
-          .filter(el => el.type === 'bullet' && el.text)
-          .map(el => ({ text: el.text || '', level: 1 }))
+        items: segment.elements?.length
+          ? segment.elements
+              .filter(el => el.type === 'bullet' && el.text)
+              .map(el => ({ text: el.text || '', level: 1 }))
+          : [{text: segment.text || 'Key points to remember', level: 1}]
       }],
     },
     question: {
@@ -340,9 +355,11 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
       title: segment.slide_title || 'Question',
       blocks: [{
         type: 'bullets',
-        items: segment.elements
-          .filter(el => el.type === 'bullet' && el.text)
-          .map(el => ({ text: el.text || '', level: 1 }))
+        items: segment.elements?.length
+          ? segment.elements
+              .filter(el => el.type === 'bullet' && el.text)
+              .map(el => ({ text: el.text || '', level: 1 }))
+          : [{text: segment.text || 'Test your knowledge', level: 1}]
       }],
     },
   }
@@ -398,7 +415,7 @@ async function scriptGeneratorAgentHandler(
 
       const systemPrompt = `You are an expert instructional designer and scriptwriter for educational video content.
 You write engaging, clear presenter scripts for online learning modules, structured around the
-hook → learning goal → content → interaction → recap pedagogy.
+hook → learning goal → content → recap pedagogy.
 CRITICAL: Every word must be grounded in the professor's actual source materials provided.
 If the source is in French or another language, write all text in that same language.
 You ALWAYS fill in real bullet/element text — never leave a slide's bullets or elements empty.
@@ -416,15 +433,12 @@ ${sourceContent.slice(0, 5000)}
 The package has exactly three parts:
 
 1. welcome_scene — a short, student-friendly hook + objectives scene that explains why this module
-   matters, told across 5 segments in this exact order and pedagogical role:
-   - segment_type "hook": a short, concrete hook (a question, surprising fact, or scenario from the source)
-   - segment_type "content": the first main point a student needs, from the source
-   - segment_type "content": the second main point a student needs, from the source
-   - segment_type "interaction": a short prompt asking the student to pause and think/answer (e.g.
-     "Before we continue, think about: ..."), no more than 1-2 sentences
-   - segment_type "recap": a one-sentence recap of what this module will cover
-   Each segment needs its OWN narration text (60-90 words for hook/content, shorter for
-   interaction/recap) and its OWN "elements" array (a "title" element plus 1-3 "bullet" elements
+   matters, told across 4 segments in this exact order and pedagogical role:
+   - segment_type "hook": a short, concrete hook (a question, surprising fact, or scenario from the source) — 30-40 words max
+   - segment_type "content": the first main point a student needs, from the source — 30-40 words max
+   - segment_type "content": the second main point a student needs, from the source — 30-40 words max
+   - segment_type "recap": a one-sentence recap of what this module will cover — 15-20 words max
+   Each segment needs its OWN narration text (keep as short as specified above) and its OWN "elements" array (a "title" element plus 1-3 "bullet" elements
    with real text from the source — never leave elements empty). Add an "image_prompt" on the hook
    segment describing a simple, original educational illustration (flat/infographic style, never
    referencing real people or copyrighted characters).
@@ -705,3 +719,4 @@ app.http('scriptGeneratorAgent', {
   authLevel: 'anonymous',
   handler:   scriptGeneratorAgentHandler,
 })
+                                                                                                                                                                                                                               

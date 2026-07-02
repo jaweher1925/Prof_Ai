@@ -1,16 +1,6 @@
 /**
  * Visual Designer — Storyboard + Visual merged
  *
- * FEATURES
- * ─────────
- * • 9 slide layouts with live animated CSS preview
- * • Clean geometric gradients as background (no photos)
- * • GVSU logo on every slide (draggable, toggle-able)
- * • Figma-style drag-to-move: Logo · Title · Subtitle · Content block
- *   all independently repositionable by clicking & dragging on the preview
- * • "Reset layout" button resets positions to per-layout defaults
- * • AI rewrite (Shorter/Simpler/Expand) with sensible prompts + Reset-to-original
- * • Positions + showLogo saved in slideDeckContent (DB)
  */
 import React, { useState, useRef, useEffect, Component } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -78,7 +68,7 @@ const DEFAULT_POSITIONS = {
 // Width of each draggable layer (% of slide). Text layers are capped at 65%
 // (starting at x≈7-12%) so they never reach the avatar placeholder zone
 // (which starts at x≈76.5%) or run underneath the image column.
-const LAYER_WIDTHS = { logo:10, title:65, subtitle:65, content:65, image:35 }
+const LAYER_WIDTHS = { logo:16, title:65, subtitle:65, content:65, image:35 }
 
 const TOPIC_ICONS = [BookOpen, Code, BarChart2, Cpu, Layers, Zap, Target, Globe, Database, Award, Star, Shield]
 const pickIcon    = (s='') => TOPIC_ICONS[[...s].reduce((a,c)=>a+c.charCodeAt(0),0) % TOPIC_ICONS.length]
@@ -175,7 +165,15 @@ function injectCSS() {
   }
 }
 
-const FS = (min, vw, max) => `clamp(${min}px,${vw}vw,${max}px)`
+// Font sizing is container-relative (cqw = % of the slide canvas width, via
+// container-type:inline-size on the canvas) instead of viewport-relative, so
+// text scales WITH the slide when the editor grows/shrinks — and the saved
+// video snapshot looks identical at any window size.
+// Calibration: with the old viewport-based sizing, text almost always sat at
+// its `max` px cap on the ~850px-wide canvas — so `max/850` IS the intended
+// proportion of the slide. max×0.118cqw reproduces that exact look at 850px
+// and scales it proportionally on bigger/smaller canvases.
+const FS = (min, _vw, max) => `clamp(${min}px,${(max * 0.118).toFixed(2)}cqw,${Math.round(max * 2.2)}px)`
 
 // ─── Main Panel ───────────────────────────────────────────────────────────────
 
@@ -230,7 +228,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
   const { data: firstModuleScenes = [] } = useQuery({
     queryKey: ['scenes', firstModuleId],
     queryFn:  () => firstModuleId
-      ? fetch('/api/modules/' + firstModuleId + '/scenes').then(r => r.json())
+      ? fetch('/api/modules/' + firstModuleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       : Promise.resolve([]),
     enabled:  !!firstModuleId,
   })
@@ -317,7 +315,8 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
               onChoose={(themeId) => resolveModuleTheme(themeId)} />
           ) : selected ? (
             <SlideEditorBoundary key={selected.scene.id}>
-              <SceneEditor scene={selected.scene}
+            <SceneEditor scene={selected.scene}
+                moduleId={selected.script.moduleId}
                 moduleTitle={selected.script.title} totalScenes={selected.totalScenes || 1}
                 defaultTheme={moduleThemes[selectedModuleId] || 'light'}
                 voiceId={project?.defaultVoiceId}
@@ -378,7 +377,7 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
   const { data: scenes = [], isLoading } = useQuery({
     queryKey: ['scenes', script.moduleId],
     queryFn:  () => script.moduleId
-      ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.json())
+      ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       : Promise.resolve([]),
     enabled:  !!script.moduleId,
     refetchInterval: 5000,
@@ -478,7 +477,7 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
 
 // ─── Right: scene editor ──────────────────────────────────────────────────────
 
-function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, isGenerating, onGenerate }) {
+function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, isGenerating, onGenerate }) {
   // Fetch the avatar list once (cached project-wide via react-query, so this
   // is instant after the first load — see also CastingSettings/AvatarStudioPanel
   // which share the same query key) purely to find the selected avatar's
@@ -548,16 +547,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   const [saving,      setSaving]      = useState(false)
   const [aiLoading,   setAiLoading]   = useState(false)
   const [aiAction,    setAiAction]    = useState(null)
-  const [showVoice,   setShowVoice]   = useState(false)
   const [showImgPanel,setShowImgPanel]= useState(!!parsed.imageUrl)
-  // Settings panel — edit the voice script text + regenerate audio from here,
-  // instead of having to go back to the Voice stage.
-  const [showScriptSettings, setShowScriptSettings] = useState(false)
-  const [scriptText,         setScriptText]         = useState(scene.scriptContent || '')
-  const [savingScript,       setSavingScript]       = useState(false)
-  const [regeneratingVoice,  setRegeneratingVoice]  = useState(false)
-  const [voiceRegenError,    setVoiceRegenError]    = useState(null)
-  const [voiceRegenDone,     setVoiceRegenDone]     = useState(false)
 
   // Live narration playback (#attractive VD): play the scene's voiceover
   // right on the preview canvas and reveal the script one word at a time,
@@ -565,7 +555,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   const narrationAudioRef = useRef(null)
   const [narrationPlaying,  setNarrationPlaying]  = useState(false)
   const [narrationProgress, setNarrationProgress] = useState(0) // 0..1
-  const scriptWords = (scriptText || '').trim() ? scriptText.trim().split(/\s+/) : []
+  const scriptWords = (scene.scriptContent || '').trim() ? scene.scriptContent.trim().split(/\s+/) : []
   // Text Motion mode controls how far ahead of the raw audio progress the
   // reveal jumps: word-by-word reveals exactly proportional to progress,
   // line-by-line snaps forward in sentence-sized chunks, all-at-once shows
@@ -633,14 +623,64 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
   const themeObj = THEMES.find(t => t.id === theme) || THEMES[0]
 
+  // WYSIWYG snapshot (#39) — capture the EXACT slide the user sees in the
+  // editor as a 1920×1080 PNG and upload it. The video renderer uses this
+  // image directly, so the video is pixel-identical to the editor. Editing
+  // chrome (drag rings/labels, avatar placeholder, timed cue overlay) is
+  // filtered out of the capture.
+  const captureSlideSnapshot = async () => {
+    try {
+      const node = document.querySelector('[data-slide-canvas]')
+      if (!node) return null
+      const { toPng } = await import('html-to-image')
+      const dataUrl = await toPng(node, {
+        // html-to-image multiplies canvasWidth × pixelRatio — keep ratio at 1
+        // so the output is EXACTLY 1920×1080 (odd dimensions break libx264)
+        canvasWidth: 1920,
+        canvasHeight: 1080,
+        pixelRatio: 1,
+        // Skip webfont embedding — the slide uses system fonts, and font
+        // collection is by far the slowest part of the capture
+        skipFonts: true,
+        // Square off the editor's rounded corners so the video has no
+        // transparent corner notches
+        style: { borderRadius: '0', border: 'none' },
+        filter: (el) => {
+          const cls = el.classList
+          if (!cls) return true
+          return !(
+            cls.contains('pa-avatar-zone') ||
+            cls.contains('pa-cue-layer')   ||
+            cls.contains('pa-drag-label')  ||
+            cls.contains('pa-drag-ring')
+          )
+        },
+      })
+      const blob = await (await fetch(dataUrl)).blob()
+      const formData = new FormData()
+      formData.append('file', new File([blob], 'slide-snapshot.png', { type: 'image/png' }))
+      const res = await fetch('/api/upload', { method: 'POST', body: formData })
+      if (!res.ok) return null
+      const data = await res.json()
+      return data.file_url || data.url || null
+    } catch (err) {
+      console.warn('[VisualDesigner] Slide snapshot failed, video will use fallback renderer:', err)
+      return null
+    }
+  }
+
   const saveContent = async () => {
     const s = stateRef.current
     setSaving(true)
+    // Snapshot what's on screen RIGHT NOW — this is what the video will show
+    const renderedSlideUrl = await captureSlideSnapshot()
     const designJson = JSON.stringify({
       title: s.title, subtitle: s.subtitle, layout: s.layout, theme: s.theme,
       blocks: [{ type: 'bullets', items: s.bullets }],
       positions: s.positions, showLogo: s.showLogo,
       imageUrl: s.imageUrl, imageWidth: s.imageWidth, imageShape: s.imageShape,
+      motionId: s.motionId,
+      ...(renderedSlideUrl ? { renderedSlideUrl } : {}),
     })
     try {
       if (activeSegmentId) {
@@ -688,7 +728,9 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
       const res = await fetch('/api/upload', { method: 'POST', body: formData })
       if (res.ok) {
         const data = await res.json()
-        setImageUrl(data.url || '')
+        // BUGFIX: /api/upload returns { file_url }, not { url } — this was why
+        // uploaded images never stuck to the design
+        setImageUrl(data.file_url || data.url || '')
         setTimeout(saveContent, 50)
       }
     } catch (err) {
@@ -716,31 +758,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   }
 
   const handleGenerate = async () => { await saveContent(); onGenerate(scene.id) }
-
-  const handleSaveScript = async () => {
-    setSavingScript(true)
-    try {
-      await fetch('/api/scenes/' + scene.id, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script_content: scriptText }),
-      })
-    } catch {}
-    finally { setSavingScript(false) }
-  }
-
-  const handleRegenerateVoice = async () => {
-    setRegeneratingVoice(true); setVoiceRegenError(null); setVoiceRegenDone(false)
-    try {
-      await handleSaveScript()
-      await agentsService.runGenerateTTS(scene.id, voiceId, scriptText)
-      setVoiceRegenDone(true)
-    } catch (e) {
-      setVoiceRegenError(e?.message || 'Voice regeneration failed')
-    } finally {
-      setRegeneratingVoice(false)
-    }
-  }
 
   const handleAiRewrite = async (action, prompt) => {
     setAiLoading(true); setAiAction(action)
@@ -792,6 +809,11 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
     setImageUrl(design.imageUrl || '')
     setImageWidth(design.imageWidth || 36)
     setImageShape(design.imageShape || 'rounded')
+    // Restore motion type from saved design
+    if (design.motionId) {
+      const motionObj = MOTION_STYLES.find(m => m.id === design.motionId)
+      if (motionObj) setMotion(motionObj)
+    }
   }
 
   // Auto-select the first segment on mount for segmented scenes.
@@ -871,7 +893,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   }
 
   return (
-    <div className="p-6 max-w-4xl pa-page-enter">
+    <div className="p-6 w-full max-w-[1500px] mx-auto pa-page-enter">
       <div className="grid grid-cols-1 gap-6">
         {/* PREVIEW - Full width on top */}
         <div>
@@ -1080,7 +1102,7 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
 
         <div>
           <label className="block text-xs font-semibold text-white mb-1.5">
-            Slide Title <span className="font-normal text-slate-500"></span>
+            Slide Title <span className="font-normal text-slate-500">(optional - leave blank for untitled intro)</span>
           </label>
           <input value={title} onChange={e=>setTitle(e.target.value)} onBlur={saveContent}
             placeholder="Key concept students will learn"
@@ -1202,13 +1224,36 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
                   setTheme(th.id)
                   await saveContent()
                   // If this scene has segments, apply theme to all of them
-                  if (segments.length > 0) {
+                  if (segments && segments.length > 0) {
                     try {
-                      await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
+                      const themeRes = await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ theme: th.id }),
                       })
+                      if (themeRes.ok) {
+                        // Reload this specific scene to get updated segment designs
+                        const moduleScenesRes = await fetch(`/api/modules/${moduleId}/scenes`)
+                        if (moduleScenesRes.ok) {
+                          const allScenes = await moduleScenesRes.json()
+                          const updatedScene = allScenes.find(s => s.id === scene.id)
+                          if (updatedScene?.segments) {
+                            setSegments(updatedScene.segments)
+                            // Reload the current active segment with new design
+                            if (activeSegmentId) {
+                              const activeSegment = updatedScene.segments.find(s => s.id === activeSegmentId)
+                              if (activeSegment) {
+                                loadDesignIntoState(getSegmentDesign(activeSegment))
+                                // Refresh preview to show new theme
+                                setPreviewKey(k => k + 1)
+                              }
+                            } else {
+                              // No active segment, just refresh preview
+                              setPreviewKey(k => k + 1)
+                            }
+                          }
+                        }
+                      }
                     } catch (e) { console.error('Failed to apply theme to segments:', e) }
                   }
                 }}
@@ -1222,61 +1267,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
               ))}
             </div>
           </div>
-        </div>
-
-        {/* Voice script — view, edit, and regenerate audio without leaving the Visual Designer */}
-        <div>
-          <div className="flex items-center gap-3">
-            <button onClick={()=>setShowVoice(v=>!v)}
-              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors">
-              <Mic className="w-3 h-3" /> {showVoice?'Hide':'Show'} voice script
-            </button>
-            <button onClick={()=>{ setShowVoice(true); setShowScriptSettings(v=>!v) }}
-              title="Edit script & regenerate voice"
-              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-indigo-400 transition-colors">
-              <Settings className="w-3 h-3" /> Settings
-            </button>
-          </div>
-          {showVoice && (
-            <div className="mt-2 p-3 rounded-xl bg-slate-800/30 border border-white/[0.04]">
-              <p className="text-[10px] text-blue-400/80 uppercase tracking-widest mb-1 font-semibold">
-                🎙 Voice Script — what the presenter SAYS
-              </p>
-              {showScriptSettings ? (
-                <div>
-                  <textarea
-                    value={scriptText}
-                    onChange={e => setScriptText(e.target.value)}
-                    onBlur={handleSaveScript}
-                    rows={5}
-                    placeholder="What the presenter says during this scene…"
-                    className="w-full bg-slate-800/60 border border-white/10 rounded-lg p-2.5 text-xs text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
-                  />
-                  <div className="flex items-center gap-2 mt-2">
-                    <button onClick={handleRegenerateVoice} disabled={regeneratingVoice || savingScript}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                        regeneratingVoice
-                          ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-400 cursor-not-allowed'
-                          : 'bg-indigo-600 hover:bg-indigo-500 border-transparent text-white'
-                      }`}>
-                      {regeneratingVoice
-                        ? <><Loader2 className="w-3 h-3 animate-spin" />Regenerating…</>
-                        : <><RotateCcw className="w-3 h-3" />Regenerate Voice</>}
-                    </button>
-                    {savingScript && <span className="text-[10px] text-slate-500">Saving…</span>}
-                    {voiceRegenDone && !regeneratingVoice && (
-                      <span className="flex items-center gap-1 text-[10px] text-emerald-400"><CheckCircle className="w-3 h-3" />Voice updated</span>
-                    )}
-                    {voiceRegenError && (
-                      <span className="flex items-center gap-1 text-[10px] text-red-400"><AlertCircle className="w-3 h-3" />{voiceRegenError}</span>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-400 leading-relaxed">{scene.scriptContent || 'No script yet — click Settings to add one.'}</p>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Segments mini-timeline (#32) — only scenes built from SceneSegment
@@ -1429,8 +1419,9 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
   return (
     <div
       ref={containerRef}
+      data-slide-canvas
       className="relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none"
-      style={{ aspectRatio:'16/9', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
+      style={{ aspectRatio:'16/9', containerType:'inline-size', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
     >
       {/* Geometric background (animated) */}
       <div className={`absolute inset-0 ${motionCls}`} style={{ willChange:'transform', transformOrigin:'center center' }}>
@@ -1448,7 +1439,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
           each one fading in/out in turn while it's "on screen", mirroring the
           same timed reveal the render pipeline now bakes into the video. */}
       {textCues.length > 0 && (
-        <div className="absolute left-1/2 bottom-[4%] -translate-x-1/2 flex flex-col items-center pointer-events-none z-10">
+        <div className="pa-cue-layer absolute left-1/2 bottom-[4%] -translate-x-1/2 flex flex-col items-center pointer-events-none z-10">
           {(() => {
             let t = 0.6
             return textCues.slice(0, 5).map((cue, i) => {
@@ -1497,7 +1488,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
         <TitleLayer title={title} layout={layout} theme={theme} />
       </DraggableLayer>
 
-      {/* ── Draggable + Resizable: SUBTITLE ─────────────────────── */}
+      {/* ── Draggable + Resizable: SUBTITLE (Key Insight) ────────── */}
       {subtitle && (
         <DraggableLayer layerKey="subtitle" pos={positions.subtitle} width={LAYER_WIDTHS.subtitle}
           isActive={activeDrag==='subtitle'} isResizing={activeResize==='subtitle'} label="Key Insight"
@@ -1518,7 +1509,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
           so this preview matches who will really appear in the rendered video.
           Falls back to a generic placeholder until an avatar is chosen. */}
       <div
-        className="absolute pointer-events-none overflow-hidden"
+        className="pa-avatar-zone absolute pointer-events-none overflow-hidden"
         style={{
           bottom: '2%', right: '1.5%',
           width: '22%', height: '38%',
@@ -1538,7 +1529,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
             <svg viewBox="0 0 24 24" style={{ width:'18%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
               <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
             </svg>
-            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(5px,0.8vw,9px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
+            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(5px,1.06cqw,14px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
               PRESENTER<br/>AVATAR
             </span>
           </>
@@ -1711,6 +1702,10 @@ const GVSU_BLUE = '#0032A0'
 
 function GVSULogoSVG({ isDark = true }) {
   if (isDark) {
+    // Dark themes: invert FIRST so the PNG's white background becomes black —
+    // then screen-blend makes black fully transparent on the dark slide, and
+    // only the (now light) logo mark shows. The old grayscale+brightness(20)
+    // pushed EVERYTHING to white, which is what rendered a solid white box.
     return (
       <img
         src="/gvsu-logo.png"
@@ -1718,31 +1713,24 @@ function GVSULogoSVG({ isDark = true }) {
         draggable={false}
         style={{
           width: '100%', height: 'auto', display: 'block',
-          filter: 'grayscale(1) brightness(20)',
+          filter: 'invert(1) grayscale(1) brightness(1.7)',
           mixBlendMode: 'screen',
         }}
       />
     )
   }
-  // Light theme — white mark inside a GVSU-blue rounded badge
+  // Light theme: multiply-blend makes the PNG's white background invisible on
+  // light slides while keeping the logo's real brand colors
   return (
-    <div style={{
-      background: GVSU_BLUE,
-      borderRadius: '16%',
-      padding: '10%',
-      lineHeight: 0,
-      display: 'block',
-    }}>
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'brightness(0) invert(1)',
-        }}
-      />
-    </div>
+    <img
+      src="/gvsu-logo.png"
+      alt="GVSU"
+      draggable={false}
+      style={{
+        width: '100%', height: 'auto', display: 'block',
+        mixBlendMode: 'multiply',
+      }}
+    />
   )
 }
 
@@ -2095,44 +2083,4 @@ function RoadmapContent({ segments, theme }) {
   }
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '2%' }}>
-      {segments.slice(0, 5).map((seg, i) => {
-        const config = segmentConfig[seg.segment_type] || { color: theme.accent, icon: '●', label: 'Step' }
-        return (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5em' }}>
-            {/* Arrow before circle (except first) */}
-            {i > 0 && (
-              <div style={{ color: theme.accent, opacity: 0.3, fontSize: '1.2em', marginBottom: '0.3em' }}>→</div>
-            )}
-            {/* Circle */}
-            <div style={{
-              width: FS(50, 6, 80),
-              height: FS(50, 6, 80),
-              borderRadius: '50%',
-              background: `${config.color}15`,
-              border: `2px solid ${config.color}`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-            }}>
-              <span style={{ fontSize: FS(20, 2.8, 36), lineHeight: 1 }}>{config.icon}</span>
-            </div>
-            {/* Label */}
-            <p style={{
-              color: config.color,
-              fontSize: FS(8, 1.2, 14),
-              fontWeight: 700,
-              textAlign: 'center',
-              margin: 0,
-              whiteSpace: 'nowrap',
-            }}>
-              {seg.slide_title || config.label}
-            </p>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '

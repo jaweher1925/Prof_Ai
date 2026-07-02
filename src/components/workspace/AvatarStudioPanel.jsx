@@ -119,9 +119,9 @@ function AvatarGrid({ value, onChange, avatars, loading, error }) {
               )}
             </button>
 
-            {filtered.map(a => (
+            {filtered.map((a, idx) => (
               <button
-                key={a.avatar_id}
+                key={`${a.avatar_id}-${idx}`}
                 onClick={() => onChange(a.avatar_id, a.avatar_name, normGender(a.gender))}
                 className={`relative aspect-square rounded-xl border-2 overflow-hidden transition-all ${
                   a.avatar_id === value ? 'border-teal-500' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/30'

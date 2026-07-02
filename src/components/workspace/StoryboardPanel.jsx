@@ -125,7 +125,7 @@ function ModuleStoryboard({ script, videoIndex, isGenerating, onGenerate, expand
   const { data: scenes = [], isLoading } = useQuery({
     queryKey: ['scenes', script.moduleId],
     queryFn: () => script.moduleId
-      ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.json())
+      ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       : Promise.resolve([]),
     enabled: !!script.moduleId,
   })

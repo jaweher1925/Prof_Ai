@@ -41,6 +41,11 @@ export interface SlideContent {
   bgColor?: string  // Override background color (hex)
   // FEATURE: Roadmap layout - for welcome scenes with segments
   segments?: Array<{ segment_type: string; slide_title?: string; text?: string }>
+  // WYSIWYG snapshot (#39): PNG of the EXACT slide as shown in the Visual
+  // Designer, captured in the browser on save. When present, the video
+  // pipeline uses this image directly instead of rebuilding the slide with
+  // buildSlide() — guaranteeing the video matches the editor pixel-for-pixel.
+  renderedSlideUrl?: string
 }
 
 export const THEMES: Record<string, {
@@ -291,19 +296,36 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
     blocksCount: slide.blocks?.length,
     imageUrl: !!slide.imageUrl,
     imageUrlPreview: slide.imageUrl?.substring(0, 50),
+    showLogo: slide.showLogo,
+    motionId: (slide as any).motionId,
   })
 
-  const titleY = layout === 'title-hero' ? 440 : TITLE_BASE_Y
-  const titleFontSize = layout === 'title-hero' ? 84 : 64
+  // Extract position offsets from Visual Designer (percentage-based)
+  const positions = slide.positions || {}
+  const titlePos = positions.title || { x: 0, y: 0, scale: 1 }
+  const subtitlePos = positions.subtitle || { x: 0, y: 0, scale: 1 }
+  const contentPos = positions.content || { x: 0, y: 0, scale: 1 }
+  const imagePos = positions.image || { x: 0, y: 0, scale: 1 }
+  
+  // Convert percentage offsets to pixels
+  const titleOffsetX = (W * titlePos.x) / 100 || 0
+  const titleOffsetY = (H * titlePos.y) / 100 || 0
+  const subtitleOffsetX = (W * subtitlePos.x) / 100 || 0
+  const subtitleOffsetY = (H * subtitlePos.y) / 100 || 0
+  const imageOffsetX = (W * imagePos.x) / 100 || 0
+  const imageOffsetY = (H * imagePos.y) / 100 || 0
+
+  const titleY = (layout === 'title-hero' ? 440 : TITLE_BASE_Y) + titleOffsetY
+  const titleFontSize = (layout === 'title-hero' ? 84 : 64) * (titlePos.scale || 1)
   const titleText = esc((slide.title || '').slice(0, 90))
   const subtitleText = esc((slide.subtitle || '').slice(0, 90))
   const titleLines = layout === 'title-hero' ? [titleText] : wrap(titleText, 42)
   
   // Calculate subtitle Y based on number of title lines to avoid overlap
   // If title is multi-line, push subtitle down further
-  const subtitleYAdjust = layout === 'title-hero' 
+  const subtitleYAdjust = (layout === 'title-hero' 
     ? 330 
-    : Math.max(330, TITLE_BASE_Y + titleLines.length * TITLE_LINE_H + 30)
+    : Math.max(330, TITLE_BASE_Y + titleLines.length * TITLE_LINE_H + 30)) + subtitleOffsetY
 
   let contentSvg = ''
   const blocks = slide.blocks || []
@@ -311,12 +333,12 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   switch (layout) {
     case 'title-hero':
       contentSvg = `
-      <text x="960" y="${titleY}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
+      <text x="${960 + titleOffsetX}" y="${titleY}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
         fill="${t.title}" font-weight="800" text-anchor="middle">${titleText}</text>
-      ${subtitleText ? `<text x="960" y="${titleY + 100}" font-family="Arial,sans-serif" font-size="40"
+      ${subtitleText ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 100}" font-family="Arial,sans-serif" font-size="${40 * (subtitlePos.scale || 1)}"
         fill="${t.accent}" text-anchor="middle" font-weight="500">${subtitleText}</text>` : ''}
-      <rect x="760" y="${titleY + 140}" width="400" height="3" rx="2" fill="${t.accent}" opacity="0.6"/>
-      ${blocks[0]?.items?.[0] ? `<text x="960" y="${titleY + 230}" font-family="Arial,sans-serif" font-size="34"
+      <rect x="${760 + subtitleOffsetX}" y="${titleY + 140}" width="400" height="3" rx="2" fill="${t.accent}" opacity="0.6"/>
+      ${blocks[0]?.items?.[0] ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 230}" font-family="Arial,sans-serif" font-size="34"
         fill="${t.body}" text-anchor="middle" opacity="0.9">${esc(blocks[0].items[0].text)}</text>` : ''}
       `
       break
@@ -413,8 +435,8 @@ ${contentSvg}
 ${slide.imageUrl ? (() => {
   const imgW = Math.min(90, slide.imageWidth || 36)  // % of width, capped at 90%
   const imgH = Math.round(imgW * 0.67)  // 3:2 aspect ratio
-  const imgX = (100 - imgW) / 2  // Center horizontally
-  const imgY = CONTENT_Y + 200  // Below content
+  const imgX = ((100 - imgW) / 2) + imagePos.x  // Center horizontally, then apply offset
+  const imgY = (CONTENT_Y + 200) + imageOffsetY  // Below content, apply offset
   
   // SVG clip path requires inline radius specification (no % in rx/ry for clip paths)
   // Convert percentages to absolute pixels for clip path
@@ -440,15 +462,15 @@ ${slide.imageUrl ? (() => {
   return `<!-- Image layer -->
 <defs>
   <clipPath id="imgClip">
-    <rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+    <rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx * (imagePos.scale || 1)}" height="${imgHPx * (imagePos.scale || 1)}" 
       rx="${cornerRadius}" ry="${cornerRadius}"/>
   </clipPath>
 </defs>
-<image x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+<image x="${imgXPx}" y="${imgYPx}" width="${imgWPx * (imagePos.scale || 1)}" height="${imgHPx * (imagePos.scale || 1)}" 
   href="${safeImageUrl}" preserveAspectRatio="xMidYMid slice" 
   clip-path="url(#imgClip)" opacity="0.95"/>
 <!-- Image border for definition -->
-<rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx}" height="${imgHPx}" 
+<rect x="${imgXPx}" y="${imgYPx}" width="${imgWPx * (imagePos.scale || 1)}" height="${imgHPx * (imagePos.scale || 1)}" 
   fill="none" stroke="${t.accent}" stroke-width="3" rx="${cornerRadius}" ry="${cornerRadius}" opacity="0.5"/>`
 })() : ''}
 
@@ -456,8 +478,13 @@ ${slide.imageUrl ? (() => {
 <text x="100" y="${H - 40}" font-family="Arial,sans-serif" font-size="16" fill="${t.muted}"
   letter-spacing="2" font-weight="600" opacity="0.6">PROFAI STUDIO</text>
 
-<!-- Decorative circles -->
-<circle cx="1780" cy="180" r="280" fill="${t.accent}" opacity="0.04"/>
-<circle cx="1820" cy="920" r="180" fill="${t.accent}" opacity="0.05"/>
-</svg>`
-}
+<!-- GVSU Logo (top-left, if enabled) -->
+${slide.showLogo !== false ? `
+<g id="gvsu-logo">
+  <!-- Circular background -->
+  <circle cx="80" cy="80" r="55" fill="${t.accent}" opacity="0.15"/>
+  <!-- Logo mark: G shape -->
+  <g transform="translate(80, 80)">
+    <path d="M -20 -15 A 25 25 0 1 1 0 25 L 0 0 A 15 15 0 1 0 -10 -15 Z" 
+      fill="none" stroke="${t.accent}" stroke-width="4" opacity="0.8"/>
+    <text x=

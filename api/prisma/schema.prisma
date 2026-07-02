@@ -109,6 +109,9 @@ model SceneSegment {
   slideDesign     String    @default("{}") @map("slide_design")
   imagePrompt     String?   @map("image_prompt")
   animation       String?   // top-level entrance animation for this segment, e.g. "fade-in"
+  // Text animation timings for custom reveals — JSON array of timing objects
+  // [{ "elementIndex": 0, "startMs": 100, "durationMs": 800 }, ...]
+  textAnimationTimings String? @map("text_animation_timings")
   ttsAudioUrl     String?   @map("tts_audio_url")
   durationSeconds Float?    @map("duration_seconds")
   createdAt       DateTime  @default(now()) @map("created_at")

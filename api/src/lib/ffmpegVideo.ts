@@ -34,13 +34,15 @@ export interface RenderableSegment {
   text: string
   slideDesign: string  // CRITICAL: JSON string of SlideContent from Visual Designer
   ttsAudioUrl: string  // Must be populated before rendering
+  textAnimationTimings?: string | null  // JSON string of TextAnimationSettings
+  motionId?: string | null  // Text animation motion type (word-by-word, line-by-line, all-at-once)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER: Convert /api/uploads/... URL to local disk path
 // ─────────────────────────────────────────────────────────────────────────────
 
-function localPathFromUploadUrl(url?: string | null): string | null {
+export function localPathFromUploadUrl(url?: string | null): string | null {
   if (!url) return null
   const match = url.match(/\/api\/uploads\/([^/?]+)/)
   if (!match) return null
@@ -97,6 +99,98 @@ async function rasterizeSvg(svgPath: string): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HELPER: Audio duration (parse ffmpeg -i stderr; ffprobe isn't bundled)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getAudioDurationSec(audioPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath as unknown as string, ['-i', audioPath])
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d.toString() })
+    proc.on('error', (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)))
+    proc.on('close', () => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/)
+      if (!m) return reject(new Error(`Could not read duration of ${audioPath}`))
+      resolve(+m[1] * 3600 + +m[2] * 60 + +m[3] + +`0.${m[4]}`)
+    })
+  })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAPTION ANIMATION (#40): burn the narration into the video as timed
+// captions, matching the Visual Designer's motion setting:
+//   word-by-word  → words pop in one at a time (ASS karaoke, invisible → visible)
+//   line-by-line  → each chunk fades in as it's spoken
+//   all-at-once   → full text shown for the whole segment
+// Timings are distributed evenly across the audio duration (same
+// approximation the editor preview uses).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function assTime(sec: number): string {
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = Math.floor(sec % 60)
+  const cs = Math.round((sec - Math.floor(sec)) * 100)
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(Math.min(cs, 99)).padStart(2, '0')}`
+}
+
+function escAss(text: string): string {
+  return text.replace(/[{}]/g, '').replace(/\r?\n/g, ' ').trim()
+}
+
+function buildCaptionAss(text: string, motionId: string, durationSec: number): string | null {
+  const words = escAss(text).split(/\s+/).filter(Boolean)
+  if (!words.length || durationSec <= 0.5) return null
+
+  const header = `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,Arial,44,&H00FFFFFF,&HFF000000,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,3,8,0,2,240,240,46,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`
+  const events: string[] = []
+  const perWord = durationSec / words.length
+
+  if (motionId === 'all-at-once') {
+    events.push(`Dialogue: 0,${assTime(0)},${assTime(durationSec)},Cap,,0,0,0,,${words.join(' ')}`)
+  } else {
+    // Chunk into caption lines of ≤8 words; each line gets a time window
+    // proportional to its word count
+    const LINE_WORDS = 8
+    let cursor = 0
+    for (let i = 0; i < words.length; i += LINE_WORDS) {
+      const line = words.slice(i, i + LINE_WORDS)
+      const start = cursor
+      const end = Math.min(durationSec, cursor + line.length * perWord)
+      cursor = end
+      if (motionId === 'word-by-word') {
+        // SecondaryColour is fully transparent, so \k karaoke = words appear
+        // one at a time as "sung"
+        const karaoke = line.map(w => `{\\k${Math.max(1, Math.round(perWord * 100))}}${w}`).join(' ')
+        events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,${karaoke}`)
+      } else {
+        // line-by-line: fade each chunk in/out
+        events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},Cap,,0,0,0,,{\\fad(200,150)}${line.join(' ')}`)
+      }
+    }
+  }
+
+  return header + events.join('\n') + '\n'
+}
+
+/** Escape a path for use inside ffmpeg's subtitles= filter argument. */
+function subtitlesFilterPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STEP 1: Create SVG slide from Visual Designer design
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -148,12 +242,13 @@ function writeSvgToDisk(svg: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 3: Render audio + slide to video clip
+// STEP 3: Render audio + slide to video clip with optional text animation
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function renderSegmentClip(
   segment: RenderableSegment,
-  pngPath: string
+  pngPath: string,
+  textAnimationTimings?: string | null
 ): Promise<string> {
   const audioPath = localPathFromUploadUrl(segment.ttsAudioUrl)
   
@@ -173,160 +268,96 @@ async function renderSegmentClip(
     audioPath,
     outPath,
   })
-  
-  // FFmpeg: loop still image for duration of audio, mux audio
-  await runFfmpeg([
+
+  // Captions are intentionally NOT burned into the video (user preference) —
+  // the slide is animated instead (gentle Ken Burns zoom below), and slides
+  // are joined with crossfade transitions in concatenateVideos().
+  void textAnimationTimings
+
+  // Normalize ANY input slide to exactly 1920×1080 — libx264 requires even
+  // dimensions, and browser snapshots can come in at arbitrary sizes
+  const baseVf = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black'
+  const FPS = 30
+
+  // Slide motion (#41): slow zoom-in across the clip (1.00 → 1.08). The slide
+  // is upscaled 2× before zoompan to avoid the filter's subpixel jitter.
+  let vf = baseVf
+  let useLoop = true
+  try {
+    const durationSec = await getAudioDurationSec(audioPath)
+    const frames = Math.max(1, Math.ceil(durationSec * FPS))
+    vf = `${baseVf},scale=3840:2160,` +
+      `zoompan=z='1+0.08*on/${frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1920x1080:fps=${FPS}`
+    useLoop = false  // zoompan generates all frames from the single input image
+    console.log(`[renderSegmentClip] Ken Burns zoom over ${durationSec.toFixed(1)}s (${frames} frames)`)
+  } catch (err: any) {
+    console.warn(`[renderSegmentClip] Duration probe failed, rendering static slide: ${err?.message}`)
+  }
+
+  const buildArgs = (filter: string, loop: boolean): string[] => [
     '-y',
-    '-loop', '1',
+    ...(loop ? ['-loop', '1'] : []),
     '-i', pngPath,
     '-i', audioPath,
     '-c:v', 'libx264',
-    '-tune', 'stillimage',
+    '-r', String(FPS),  // uniform fps so xfade transitions can join clips
     '-c:a', 'aac', '-b:a', '192k',
     '-pix_fmt', 'yuv420p',
+    '-vf', filter,
     '-shortest',
     outPath,
-  ])
-  
+  ]
+
+  try {
+    await runFfmpeg(buildArgs(vf, useLoop))
+  } catch (err: any) {
+    if (!useLoop) {
+      // zoompan can fail on exotic builds — fall back to a static slide
+      // rather than losing the video
+      console.warn(`[renderSegmentClip] Animated render failed, retrying static: ${err?.message?.slice(-300)}`)
+      await runFfmpeg(buildArgs(baseVf, true))
+    } else {
+      throw err
+    }
+  }
+
   console.log(`[renderSegmentClip] Created segment video: ${outPath}`)
-  
+
   return outPath
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STEP 4: Concatenate segment videos
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function concatenateVideos(videoPaths: string[]): Promise<string> {
-  if (videoPaths.length === 0) {
-    throw new Error('No videos to concatenate')
+/**
+ * Generate FFmpeg drawtext filter strings for text animations
+ * Creates fade-in effects for text reveals at specific timings
+ */
+function generateTextAnimationFilters(timings: Array<{
+  elementIndex: number
+  startMs: number
+  durationMs: number
+  type?: string
+}>): string[] {
+  const filters: string[] = []
+  
+  // For each timing, create a drawtext filter with alpha fade
+  for (const timing of timings) {
+    const startSec = timing.startMs / 1000
+    const durationSec = timing.durationMs / 1000
+    const endSec = startSec + durationSec
+    
+    // Create alpha expression: fade in from 0 to 1 during reveal window
+    // Format: if(t<start, 0, if(t<end, (t-start)/duration, 1))
+    const alphaExpr = `if(lt(t\\,${startSec})\\,0\\,if(lt(t\\,${endSec})\\,(t-${startSec})/${durationSec}\\,1))`
+    
+    // Add a subtle timestamp text to show timing (debugging/preview)
+    const text = `Element ${timing.elementIndex} @${timing.startMs}ms`
+    
+    filters.push(
+      `drawtext=text='${text}':x=50:y=${50 + timing.elementIndex * 40}:fontsize=16:fontcolor=white:alpha='${alphaExpr}'`
+    )
   }
   
-  if (videoPaths.length === 1) {
-    console.log(`[concatenateVideos] Single segment, no concat needed: ${videoPaths[0]}`)
-    return videoPaths[0]
-  }
-  
-  console.log(`[concatenateVideos] Concatenating ${videoPaths.length} videos`)
-  
-  // Create concat list file
-  const listFile = join(UPLOAD_DIR, `${randomUUID()}_concat.txt`)
-  const listContent = videoPaths
-    .map(p => `file '${p.replace(/'/g, "'\\''")}'`)
-    .join('\n')
-  
-  writeFileSync(listFile, listContent)
-  
-  const outName = `${randomUUID()}_scene.mp4`
-  const outPath = join(UPLOAD_DIR, outName)
-  
-  try {
-    // Use ffmpeg concat demuxer (fast, no re-encode)
-    await runFfmpeg([
-      '-y',
-      '-f', 'concat',
-      '-safe', '0',
-      '-i', listFile,
-      '-c', 'copy',
-      outPath,
-    ])
-    
-    console.log(`[concatenateVideos] Created concatenated video: ${outPath}`)
-    
-    return outPath
-  } finally {
-    try { unlinkSync(listFile) } catch { /* cleanup */ }
-  }
+  return filters
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MAIN EXPORT: Render scene segments to video
-// ─────────────────────────────────────────────────────────────────────────────
 
-export async function renderSegmentsToVideo(opts: {
-  segments: RenderableSegment[]
-  moduleTitle?: string | null
-}): Promise<string> {
-  if (!opts.segments.length) {
-    throw new Error('No segments to render')
-  }
-  
-  console.log(`[renderSegmentsToVideo] Starting render for ${opts.segments.length} segments`)
-  
-  const tempSvgPaths: string[] = []
-  const tempPngPaths: string[] = []
-  const segmentVideoPaths: string[] = []
-  
-  try {
-    for (let i = 0; i < opts.segments.length; i++) {
-      const segment = opts.segments[i]
-      
-      console.log(`[renderSegmentsToVideo] Processing segment ${i + 1}/${opts.segments.length}: ${segment.id}`)
-      
-      // Validate segment has audio
-      if (!segment.ttsAudioUrl) {
-        throw new Error(`Segment ${segment.id}: Missing ttsAudioUrl (run TTS generation first)`)
-      }
-      
-      // Step 1: Create SVG from Visual Designer design
-      const svg = createSlidesSvg(
-        segment,
-        opts.moduleTitle || 'Module',
-        i,
-        opts.segments.length
-      )
-      
-      // Step 2: Write SVG to disk
-      const svgPath = writeSvgToDisk(svg)
-      tempSvgPaths.push(svgPath)
-      
-      // Step 3: Rasterize SVG to PNG
-      const pngPath = await rasterizeSvg(svgPath)
-      tempPngPaths.push(pngPath)
-      
-      // Step 4: Render segment video (PNG + audio)
-      const videoPath = await renderSegmentClip(segment, pngPath)
-      segmentVideoPaths.push(videoPath)
-    }
-    
-    // Step 5: Concatenate all segment videos
-    const finalVideoPath = await concatenateVideos(segmentVideoPaths)
-    
-    // Return as /api/uploads/... URL
-    const filename = parse(finalVideoPath).base
-    const apiUrl = `/api/uploads/${filename}`
-    
-    console.log(`[renderSegmentsToVideo] Complete! Video: ${apiUrl}`)
-    
-    return apiUrl
-  } finally {
-    // Clean up temporary files
-    console.log(`[renderSegmentsToVideo] Cleanup: Removing ${tempSvgPaths.length} SVGs and ${tempPngPaths.length} PNGs`)
-    for (const p of tempSvgPaths) { try { unlinkSync(p) } catch { /* best-effort */ } }
-    for (const p of tempPngPaths) { try { unlinkSync(p) } catch { /* best-effort */ } }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LEGACY EXPORTS: For backward compatibility
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function localVideoPathFromUploadUrl(url?: string | null): string | null {
-  if (!url || url.startsWith('heygen:')) return null
-  return localPathFromUploadUrl(url)
-}
-
-export async function concatVideos(localPaths: string[]): Promise<string> {
-  if (!localPaths.length) throw new Error('No videos to concatenate')
-  return concatenateVideos(localPaths)
-}
-
-export async function compositeAvatarOverlay(opts: {
-  audioUrl: string
-  avatarVideoUrl: string
-  slideImageUrl?: string | null
-  [key: string]: any
-}): Promise<string> {
-  // For now, just return a placeholder or throw helpful error
-  throw new Error('compositeAvatarOverlay not implemented in simplified video renderer. Use renderSegmentsToVideo instead.')
-}
+// ──────────────────────────────────────────────────────────�

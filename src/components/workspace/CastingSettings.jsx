@@ -101,8 +101,8 @@ function AvatarPicker({ value, onChange }) {
                 {error && <p className="text-xs text-amber-600 dark:text-amber-400 p-3 border-b border-slate-100 dark:border-white/[0.06]">{error}</p>}
                 {avatars.length > 0 && (
                   <ul className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
-                    {avatars.map(a => (
-                      <li key={a.avatar_id}
+                    {avatars.map((a, idx) => (
+                      <li key={`${a.avatar_id}-${idx}`}
                         onClick={() => { onChange(a.avatar_id, a.avatar_name, normGender(a.gender)); setOpen(false) }}
                         className={`flex items-center gap-3 px-3 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors ${a.avatar_id === value ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''}`}
                       >
@@ -224,8 +224,8 @@ function VoicePicker({ value, onChange, genderHint }) {
                   </div>
                 )}
                 <ul className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
-                  {filtered.map(v => (
-                    <li key={v.voice_id}
+                  {filtered.map((v, idx) => (
+                    <li key={`${v.voice_id}-${idx}`}
                       onClick={() => { onChange(v.voice_id, v.name); setOpen(false) }}
                       className={`flex items-center justify-between gap-3 px-3 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors ${v.voice_id === value ? 'bg-indigo-50 dark:bg-indigo-500/10' : ''}`}
                     >
@@ -295,8 +295,15 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
       let allScenes = []
       for (const script of scripts) {
         if (!script.moduleId) continue
-        const scenes = await fetch(`/api/modules/${script.moduleId}/scenes`).then(r => r.json())
-        allScenes = allScenes.concat(scenes || [])
+        try {
+          const res = await fetch(`/api/modules/${script.moduleId}/scenes`)
+          if (res.ok) {
+            const scenes = await res.json()
+            allScenes = allScenes.concat(scenes || [])
+          }
+        } catch (e) {
+          console.error('Failed to fetch scenes for script:', script.id, e)
+        }
       }
       // Only regenerate scenes that already had audio — scenes with no audio yet
       // will naturally pick up the new voice when first generated.

@@ -1,0 +1,39 @@
+# ProfAI — client test deployment
+# Usage: put a .env file next to this compose file (see .env.docker.example),
+# then:  docker compose up -d   →  open http://localhost:8080
+#
+# To publish on Docker Hub, replace jaweherhichri1925 below, then:
+#   docker compose build
+#   docker compose push
+services:
+  api:
+    image: jaweherhichri1925/profai-api:latest
+    build: ./api
+    environment:
+      # Demo auth bypass — every visitor is the same test user. Do NOT expose
+      # this container to the public internet with this flag on.
+      - LOCAL_DEV=true
+      - DATABASE_URL=file:/data/profai.db
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - HEYGEN_API_KEY=${HEYGEN_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+    volumes:
+      - profai-db:/data
+      - profai-uploads:/home/site/wwwroot/uploads
+    restart: unless-stopped
+
+  web:
+    image: jaweherhichri1925/profai-web:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  profai-db:
+  profai-uploads:

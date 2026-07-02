@@ -1,0 +1,155 @@
+/**
+ * HeyGen talking-avatar generation (#40)
+ *
+ * Produces a lip-synced presenter video from the scene's TTS audio:
+ *   1. concatAudioFiles()      — merge per-segment TTS mp3s into one track
+ *   2. uploadAudioAsset()      — push the audio to HeyGen's asset store
+ *   3. createAvatarVideo()     — POST /v2/video/generate (avatar + audio)
+ *   4. waitForAvatarVideo()    — poll /v1/video_status.get until completed
+ *   5. downloadToUploads()     — save the finished MP4 locally
+ *
+ * The caller (generateHeyGenAvatar.ts) overlays the result bottom-right on the
+ * slide video via overlayAvatarOnVideo() in ffmpegVideo.ts, matching the
+ * presenter-avatar box shown in the Visual Designer preview.
+ *
+ * Every step throws on failure — callers must catch and fall back to the
+ * slide-only video so avatar problems never block video generation.
+ */
+
+import { spawn } from 'child_process'
+import { join } from 'path'
+import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'fs'
+import { randomUUID, createHash } from 'crypto'
+
+const ffmpegPath = require('ffmpeg-static')
+const UPLOAD_DIR = join(process.cwd(), 'uploads')
+
+const HEYGEN_API = 'https://api.heygen.com'
+const HEYGEN_UPLOAD = 'https://upload.heygen.com'
+
+function apiKey(): string {
+  const key = process.env.HEYGEN_API_KEY
+  if (!key) throw new Error('HEYGEN_API_KEY not configured')
+  return key
+}
+
+function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const proc = spawn(ffmpegPath as unknown as string, args)
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d.toString() })
+    proc.on('error', (err) => reject(new Error(`ffmpeg failed to start: ${err.message}`)))
+    proc.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`))
+    })
+  })
+}
+
+/** Merge per-segment TTS mp3 files into a single mp3 (re-encoded for safety). */
+export async function concatAudioFiles(audioPaths: string[]): Promise<string> {
+  if (audioPaths.length === 1) return audioPaths[0]
+  const listFile = join(UPLOAD_DIR, `${randomUUID()}_audiolist.txt`)
+  writeFileSync(listFile, audioPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_scene_audio.mp3`)
+  await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:a', 'libmp3lame', '-b:a', '128k', outPath])
+  return outPath
+}
+
+/** Upload an audio file to HeyGen's asset store → returns asset id. */
+export async function uploadAudioAsset(audioPath: string): Promise<string> {
+  const buffer = readFileSync(audioPath)
+  const res = await fetch(`${HEYGEN_UPLOAD}/v1/asset`, {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey(), 'Content-Type': 'audio/mpeg' },
+    body: buffer,
+  })
+  if (!res.ok) throw new Error(`HeyGen asset upload failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
+  const json: any = await res.json()
+  const assetId = json?.data?.id
+  if (!assetId) throw new Error(`HeyGen asset upload: no asset id in response`)
+  console.log(`[heygenAvatar] Uploaded audio asset ${assetId} (${buffer.length} bytes)`)
+  return assetId
+}
+
+/** Create the avatar video job → returns video_id. */
+export async function createAvatarVideo(opts: {
+  avatarId: string
+  audioAssetId: string
+  avatarStyle?: string | null
+  background?: string | null  // JSON string {"type":"color","value":"#1E293B"}
+}): Promise<string> {
+  let background: any = { type: 'color', value: '#0F172A' }
+  try { if (opts.background) background = JSON.parse(opts.background) } catch { /* keep default */ }
+
+  const submit = async (character: any): Promise<{ ok: boolean; status: number; videoId?: string; body: string }> => {
+    const res = await fetch(`${HEYGEN_API}/v2/video/generate`, {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        video_inputs: [{
+          character,
+          voice: { type: 'audio', audio_asset_id: opts.audioAssetId },
+          background,
+        }],
+        dimension: { width: 1280, height: 720 },
+      }),
+    })
+    const body = await res.text()
+    if (!res.ok) return { ok: false, status: res.status, body }
+    try {
+      const videoId = JSON.parse(body)?.data?.video_id
+      return videoId ? { ok: true, status: res.status, videoId, body } : { ok: false, status: res.status, body }
+    } catch { return { ok: false, status: res.status, body } }
+  }
+
+  // Try as a studio avatar first; if HeyGen rejects the id (custom photo
+  // avatars use a different character type), retry as a talking photo
+  let result = await submit({
+    type: 'avatar',
+    avatar_id: opts.avatarId,
+    avatar_style: opts.avatarStyle === 'closeUp' ? 'closeUp' : (opts.avatarStyle || 'normal'),
+  })
+  if (!result.ok && result.status >= 400 && result.status < 500) {
+    console.log(`[heygenAvatar] avatar_id rejected (${result.status}), retrying as talking_photo`)
+    result = await submit({ type: 'talking_photo', talking_photo_id: opts.avatarId })
+  }
+  if (!result.ok || !result.videoId) {
+    throw new Error(`HeyGen video generate failed (${result.status}): ${result.body.slice(0, 300)}`)
+  }
+  console.log(`[heygenAvatar] Created avatar video job ${result.videoId}`)
+  return result.videoId
+}
+
+/** Poll until the avatar video is rendered → returns the temporary video URL. */
+export async function waitForAvatarVideo(videoId: string, maxWaitMs = 15 * 60_000): Promise<string> {
+  const start = Date.now()
+  while (Date.now() - start < maxWaitMs) {
+    const res = await fetch(`${HEYGEN_API}/v1/video_status.get?video_id=${videoId}`, {
+      headers: { 'x-api-key': apiKey() },
+    })
+    if (!res.ok) throw new Error(`HeyGen status check failed (${res.status})`)
+    const json: any = await res.json()
+    const status = json?.data?.status
+    if (status === 'completed') {
+      const url = json?.data?.video_url
+      if (!url) throw new Error('HeyGen completed but no video_url')
+      console.log(`[heygenAvatar] Avatar video ${videoId} completed`)
+      return url
+    }
+    if (status === 'failed') {
+      throw new Error(`HeyGen render failed: ${JSON.stringify(json?.data?.error || {}).slice(0, 300)}`)
+    }
+    console.log(`[heygenAvatar] Avatar video ${videoId} status: ${status} (${Math.round((Date.now() - start) / 1000)}s)`)
+    await new Promise(r => setTimeout(r, 5_000))
+  }
+  throw new Error(`HeyGen render timed out after ${Math.round(maxWaitMs / 60_000)} min`)
+}
+
+/** Download the finished avatar MP4 into the local uploads dir → local path. */
+export async function downloadToUploads(url: string): Promise<string> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Avatar video download failed (${res.status})`)
+  const buffer = Buffer.from(await res.arrayBuffer())
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_avatar.mp4`)
+  writeFileSync(

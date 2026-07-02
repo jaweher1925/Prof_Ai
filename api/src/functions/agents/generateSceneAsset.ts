@@ -24,7 +24,10 @@ async function generateSceneAssetHandler(
 
     const scene = await prisma.scene.findUnique({
       where: { id: body.scene_id },
-      include: { module: true },
+      include: {
+        module: true,
+        segments: { orderBy: { orderIndex: 'asc' } },
+      },
     })
     if (!scene) return { status: 404, jsonBody: { error: 'Scene not found' } }
 
@@ -36,11 +39,32 @@ async function generateSceneAssetHandler(
 
     context.log(`Generating slide for scene ${body.scene_id}`)
 
-    // Parse slide content
+    // For segmented scenes, use the first segment's design
     let slideContent: SlideContent = {}
-    try {
-      slideContent = JSON.parse(scene.slideDeckContent || '{}')
-    } catch {}
+    if (scene.segments && scene.segments.length > 0) {
+      try {
+        slideContent = JSON.parse(scene.segments[0].slideDesign || '{}')
+      } catch {}
+    } else {
+      // For non-segmented scenes, use scene-level design
+      try {
+        slideContent = JSON.parse(scene.slideDeckContent || '{}')
+      } catch {}
+    }
+
+    // WYSIWYG snapshot (#39): the Visual Designer already captured the exact
+    // slide as a PNG on save — reuse it so the preview matches the editor
+    // (and the video) pixel-for-pixel instead of rebuilding a drifting SVG.
+    if (slideContent.renderedSlideUrl) {
+      await prisma.scene.update({
+        where: { id: body.scene_id },
+        data: { visualAssetUrl: slideContent.renderedSlideUrl },
+      })
+      return {
+        status: 200,
+        jsonBody: { success: true, scene_id: body.scene_id, visual_asset_url: slideContent.renderedSlideUrl },
+      }
+    }
 
     // Fallback if no structured content yet
     if (!slideContent.title) {
@@ -74,19 +98,4 @@ async function generateSceneAssetHandler(
       context.warn('sharp not installed — serving SVG (run: cd api && npm install sharp)')
     }
 
-    const savedUrl = await uploadBuffer(finalBuffer, ext, ext === 'png' ? 'image/png' : 'image/svg+xml')
-    await prisma.scene.update({ where: { id: body.scene_id }, data: { visualAssetUrl: savedUrl } })
-
-    return { status: 200, jsonBody: { success: true, scene_id: body.scene_id, visual_asset_url: savedUrl } }
-  } catch (error: any) {
-    context.error('generateSceneAsset error:', error)
-    return { status: 500, jsonBody: { error: error.message || 'Slide generation failed' } }
-  }
-}
-
-app.http('generateSceneAsset', {
-  methods: ['POST'],
-  route: 'generateSceneAsset',
-  authLevel: 'anonymous',
-  handler: generateSceneAssetHandler,
-})
+    const savedUrl = await uploadBuffer(finalBuffer, ext, ext ==

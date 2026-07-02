@@ -11,13 +11,33 @@ app.http('getModuleScenes', {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (!getUser(req)) return unauth()
     try {
+      const moduleId = req.params.id
+      if (!moduleId) return { status: 400, jsonBody: { error: 'moduleId is required' } }
+      
+      // Get all scenes for this module first
       const scenes = await prisma.scene.findMany({
-        where: { moduleId: req.params.id },
+        where: { moduleId },
         orderBy: { orderIndex: 'asc' },
-        include: { segments: { orderBy: { orderIndex: 'asc' } } },
       })
-      return { status: 200, jsonBody: scenes }
-    } catch (e) { ctx.error(e); return err500(e) }
+      
+      // For each scene, get its segments separately to avoid relation issues
+      const result = []
+      for (const scene of scenes) {
+        const segments = await prisma.sceneSegment.findMany({
+          where: { sceneId: scene.id },
+          orderBy: { orderIndex: 'asc' },
+        }).catch(e => {
+          ctx.warn(`Failed to fetch segments for scene ${scene.id}: ${e.message}`)
+          return []
+        })
+        result.push({ ...scene, segments })
+      }
+      
+      return { status: 200, jsonBody: result }
+    } catch (e) { 
+      ctx.error('Error in getModuleScenes:', e)
+      return err500(e) 
+    }
   },
 })
 
