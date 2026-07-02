@@ -558,10 +558,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   const [regeneratingVoice,  setRegeneratingVoice]  = useState(false)
   const [voiceRegenError,    setVoiceRegenError]    = useState(null)
   const [voiceRegenDone,     setVoiceRegenDone]     = useState(false)
-  
-  // Theme change for entire module (all segments at once)
-  const [showThemeChanger, setShowThemeChanger]   = useState(false)
-  const [changingTheme,    setChangingTheme]      = useState(false)
 
   // Live narration playback (#attractive VD): play the scene's voiceover
   // right on the preview canvas and reveal the script one word at a time,
@@ -720,25 +716,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
   }
 
   const handleGenerate = async () => { await saveContent(); onGenerate(scene.id) }
-
-  const handleChangeTheme = async (newThemeId) => {
-    if (!scene.id) return
-    setChangingTheme(true)
-    try {
-      // Apply theme to all segments in THIS scene
-      await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme: newThemeId }),
-      })
-      // Update local theme state
-      setTheme(newThemeId)
-      setShowThemeChanger(false)
-      // Refresh to get updated segment designs
-      window.location.reload()
-    } catch (e) { console.error('Failed to change theme:', e) }
-    finally { setChangingTheme(false) }
-  }
 
   const handleSaveScript = async () => {
     setSavingScript(true)
@@ -1221,7 +1198,20 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
             <p className="text-xs font-semibold text-white mb-1.5">Theme</p>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {THEMES.map(th => (
-                <button key={th.id} onClick={()=>{ setTheme(th.id); saveContent() }}
+                <button key={th.id} onClick={async () => {
+                  setTheme(th.id)
+                  await saveContent()
+                  // If this scene has segments, apply theme to all of them
+                  if (segments.length > 0) {
+                    try {
+                      await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ theme: th.id }),
+                      })
+                    } catch (e) { console.error('Failed to apply theme to segments:', e) }
+                  }
+                }}
                   title={th.label}
                   className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
                     theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-lg shadow-indigo-500/15':'border-white/[0.10] bg-slate-800/50 hover:border-white/25 hover:bg-slate-800/80'}`}>
@@ -1354,16 +1344,8 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
         )}
 
         {/* Generate */}
-        <div className="flex gap-2">
-          {segments.length > 0 && (
-            <button
-              onClick={() => setShowThemeChanger(!showThemeChanger)}
-              className="flex-1 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1.5"
-            >
-              <RotateCw className="w-3.5 h-3.5" /> Change Theme
-            </button>
-          )}
-          <Button onClick={handleGenerate} disabled={isGenerating} className="flex-1" size="lg">
+        <div className="pt-1">
+          <Button onClick={handleGenerate} disabled={isGenerating} className="w-full" size="lg">
             {isGenerating
               ? <><Loader2 className="w-4 h-4 animate-spin"/>Generating slide image…</>
               : scene.visualAssetUrl
@@ -1371,29 +1353,6 @@ function SceneEditor({ scene, moduleTitle, totalScenes, defaultTheme = 'light', 
               : <><Sparkles className="w-4 h-4"/>Generate Slide Image</>}
           </Button>
         </div>
-        
-        {/* Theme Changer Modal */}
-        {showThemeChanger && (
-          <div className="border-t border-white/10 p-3 bg-slate-900">
-            <p className="text-xs font-semibold text-slate-300 mb-2">Apply theme to all segments:</p>
-            <div className="grid grid-cols-2 gap-1.5">
-              {THEMES.map(th => (
-                <button
-                  key={th.id}
-                  onClick={() => handleChangeTheme(th.id)}
-                  disabled={changingTheme}
-                  className={`px-2 py-1.5 rounded text-xs font-medium transition-colors ${
-                    theme === th.id
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                  } disabled:opacity-50`}
-                >
-                  {changingTheme ? <Loader2 className="w-3 h-3 animate-spin inline" /> : th.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
         </div>
       </div>
