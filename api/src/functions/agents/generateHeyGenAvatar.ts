@@ -151,4 +151,118 @@ async function generateHeyGenAvatarHandler(
 
       context.log(`[generateHeyGenAvatar] Rendering ${segments.length} segments for scene ${body.scene_id}`)
 
-      t
+      try {
+        let videoUrl = await renderSegmentsToVideo({
+          segments,
+          moduleTitle: scene.module?.title,
+        })
+
+        // Talking-avatar overlay (#40)
+        videoUrl = await tryAddAvatar(
+          context,
+          videoUrl,
+          segments.map(s => s.ttsAudioUrl),
+          scene.moduleId
+        )
+
+        await prisma.scene.update({
+          where: { id: body.scene_id },
+          data: {
+            avatarVideoUrl: videoUrl,
+            status: 'completed',
+          },
+        })
+
+        context.log(`[generateHeyGenAvatar] ✅ Completed: ${videoUrl}`)
+
+        return {
+          status: 200,
+          jsonBody: {
+            success: true,
+            scene_id: body.scene_id,
+            video_url: videoUrl,
+          },
+        }
+      } catch (renderErr: any) {
+        context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
+        await prisma.scene.update({
+          where: { id: body.scene_id },
+          data: { status: 'assets_ready' },
+        })
+        return {
+          status: 500,
+          jsonBody: { error: `Video render failed: ${renderErr?.message}` },
+        }
+      }
+    } else {
+      // Non-segmented scene: use legacy slideDeckContent
+      if (!scene.slideDeckContent) {
+        return { status: 400, jsonBody: { error: 'Scene has no slide design. Use Visual Designer first.' } }
+      }
+
+      if (!scene.ttsAudioUrl) {
+        return { status: 400, jsonBody: { error: 'Scene has no TTS audio. Run TTS generation first.' } }
+      }
+
+      context.log(`[generateHeyGenAvatar] Rendering single-slide scene ${body.scene_id}`)
+
+      try {
+        // Convert single slide to segment format
+        const segment: any = {
+          id: 'single-slide',
+          text: scene.scriptContent || '',  // narration → caption animation source
+          slideDesign: scene.slideDeckContent,
+          ttsAudioUrl: scene.ttsAudioUrl,
+          motionId: scene.textAnimationType || 'word-by-word',
+        }
+        
+        let videoUrl = await renderSegmentsToVideo({
+          segments: [segment],
+          moduleTitle: scene.module?.title,
+        })
+
+        // Talking-avatar overlay (#40)
+        videoUrl = await tryAddAvatar(context, videoUrl, [scene.ttsAudioUrl || ''], scene.moduleId)
+
+        await prisma.scene.update({
+          where: { id: body.scene_id },
+          data: {
+            avatarVideoUrl: videoUrl,
+            status: 'completed',
+          },
+        })
+
+        context.log(`[generateHeyGenAvatar] ✅ Completed: ${videoUrl}`)
+
+        return {
+          status: 200,
+          jsonBody: {
+            success: true,
+            scene_id: body.scene_id,
+            video_url: videoUrl,
+          },
+        }
+      } catch (renderErr: any) {
+        context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
+        await prisma.scene.update({
+          where: { id: body.scene_id },
+          data: { status: 'assets_ready' },
+        })
+        return {
+          status: 500,
+          jsonBody: { error: `Video render failed: ${renderErr?.message}` },
+        }
+      }
+    }
+  } catch (error: any) {
+    context.error(`[generateHeyGenAvatar] Error:`, error)
+    return { status: 500, jsonBody: { error: error?.message || 'Video generation failed' } }
+  }
+}
+
+app.http('generateHeyGenAvatar', {
+  methods: ['POST'],
+  route: 'generateHeyGenAvatar',
+  authLevel: 'anonymous',
+  handler: generateHeyGenAvatarHandler,
+})

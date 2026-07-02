@@ -98,4 +98,19 @@ async function generateSceneAssetHandler(
       context.warn('sharp not installed — serving SVG (run: cd api && npm install sharp)')
     }
 
-    const savedUrl = await uploadBuffer(finalBuffer, ext, ext ==
+    const savedUrl = await uploadBuffer(finalBuffer, ext, ext === 'png' ? 'image/png' : 'image/svg+xml')
+    await prisma.scene.update({ where: { id: body.scene_id }, data: { visualAssetUrl: savedUrl } })
+
+    return { status: 200, jsonBody: { success: true, scene_id: body.scene_id, visual_asset_url: savedUrl } }
+  } catch (error: any) {
+    context.error('generateSceneAsset error:', error)
+    return { status: 500, jsonBody: { error: error.message || 'Slide generation failed' } }
+  }
+}
+
+app.http('generateSceneAsset', {
+  methods: ['POST'],
+  route: 'generateSceneAsset',
+  authLevel: 'anonymous',
+  handler: generateSceneAssetHandler,
+})

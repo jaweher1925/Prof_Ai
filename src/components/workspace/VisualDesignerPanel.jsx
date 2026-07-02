@@ -2083,4 +2083,44 @@ function RoadmapContent({ segments, theme }) {
   }
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '2%' }}>
+      {segments.slice(0, 5).map((seg, i) => {
+        const config = segmentConfig[seg.segment_type] || { color: theme.accent, icon: '●', label: 'Step' }
+        return (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5em' }}>
+            {/* Arrow before circle (except first) */}
+            {i > 0 && (
+              <div style={{ color: theme.accent, opacity: 0.3, fontSize: '1.2em', marginBottom: '0.3em' }}>→</div>
+            )}
+            {/* Circle */}
+            <div style={{
+              width: FS(50, 6, 80),
+              height: FS(50, 6, 80),
+              borderRadius: '50%',
+              background: `${config.color}15`,
+              border: `2px solid ${config.color}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+            }}>
+              <span style={{ fontSize: FS(20, 2.8, 36), lineHeight: 1 }}>{config.icon}</span>
+            </div>
+            {/* Label */}
+            <p style={{
+              color: config.color,
+              fontSize: FS(8, 1.2, 14),
+              fontWeight: 700,
+              textAlign: 'center',
+              margin: 0,
+              whiteSpace: 'nowrap',
+            }}>
+              {seg.slide_title || config.label}
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+

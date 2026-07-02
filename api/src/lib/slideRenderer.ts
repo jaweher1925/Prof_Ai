@@ -487,4 +487,14 @@ ${slide.showLogo !== false ? `
   <g transform="translate(80, 80)">
     <path d="M -20 -15 A 25 25 0 1 1 0 25 L 0 0 A 15 15 0 1 0 -10 -15 Z" 
       fill="none" stroke="${t.accent}" stroke-width="4" opacity="0.8"/>
-    <text x=
+    <text x="-5" y="8" font-family="Arial,sans-serif" font-size="24" font-weight="bold" 
+      fill="${t.accent}" opacity="0.8">G</text>
+  </g>
+</g>
+` : ''}
+
+<!-- Decorative circles -->
+<circle cx="1780" cy="180" r="280" fill="${t.accent}" opacity="0.04"/>
+<circle cx="1820" cy="920" r="180" fill="${t.accent}" opacity="0.05"/>
+</svg>`
+}

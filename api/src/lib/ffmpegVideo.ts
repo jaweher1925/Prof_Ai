@@ -360,4 +360,231 @@ function generateTextAnimationFilters(timings: Array<{
 }
 
 
-// ──────────────────────────────────────────────────────────�
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 4: Concatenate segment videos
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Plain cut-together concat (no transition) — fast, no re-encode. Used as
+ *  the fallback when crossfading isn't possible. */
+async function plainConcat(videoPaths: string[]): Promise<string> {
+  const listFile = join(UPLOAD_DIR, `${randomUUID()}_concat.txt`)
+  writeFileSync(listFile, videoPaths.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
+
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_scene.mp4`)
+  try {
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', outPath])
+    return outPath
+  } finally {
+    try { unlinkSync(listFile) } catch { /* cleanup */ }
+  }
+}
+
+/** Join segment clips with a crossfade transition between slides (#41).
+ *  Falls back to a plain cut if any clip is too short to fade or if the
+ *  xfade render fails. */
+async function concatenateVideos(videoPaths: string[]): Promise<string> {
+  if (videoPaths.length === 0) {
+    throw new Error('No videos to concatenate')
+  }
+
+  if (videoPaths.length === 1) {
+    console.log(`[concatenateVideos] Single segment, no concat needed: ${videoPaths[0]}`)
+    return videoPaths[0]
+  }
+
+  const T = 0.5  // crossfade duration in seconds
+
+  try {
+    const durations = await Promise.all(videoPaths.map(p => getAudioDurationSec(p)))
+    if (durations.some(d => d < T * 2.4)) {
+      console.log('[concatenateVideos] A clip is too short to crossfade — using plain concat')
+      return await plainConcat(videoPaths)
+    }
+
+    console.log(`[concatenateVideos] Crossfading ${videoPaths.length} clips (${T}s fade)`)
+
+    const inputs = videoPaths.flatMap(p => ['-i', p])
+    const parts: string[] = []
+    let vPrev = '[0:v]'
+    let aPrev = '[0:a]'
+    let cum = durations[0]
+    for (let i = 1; i < videoPaths.length; i++) {
+      const last = i === videoPaths.length - 1
+      const vOut = last ? '[vout]' : `[v${i}]`
+      const aOut = last ? '[aout]' : `[a${i}]`
+      parts.push(`${vPrev}[${i}:v]xfade=transition=fade:duration=${T}:offset=${(cum - T).toFixed(3)}${vOut}`)
+      parts.push(`${aPrev}[${i}:a]acrossfade=d=${T}${aOut}`)
+      vPrev = vOut
+      aPrev = aOut
+      cum += durations[i] - T
+    }
+
+    const outPath = join(UPLOAD_DIR, `${randomUUID()}_scene.mp4`)
+    await runFfmpeg([
+      '-y',
+      ...inputs,
+      '-filter_complex', parts.join(';'),
+      '-map', '[vout]',
+      '-map', '[aout]',
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k',
+      outPath,
+    ])
+
+    console.log(`[concatenateVideos] Created crossfaded video: ${outPath}`)
+    return outPath
+  } catch (err: any) {
+    console.warn(`[concatenateVideos] Crossfade failed, falling back to plain concat: ${err?.message?.slice(-300)}`)
+    return await plainConcat(videoPaths)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN EXPORT: Render scene segments to video
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function renderSegmentsToVideo(opts: {
+  segments: RenderableSegment[]
+  moduleTitle?: string | null
+}): Promise<string> {
+  if (!opts.segments.length) {
+    throw new Error('No segments to render')
+  }
+  
+  console.log(`[renderSegmentsToVideo] Starting render for ${opts.segments.length} segments`)
+  
+  const tempSvgPaths: string[] = []
+  const tempPngPaths: string[] = []
+  const segmentVideoPaths: string[] = []
+  
+  try {
+    for (let i = 0; i < opts.segments.length; i++) {
+      const segment = opts.segments[i]
+      
+      console.log(`[renderSegmentsToVideo] Processing segment ${i + 1}/${opts.segments.length}: ${segment.id}`)
+      
+      // Validate segment has audio
+      if (!segment.ttsAudioUrl) {
+        throw new Error(`Segment ${segment.id}: Missing ttsAudioUrl (run TTS generation first)`)
+      }
+
+      // WYSIWYG snapshot path (#39): if the Visual Designer saved a browser
+      // capture of the exact slide (design.renderedSlideUrl), use that PNG
+      // directly — the video is then pixel-identical to the editor. Only fall
+      // back to the server-side SVG rebuild when no snapshot exists (e.g.
+      // scenes never opened in the designer).
+      let design: SlideContent = {}
+      try { design = JSON.parse(segment.slideDesign || '{}') } catch { /* fallback below */ }
+
+      let pngPath: string
+      const snapshotPath = localPathFromUploadUrl(design.renderedSlideUrl)
+      if (snapshotPath) {
+        console.log(`[renderSegmentsToVideo] Segment ${segment.id}: using Visual Designer snapshot ${snapshotPath}`)
+        pngPath = snapshotPath  // persistent upload — NOT added to temp cleanup
+      } else {
+        console.log(`[renderSegmentsToVideo] Segment ${segment.id}: no snapshot, falling back to server-side slide render`)
+        // Step 1: Create SVG from Visual Designer design
+        const svg = createSlidesSvg(segment, opts.moduleTitle || 'Module', i, opts.segments.length)
+        // Step 2: Write SVG to disk
+        const svgPath = writeSvgToDisk(svg)
+        tempSvgPaths.push(svgPath)
+        // Step 3: Rasterize SVG to PNG
+        pngPath = await rasterizeSvg(svgPath)
+        tempPngPaths.push(pngPath)
+      }
+
+      // Step 4: Render segment video (PNG + audio)
+      const videoPath = await renderSegmentClip(segment, pngPath, segment.textAnimationTimings)
+      segmentVideoPaths.push(videoPath)
+    }
+    
+    // Step 5: Concatenate all segment videos
+    const finalVideoPath = await concatenateVideos(segmentVideoPaths)
+    
+    // Return as /api/uploads/... URL
+    const filename = parse(finalVideoPath).base
+    const apiUrl = `/api/uploads/${filename}`
+    
+    console.log(`[renderSegmentsToVideo] Complete! Video: ${apiUrl}`)
+    
+    return apiUrl
+  } finally {
+    // Clean up temporary files
+    console.log(`[renderSegmentsToVideo] Cleanup: Removing ${tempSvgPaths.length} SVGs and ${tempPngPaths.length} PNGs`)
+    for (const p of tempSvgPaths) { try { unlinkSync(p) } catch { /* best-effort */ } }
+    for (const p of tempPngPaths) { try { unlinkSync(p) } catch { /* best-effort */ } }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY EXPORTS: For backward compatibility
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function localVideoPathFromUploadUrl(url?: string | null): string | null {
+  if (!url || url.startsWith('heygen:')) return null
+  return localPathFromUploadUrl(url)
+}
+
+export async function concatVideos(localPaths: string[]): Promise<string> {
+  if (!localPaths.length) throw new Error('No videos to concatenate')
+  return concatenateVideos(localPaths)
+}
+
+/**
+ * Overlay the HeyGen talking-avatar video bottom-right on the slide video
+ * (#40) — sized/positioned to match the presenter-avatar box shown in the
+ * Visual Designer preview (22% wide × 38% tall, 1.5%/2% margins).
+ *
+ * The avatar is scaled to the box height and center-cropped to the box width
+ * (portrait-style crop of HeyGen's 16:9 output). The final audio track is the
+ * slide video's own TTS narration — the avatar is muted (it lip-syncs the
+ * same audio anyway).
+ */
+export async function overlayAvatarOnVideo(
+  baseVideoPath: string,
+  avatarVideoPath: string
+): Promise<string> {
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_with_avatar.mp4`)
+
+  console.log(`[overlayAvatarOnVideo] Compositing avatar onto ${baseVideoPath}`)
+
+  await runFfmpeg([
+    '-y',
+    '-i', baseVideoPath,
+    '-i', avatarVideoPath,
+    '-filter_complex',
+    // 22% of 1920 = 422 wide; 38% of 1080 = 410 tall; right 1.5% = 29px; bottom 2% = 22px
+    '[1:v]scale=-2:410,crop=422:410[av];[0:v][av]overlay=W-w-29:H-h-22:eof_action=repeat[v]',
+    '-map', '[v]',
+    '-map', '0:a',
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'copy',
+    outPath,
+  ])
+
+  console.log(`[overlayAvatarOnVideo] Created ${outPath}`)
+
+  return outPath
+}
+
+/** Extract the audio track of a video as mp3 (#41) — used to generate the
+ *  HeyGen avatar from the FINAL crossfaded video's audio, so lip-sync can't
+ *  drift when transitions shorten the timeline. */
+export async function extractAudioTrack(videoPath: string): Promise<string> {
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_track.mp3`)
+  await runFfmpeg(['-y', '-i', videoPath, '-vn', '-c:a', 'libmp3lame', '-b:a', '128k', outPath])
+  return outPath
+}
+
+/** @deprecated Legacy signature kept so pollHeyGenVideo.ts compiles — the
+ *  current pipeline composites via overlayAvatarOnVideo() instead. */
+export async function compositeAvatarOverlay(opts: {
+  audioUrl: string
+  avatarVideoUrl: string
+  slideImageUrl?: string | null
+  [key: string]: any
+}): Promise<string> {
+  throw new Error('compositeAvatarOverlay is deprecated. Use renderSegmentsToVideo + overlayAvatarOnVideo instead.')
+}

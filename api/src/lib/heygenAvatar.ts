@@ -152,4 +152,56 @@ export async function downloadToUploads(url: string): Promise<string> {
   if (!res.ok) throw new Error(`Avatar video download failed (${res.status})`)
   const buffer = Buffer.from(await res.arrayBuffer())
   const outPath = join(UPLOAD_DIR, `${randomUUID()}_avatar.mp4`)
-  writeFileSync(
+  writeFileSync(outPath, buffer)
+  console.log(`[heygenAvatar] Downloaded avatar video to ${outPath} (${buffer.length} bytes)`)
+  return outPath
+}
+
+/** Full pipeline: TTS audio files → local path of the rendered avatar MP4.
+ *
+ *  Cached (#43): HeyGen takes 1-5 min per render REGARDLESS of clip length,
+ *  so the finished avatar MP4 is kept on disk keyed by a hash of
+ *  (audio bytes + avatar + style). Re-rendering a scene whose narration and
+ *  avatar haven't changed — e.g. after tweaking only the slide design —
+ *  reuses the cached clip instantly instead of hitting HeyGen again (also
+ *  saves credits). */
+export async function generateAvatarClip(opts: {
+  audioPaths: string[]
+  avatarId: string
+  avatarStyle?: string | null
+  avatarBackground?: string | null
+  /** Stable cache key material (e.g. the raw TTS file bytes) — re-encoded
+   *  audio tracks aren't byte-stable between renders, source TTS files are. */
+  cacheKeyFiles?: string[]
+}): Promise<string> {
+  const audioPath = await concatAudioFiles(opts.audioPaths)
+
+  const hasher = createHash('md5')
+  for (const f of (opts.cacheKeyFiles?.length ? opts.cacheKeyFiles : [audioPath])) {
+    try { hasher.update(readFileSync(f)) } catch { hasher.update(f) }
+  }
+  const hash = hasher
+    .update(opts.avatarId)
+    .update(opts.avatarStyle || 'normal')
+    .update(opts.avatarBackground || '')
+    .digest('hex')
+  const cachePath = join(UPLOAD_DIR, `avatarcache_${hash}.mp4`)
+
+  if (existsSync(cachePath)) {
+    console.log(`[heygenAvatar] Cache hit — reusing avatar clip ${cachePath} (skipping HeyGen render)`)
+    return cachePath
+  }
+
+  const assetId = await uploadAudioAsset(audioPath)
+  const videoId = await createAvatarVideo({
+    avatarId: opts.avatarId,
+    audioAssetId: assetId,
+    avatarStyle: opts.avatarStyle,
+    background: opts.avatarBackground,
+  })
+  const videoUrl = await waitForAvatarVideo(videoId)
+  const localPath = await downloadToUploads(videoUrl)
+
+  try { copyFileSync(localPath, cachePath) } catch { /* cache is best-effort */ }
+  return localPath
+}

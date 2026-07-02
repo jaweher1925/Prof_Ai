@@ -57,4 +57,13 @@ app.http('listElevenLabsVoices', {
       }
       const key = process.env.ELEVENLABS_API_KEY
       if (!key) return { status: 500, jsonBody: { error: 'ELEVENLABS_API_KEY not configured' } }
-      const res = await fetch('https://api.elevenlabs.io/v1/voices', { 
+      const res = await fetch('https://api.elevenlabs.io/v1/voices', { headers: { 'xi-api-key': key } })
+      const data: any = await res.json()
+      ctx.log(`ElevenLabs returned ${data?.voices?.length ?? 0} voices, status: ${res.status}`)
+      if (!res.ok) return { status: res.status, jsonBody: { error: data?.detail?.message || 'Voice API error' } }
+      const voices = data?.voices ?? []
+      voicesCache = { at: Date.now(), data: voices }
+      return { status: 200, jsonBody: { voices } }
+    } catch (e: any) { ctx.error(e); return { status: 500, jsonBody: { error: e?.message } } }
+  },
+})
