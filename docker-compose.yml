@@ -1,17 +1,9 @@
-# ProfAI — client test deployment
-# Usage: put a .env file next to this compose file (see .env.docker.example),
-# then:  docker compose up -d   →  open http://localhost:8080
-#
-# To publish on Docker Hub, replace jaweherhichri1925 below, then:
-#   docker compose build
-#   docker compose push
+
 services:
   api:
     image: jaweherhichri1925/profai-api:latest
     build: ./api
     environment:
-      # Demo auth bypass — every visitor is the same test user. Do NOT expose
-      # this container to the public internet with this flag on.
       - LOCAL_DEV=true
       - DATABASE_URL=file:/data/profai.db
       - OPENAI_API_KEY=${OPENAI_API_KEY}

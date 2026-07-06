@@ -62,6 +62,7 @@ export default function ProjectCard({ project }) {
       >
         <CardContent className="p-5">
           <div className="flex items-start justify-between mb-4">
+
             <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 flex items-center justify-center">
               <BookOpen className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
