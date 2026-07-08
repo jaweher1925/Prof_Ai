@@ -1,12 +1,15 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { projectsService } from '@/services/projects'
 import { sourceFilesService } from '@/services/sourceFiles'
+import { scriptsService } from '@/services/scripts'
+import { scenesService } from '@/services/scenes'
+import { agentsService } from '@/services/agents'
 import {
   ArrowLeft, Library, FileText, Mic2, Image, Video, Wand2,
-  Download, Settings, BookOpen, ChevronRight
+  Download, Settings, BookOpen, ChevronRight, Loader2, CheckCircle
 } from 'lucide-react'
 import Spinner from '@/components/ui/Spinner'
 import Button from '@/components/ui/Button'
@@ -69,17 +72,22 @@ export default function ProjectWorkspace() {
 
   // Casting popup gate: the first time a project moves from Script → Voice,
   // show the Casting Settings popup so the user confirms avatar/voice before
-  // voice generation opens. Tracked per-project so it only interrupts once.
+  // voice generation opens. It must only interrupt ONCE per project — ever.
+  // Two persistent signals mark it done (the old in-memory ref reset on every
+  // page load, which made the popup reappear each time the user came back):
+  //   1. The project already has an avatar AND voice saved → casting was chosen.
+  //   2. A per-project localStorage flag → the user saw the popup once
+  //      (even if they closed it without saving).
+  // After that, changes are made deliberately via the Casting Settings button.
   const [showCastingGate, setShowCastingGate] = useState(false)
   const [voiceRegenStatus, setVoiceRegenStatus] = useState(null) // { done, total } | null
-  const castingGateDoneRef = useRef({})
 
   const { data: project, isLoading } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => projectsService.get(projectId),
     enabled: !!projectId,
-    refetchInterval: (data) =>
-      data?.status === 'ingesting_sources' ? 3000 : false,
+    refetchInterval: (query) =>
+      query.state.data?.status === 'ingesting_sources' ? 3000 : false,
   })
 
   const { data: sources = [] } = useQuery({
@@ -93,11 +101,15 @@ export default function ProjectWorkspace() {
     queryClient.invalidateQueries({ queryKey: ['projects'] })
   }
 
+  const castingGateDone = () =>
+    !!(project?.defaultAvatarId && project?.defaultVoiceId) ||
+    localStorage.getItem(`profai_casting_gate_${projectId}`) === 'done'
+
   // Navigate to a stage, inserting the Casting Settings popup gate the first
   // time a project heads into Voice (from Script, or from the sidebar/jump).
   const goToStage = (stageId) => {
     if (isLocked(stageId)) return
-    if (stageId === 'voice' && !castingGateDoneRef.current[projectId]) {
+    if (stageId === 'voice' && !castingGateDone()) {
       setShowCastingGate(true)
       return
     }
@@ -106,7 +118,7 @@ export default function ProjectWorkspace() {
   }
 
   const finishCastingGate = () => {
-    castingGateDoneRef.current[projectId] = true
+    localStorage.setItem(`profai_casting_gate_${projectId}`, 'done')
     setShowCastingGate(false)
     setActiveStage('voice')
     setShowCasting(false)
@@ -263,6 +275,10 @@ export default function ProjectWorkspace() {
         {renderPanel()}
       </div>
 
+      {/* Video render watcher — keeps HeyGen renders progressing and visible
+          no matter which stage the user is on, and notifies when all done */}
+      <RenderProgressBanner projectId={projectId} />
+
       {/* Casting popup gate — shown once per project before entering Voice */}
       {showCastingGate && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm p-4">
@@ -276,6 +292,119 @@ export default function ProjectWorkspace() {
               continueLabel="Continue to Voice Generation"
             />
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Workspace-wide video render watcher.
+ *
+ * HeyGen renders happen server-side and take minutes — the user shouldn't
+ * have to sit on the Video tab. This component:
+ *   1. Watches all scenes across the project's modules (only polls the API
+ *      while at least one scene is actually rendering).
+ *   2. Pings pollHeyGenVideo for each rendering scene so completed videos get
+ *      saved + composited even if the Video panel is unmounted.
+ *   3. Shows a small floating progress pill, and fires a browser notification
+ *      when the last render finishes.
+ */
+function RenderProgressBanner({ projectId }) {
+  const queryClient = useQueryClient()
+  const [justFinished, setJustFinished] = useState(false)
+  const prevRenderingRef = useRef(0)
+
+  const { data: scripts = [] } = useQuery({
+    queryKey: ['scripts', projectId],
+    queryFn: () => scriptsService.listByProject(projectId),
+    enabled: !!projectId,
+  })
+
+  const moduleIds = scripts.map(s => s.moduleId).filter(Boolean)
+  const sceneQueries = useQueries({
+    queries: moduleIds.map(mid => ({
+      queryKey: ['scenes', mid],
+      queryFn: () => scenesService.listByModule(mid),
+      // Only keep refetching while something is actually rendering
+      // (react-query v5: callback receives the query object)
+      refetchInterval: (query) =>
+        query.state.data?.some?.(s => s.status === 'rendering') ? 8000 : false,
+    })),
+  })
+
+  const scenes = sceneQueries.flatMap(q => q.data || [])
+  const rendering = scenes.filter(
+    s => s.status === 'rendering' && s.avatarVideoUrl?.startsWith('heygen:')
+  )
+  const totalWithVideoIntent = rendering.length +
+    scenes.filter(s => s.avatarVideoUrl && !s.avatarVideoUrl.startsWith('heygen:')).length
+
+  // Actively poll HeyGen for every rendering scene — this is what actually
+  // completes the video (saves URL + composites overlay), independent of
+  // which panel is open.
+  const renderingKey = rendering.map(s => s.id).join(',')
+  useEffect(() => {
+    if (!rendering.length) return
+    // Ask for notification permission the first time a render is in flight
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
+    const tick = () => {
+      rendering.forEach(s => {
+        agentsService
+          .pollHeyGen(s.avatarVideoUrl.replace('heygen:', ''), s.id)
+          .then(r => {
+            if (r?.completed) {
+              queryClient.invalidateQueries({ queryKey: ['scenes'] })
+            }
+          })
+          .catch(() => {}) // transient poll errors are fine — next tick retries
+      })
+    }
+    const t = setInterval(tick, 8000)
+    return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderingKey])
+
+  // Detect the moment the last render completes → toast + browser notification
+  useEffect(() => {
+    if (prevRenderingRef.current > 0 && rendering.length === 0) {
+      setJustFinished(true)
+      const t = setTimeout(() => setJustFinished(false), 8000)
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try {
+          new Notification('ProfAI — videos ready 🎬', {
+            body: 'All avatar videos finished rendering. Come back to review and merge them.',
+          })
+        } catch { /* notification is best-effort */ }
+      }
+      return () => clearTimeout(t)
+    }
+    prevRenderingRef.current = rendering.length
+  }, [rendering.length])
+
+  if (!rendering.length && !justFinished) return null
+
+  return (
+    <div className="fixed bottom-4 right-4 z-40">
+      {rendering.length > 0 ? (
+        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-lg">
+          <Loader2 className="w-4 h-4 text-indigo-500 dark:text-indigo-400 animate-spin flex-shrink-0" />
+          <div>
+            <p className="text-xs font-medium text-slate-900 dark:text-white">
+              Rendering videos — {rendering.length} in progress
+            </p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">
+              You can keep working, we'll notify you when they're done
+              {totalWithVideoIntent > rendering.length && ` · ${totalWithVideoIntent - rendering.length} already finished`}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-green-200 dark:border-green-500/30 shadow-lg">
+          <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <p className="text-xs font-medium text-slate-900 dark:text-white">All videos finished rendering 🎬</p>
         </div>
       )}
     </div>

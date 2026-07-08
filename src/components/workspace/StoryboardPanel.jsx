@@ -68,7 +68,7 @@ export default function StoryboardPanel({ project, onUpdate }) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-12 text-center">
         <Lock className="w-10 h-10 text-slate-700 mb-3" />
-        <p className="text-white font-medium mb-1">Storyboard is locked</p>
+        <p className="text-slate-900 dark:text-white font-medium mb-1">Storyboard is locked</p>
         <p className="text-slate-500 text-sm">Approve all scripts first to unlock the storyboard.</p>
       </div>
     )
@@ -77,10 +77,10 @@ export default function StoryboardPanel({ project, onUpdate }) {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between flex-shrink-0">
+      <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.06] flex items-center justify-between flex-shrink-0">
         <div>
-          <h2 className="text-base font-semibold text-white flex items-center gap-2">
-            <Film className="w-4 h-4 text-indigo-400" /> Storyboard
+          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <Film className="w-4 h-4 text-indigo-500 dark:text-indigo-400" /> Storyboard
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
             AI generates visual prompts, motion styles, and text cues from your exact narration.
@@ -94,7 +94,7 @@ export default function StoryboardPanel({ project, onUpdate }) {
       </div>
 
       {error && (
-        <div className="mx-6 mt-3 flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 text-xs">
+        <div className="mx-6 mt-3 flex items-center gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300 text-xs">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />{error}
         </div>
       )}
@@ -133,25 +133,25 @@ function ModuleStoryboard({ script, videoIndex, isGenerating, onGenerate, expand
   const hasStoryboard = scenes.some(s => s.textCues || s.visualPrompt)
 
   return (
-    <div className="rounded-2xl border border-white/[0.06] overflow-hidden">
+    <div className="rounded-2xl border border-slate-200 dark:border-white/[0.06] overflow-hidden">
       {/* Module header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-slate-900/60 border-b border-white/[0.04]">
+      <div className="flex items-center justify-between px-4 py-3 bg-white dark:bg-slate-900/60 border-b border-slate-100 dark:border-white/[0.04]">
         <button onClick={onToggle} className="flex items-center gap-3 flex-1 text-left">
           <div className="w-7 h-7 rounded-lg bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-            <span className="text-xs font-bold text-indigo-400">{videoIndex + 1}</span>
+            <span className="text-xs font-bold text-indigo-500 dark:text-indigo-400">{videoIndex + 1}</span>
           </div>
           <div>
-            <p className="text-sm font-semibold text-white">{script.title}</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{script.title}</p>
             <p className="text-xs text-slate-500">{scenes.length} scenes · {script.estimatedDurationMinutes} min</p>
           </div>
           {expanded ? <ChevronUp className="w-4 h-4 text-slate-500 ml-2" /> : <ChevronDown className="w-4 h-4 text-slate-500 ml-2" />}
         </button>
         <div className="flex items-center gap-2">
-          {hasStoryboard && <span className="text-[10px] text-emerald-400 flex items-center gap-1"><CheckCircle className="w-3 h-3" />Generated</span>}
+          {hasStoryboard && <span className="text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle className="w-3 h-3" />Generated</span>}
           <button
             onClick={onGenerate}
             disabled={isGenerating}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 border border-indigo-500/20 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-500 dark:text-indigo-400 border border-indigo-500/20 disabled:opacity-50"
           >
             {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : hasStoryboard ? <RotateCcw className="w-3.5 h-3.5" /> : <Sparkles className="w-3.5 h-3.5" />}
             {isGenerating ? 'Generating…' : hasStoryboard ? 'Regenerate' : 'Build Scenes'}
@@ -164,7 +164,7 @@ function ModuleStoryboard({ script, videoIndex, isGenerating, onGenerate, expand
         isLoading ? (
           <div className="flex justify-center py-8"><Spinner size="sm" /></div>
         ) : scenes.length === 0 ? (
-          <div className="py-8 text-center text-slate-600 text-sm">No scenes yet</div>
+          <div className="py-8 text-center text-slate-400 dark:text-slate-600 text-sm">No scenes yet</div>
         ) : (
           <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
             {scenes.map((scene, i) => (
@@ -206,7 +206,7 @@ function SceneCard({ scene, index, onUpdate }) {
   const hasVisual = !!scene.visualAssetUrl
 
   return (
-    <div className="rounded-xl bg-slate-900/60 border border-white/[0.06] overflow-hidden">
+    <div className="rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
       {/* Visual preview */}
       <div className="relative w-full" style={{ paddingBottom: '56.25%' }}>
         {hasVisual ? (
@@ -214,7 +214,7 @@ function SceneCard({ scene, index, onUpdate }) {
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0D0F1E]">
             {scene.visualPrompt ? (
-              <p className="text-xs text-slate-600 px-4 text-center leading-relaxed italic">
+              <p className="text-xs text-slate-400 dark:text-slate-600 px-4 text-center leading-relaxed italic">
                 {scene.visualPrompt?.slice(0, 100)}
               </p>
             ) : (
@@ -228,7 +228,7 @@ function SceneCard({ scene, index, onUpdate }) {
         </div>
         {/* Audio indicator */}
         {scene.ttsAudioUrl && (
-          <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] text-emerald-400 flex items-center gap-1">
+          <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-[10px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
             <Play className="w-2.5 h-2.5" /> Audio
           </div>
         )}
@@ -237,14 +237,14 @@ function SceneCard({ scene, index, onUpdate }) {
       {/* Narration text — EXACT, never rewritten */}
       {scene.scriptContent && (
         <div className="px-3 pt-3 pb-1">
-          <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1 font-medium">NARRATION</p>
-          <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">{scene.scriptContent}</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest mb-1 font-medium">NARRATION</p>
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed line-clamp-3">{scene.scriptContent}</p>
         </div>
       )}
 
       {/* Motion style */}
       <div className="px-3 pt-2 pb-1">
-        <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1.5 font-medium">MOTION STYLE</p>
+        <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest mb-1.5 font-medium">MOTION STYLE</p>
         <div className="grid grid-cols-3 gap-1">
           {MOTION_STYLES.map(style => (
             <button
@@ -253,8 +253,8 @@ function SceneCard({ scene, index, onUpdate }) {
               disabled={saving}
               className={`px-1.5 py-1 rounded-md text-[10px] font-medium transition-all border ${
                 motionStyle === style
-                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                  : 'bg-slate-800/60 border-white/[0.04] text-slate-500 hover:border-white/15 hover:text-slate-400'
+                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-700 dark:text-indigo-300'
+                  : 'bg-slate-100 dark:bg-slate-800/60 border-slate-100 dark:border-white/[0.04] text-slate-500 hover:border-white/15 hover:text-slate-600 dark:hover:text-slate-400'
               }`}
             >
               {style}
@@ -266,11 +266,11 @@ function SceneCard({ scene, index, onUpdate }) {
       {/* Text cues */}
       {textCues.length > 0 && (
         <div className="px-3 pt-1 pb-2">
-          <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1 font-medium">TEXT CUES</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest mb-1 font-medium">TEXT CUES</p>
           <div className="flex flex-wrap gap-1">
             {textCues.map((cue, i) => (
-              <span key={i} className="px-2 py-0.5 rounded-md bg-slate-800 border border-white/[0.06] text-[10px] text-slate-400">
-                {cue.text} <span className="text-slate-600">{cue.duration_seconds}s</span>
+              <span key={i} className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-white/[0.06] text-[10px] text-slate-500 dark:text-slate-400">
+                {cue.text} <span className="text-slate-400 dark:text-slate-600">{cue.duration_seconds}s</span>
               </span>
             ))}
           </div>
@@ -280,7 +280,7 @@ function SceneCard({ scene, index, onUpdate }) {
       {/* Visual prompt */}
       {scene.visualPrompt && (
         <div className="px-3 pb-3">
-          <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1 font-medium">VISUAL PROMPT</p>
+          <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest mb-1 font-medium">VISUAL PROMPT</p>
           <p className="text-[10px] text-slate-500 leading-relaxed">{scene.visualPrompt}</p>
         </div>
       )}

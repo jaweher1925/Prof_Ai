@@ -102,7 +102,7 @@ async function rasterizeSvg(svgPath: string): Promise<string> {
 // HELPER: Audio duration (parse ffmpeg -i stderr; ffprobe isn't bundled)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getAudioDurationSec(audioPath: string): Promise<number> {
+export function getAudioDurationSec(audioPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath as unknown as string, ['-i', audioPath])
     let stderr = ''
@@ -269,29 +269,98 @@ async function renderSegmentClip(
     outPath,
   })
 
-  // Captions are intentionally NOT burned into the video (user preference) —
-  // the slide is animated instead (gentle Ken Burns zoom below), and slides
-  // are joined with crossfade transitions in concatenateVideos().
-  void textAnimationTimings
-
   // Normalize ANY input slide to exactly 1920×1080 — libx264 requires even
   // dimensions, and browser snapshots can come in at arbitrary sizes
   const baseVf = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black'
   const FPS = 30
 
-  // Slide motion (#41): slow zoom-in across the clip (1.00 → 1.08). The slide
-  // is upscaled 2× before zoompan to avoid the filter's subpixel jitter.
+  // Background stays STATIC (no Ken Burns zoom) — text animation handles the motion
+  // Extract text from slide design and apply animation timings
   let vf = baseVf
   let useLoop = true
+  
   try {
     const durationSec = await getAudioDurationSec(audioPath)
-    const frames = Math.max(1, Math.ceil(durationSec * FPS))
-    vf = `${baseVf},scale=3840:2160,` +
-      `zoompan=z='1+0.08*on/${frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1920x1080:fps=${FPS}`
-    useLoop = false  // zoompan generates all frames from the single input image
-    console.log(`[renderSegmentClip] Ken Burns zoom over ${durationSec.toFixed(1)}s (${frames} frames)`)
+    
+    // Parse slide design to extract text content
+    let slideDesign: any = {}
+    try {
+      slideDesign = JSON.parse(segment.slideDesign || '{}')
+    } catch {
+      console.warn(`[renderSegmentClip] Could not parse slide design for ${segment.id}`)
+    }
+    
+    // Extract text elements (title + bullets)
+    const textElements: string[] = []
+    if (slideDesign.title) textElements.push(slideDesign.title)
+    if (slideDesign.bullets && Array.isArray(slideDesign.bullets)) {
+      textElements.push(...slideDesign.bullets.filter((b: any) => typeof b === 'string' || b?.text))
+    }
+    
+    // Parse animation timings
+    let timings: Array<{ elementIndex: number; startMs: number; durationMs: number }> = []
+    if (textAnimationTimings) {
+      try {
+        const parsed = JSON.parse(textAnimationTimings)
+        timings = parsed.timings || []
+      } catch {
+        console.warn(`[renderSegmentClip] Could not parse animation timings for ${segment.id}`)
+      }
+    }
+    
+    // Build text animation filters if we have text and timings
+    let textFilters = ''
+    if (textElements.length > 0 && timings.length > 0) {
+      const drawTextFilters: string[] = []
+      const fontSize = 48
+      const positionX = 100
+      let positionY = 150
+      const lineHeight = fontSize * 1.4
+      
+      for (let i = 0; i < textElements.length; i++) {
+        const text = String(textElements[i])
+          .replace(/'/g, "\\'")
+          .replace(/\n/g, ' ')
+          .slice(0, 100)  // Limit text length
+        
+        const timing = timings.find(t => t.elementIndex === i)
+        
+        if (timing) {
+          // Text with animation timing
+          const startSec = timing.startMs / 1000
+          const endSec = (timing.startMs + timing.durationMs) / 1000
+          
+          // Alpha expression: fade in during startMs→endMs, then stay visible
+          // if(t < start, 0, if(t < end, (t-start)/duration, 1))
+          const alphaExpr = `if(lt(t\\,${startSec})\\,0\\,if(lt(t\\,${endSec})\\,(t-${startSec})/${timing.durationMs / 1000}\\,1))`
+          
+          drawTextFilters.push(
+            `drawtext=text='${text}':x=${positionX}:y=${positionY}:fontsize=${fontSize}:fontcolor=white:fontfile='C\\:/Windows/Fonts/arial.ttf':alpha='${alphaExpr}'`
+          )
+        } else {
+          // Text without timing, visible from start
+          drawTextFilters.push(
+            `drawtext=text='${text}':x=${positionX}:y=${positionY}:fontsize=${fontSize}:fontcolor=white:fontfile='C\\:/Windows/Fonts/arial.ttf'`
+          )
+        }
+        
+        positionY += lineHeight
+      }
+      
+      if (drawTextFilters.length > 0) {
+        textFilters = drawTextFilters.join(',')
+        console.log(`[renderSegmentClip] Applied ${drawTextFilters.length} text animation filters`)
+      }
+    }
+    
+    // Static background with optional text animations
+    vf = textFilters ? `${baseVf},${textFilters}` : baseVf
+    useLoop = true
+    
+    console.log(`[renderSegmentClip] Static background over ${durationSec.toFixed(1)}s with ${textElements.length} text elements`)
   } catch (err: any) {
-    console.warn(`[renderSegmentClip] Duration probe failed, rendering static slide: ${err?.message}`)
+    console.warn(`[renderSegmentClip] Text animation setup failed, using static slide: ${err?.message}`)
+    vf = baseVf
   }
 
   const buildArgs = (filter: string, loop: boolean): string[] => [
@@ -311,14 +380,9 @@ async function renderSegmentClip(
   try {
     await runFfmpeg(buildArgs(vf, useLoop))
   } catch (err: any) {
-    if (!useLoop) {
-      // zoompan can fail on exotic builds — fall back to a static slide
-      // rather than losing the video
-      console.warn(`[renderSegmentClip] Animated render failed, retrying static: ${err?.message?.slice(-300)}`)
-      await runFfmpeg(buildArgs(baseVf, true))
-    } else {
-      throw err
-    }
+    // Fallback to static slide without text animations if rendering fails
+    console.warn(`[renderSegmentClip] Render failed, retrying with static slide only: ${err?.message?.slice(-300)}`)
+    await runFfmpeg(buildArgs(baseVf, true))
   }
 
   console.log(`[renderSegmentClip] Created segment video: ${outPath}`)

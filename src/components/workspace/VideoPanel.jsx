@@ -4,13 +4,13 @@
  * videos into one full module video.
  * Requires TTS audio to be generated first.
  */
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { scriptsService } from '@/services/scripts'
 import { scenesService } from '@/services/scenes'
 import { modulesService } from '@/services/modules'
 import { agentsService } from '@/services/agents'
-import { Video, Loader2, CheckCircle, Sparkles, ExternalLink, RefreshCw, User, UserX, Film, Download } from 'lucide-react'
+import { Video, Loader2, CheckCircle, Sparkles, ExternalLink, RefreshCw, User, UserX, Film, Download, Zap } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Badge from '@/components/ui/Badge'
 import Spinner from '@/components/ui/Spinner'
@@ -113,24 +113,29 @@ export default function VideoPanel({ project, onUpdate }) {
         <Badge variant="yellow">Expensive API</Badge>
       </div>
 
-      {/* Avatar on/off toggle */}
-      <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] mb-6">
-        <button
-          onClick={() => setUseAvatar(true)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-            useAvatar ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          <User className="w-3.5 h-3.5" /> With avatar presenter
-        </button>
-        <button
-          onClick={() => setUseAvatar(false)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-            !useAvatar ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          <UserX className="w-3.5 h-3.5" /> Voice only (no avatar)
-        </button>
+      {/* Avatar on/off toggle — voice-only is the fast draft path, say so */}
+      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] mb-6">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setUseAvatar(false)}
+            className={`flex-1 flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
+              !useAvatar ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span className="flex items-center gap-2"><Zap className="w-3.5 h-3.5" /> Quick preview — voice only</span>
+            <span className={`text-[10px] font-normal ${!useAvatar ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500'}`}></span>
+          </button>
+          <button
+            onClick={() => setUseAvatar(true)}
+            className={`flex-1 flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
+              useAvatar ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span className="flex items-center gap-2"><User className="w-3.5 h-3.5" /> Final — with avatar presenter</span>
+            <span className={`text-[10px] font-normal ${useAvatar ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500'}`}></span>
+          </button>
+        </div>
+
       </div>
 
       {scripts.map(script => (
@@ -165,7 +170,10 @@ function ModuleVideoCard({ title, moduleId, generating, polling, errors, onGener
     queryKey: ['scenes', moduleId],
     queryFn: () => moduleId ? scenesService.listByModule(moduleId) : Promise.resolve([]),
     enabled: !!moduleId,
-    refetchInterval: 5000,
+    // Only poll while a video is actually rendering — the old unconditional
+    // 5s interval hammered getModuleScenes for every module, forever.
+    refetchInterval: (query) =>
+      query.state.data?.some?.(s => s.status === 'rendering') ? 5000 : false,
   })
 
   const { data: moduleData } = useQuery({
@@ -177,6 +185,38 @@ function ModuleVideoCard({ title, moduleId, generating, polling, errors, onGener
   const sceneHasVideo = (scene) => !!scene.avatarVideoUrl && !scene.avatarVideoUrl?.startsWith('heygen:')
   const allScenesReady = scenes.length > 0 && scenes.every(sceneHasVideo)
   const fullVideoUrl = moduleData?.fullVideoUrl
+
+  const sceneAudioReady = (scene) =>
+    scene.segments?.length > 0 ? scene.segments.every(s => s.ttsAudioUrl) : !!scene.ttsAudioUrl
+  const sceneIsRendering = (scene) =>
+    scene.status === 'rendering' || polling[scene.id] || generating[scene.id]
+
+  const videosDone = scenes.filter(sceneHasVideo).length
+  const renderingCount = scenes.filter(s => !sceneHasVideo(s) && sceneIsRendering(s)).length
+  // Scenes we can fire right now: audio ready, no video yet, not already going
+  const generatable = scenes.filter(s => sceneAudioReady(s) && !sceneHasVideo(s) && !sceneIsRendering(s))
+
+  // All eligible scenes at once — HeyGen renders them in parallel, so the
+  // total wait is roughly ONE scene's render time instead of the sum of all.
+  const handleGenerateAll = () => {
+    generatable.forEach(scene => { onGenerate(scene) })
+  }
+
+  // Resume polling for scenes that were mid-render when the page was last
+  // closed/left (status 'rendering' with a heygen: video id) — otherwise they
+  // stay stuck until the user clicks the manual refresh icon.
+  const resumedRef = useRef({})
+  useEffect(() => {
+    scenes.forEach(scene => {
+      const heygenId = scene.avatarVideoUrl?.startsWith('heygen:')
+        ? scene.avatarVideoUrl.replace('heygen:', '') : null
+      if (heygenId && scene.status === 'rendering' && !polling[scene.id] && !resumedRef.current[scene.id]) {
+        resumedRef.current[scene.id] = true
+        onPoll(scene.id, heygenId)
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenes])
 
   const handleMerge = async () => {
     setMerging(true)
@@ -194,19 +234,35 @@ function ModuleVideoCard({ title, moduleId, generating, polling, errors, onGener
   return (
     <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-950/40 overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50 dark:bg-slate-900/40">
-        <h3 className="text-sm font-medium text-slate-900 dark:text-white">{title}</h3>
-        <Button
-          size="sm"
-          variant={fullVideoUrl ? 'secondary' : 'primary'}
-          disabled={!allScenesReady || merging}
-          onClick={handleMerge}
-        >
-          {merging
-            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Merging…</>
-            : fullVideoUrl
-              ? <><RefreshCw className="w-3.5 h-3.5" />Regenerate full video</>
-              : <><Film className="w-3.5 h-3.5" />Generate full module video</>}
-        </Button>
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium text-slate-900 dark:text-white truncate">{title}</h3>
+          {scenes.length > 0 && (
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+              {videosDone}/{scenes.length} videos ready
+              {renderingCount > 0 && <span className="text-amber-600 dark:text-amber-400"> · {renderingCount} rendering…</span>}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {generatable.length > 1 && (
+            <Button size="sm" onClick={handleGenerateAll}>
+              <Sparkles className="w-3.5 h-3.5" />
+              Generate all ({generatable.length})
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant={fullVideoUrl ? 'secondary' : 'primary'}
+            disabled={!allScenesReady || merging}
+            onClick={handleMerge}
+          >
+            {merging
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Merging…</>
+              : fullVideoUrl
+                ? <><RefreshCw className="w-3.5 h-3.5" />Regenerate full video</>
+                : <><Film className="w-3.5 h-3.5" />Generate full module video</>}
+          </Button>
+        </div>
       </div>
 
       {mergeError && <p className="text-xs text-red-500 dark:text-red-400 px-4 pt-2">{mergeError}</p>}

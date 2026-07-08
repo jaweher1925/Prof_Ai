@@ -106,7 +106,7 @@ export default function SourcesPanel({ project, onStageChange }) {
     <div className="p-6 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-lg font-medium text-white tracking-wide">Source Library</h2>
+          <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Source Library</h2>
           <p className="text-xs text-slate-500 mt-0.5">{sources.length} file{sources.length !== 1 ? 's' : ''} added</p>
         </div>
         {sources.length > 0 && (
@@ -123,25 +123,25 @@ export default function SourcesPanel({ project, onStageChange }) {
       {/* Error message */}
       {generateError && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 mb-4">
-          <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-red-300">{generateError}</p>
+          <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-red-700 dark:text-red-300">{generateError}</p>
         </div>
       )}
 
       {/* Success message */}
       {generateDone && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-green-500/10 border border-green-500/20 mb-4">
-          <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-green-300">Learning Journey created! Moving to Script stage…</p>
+          <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-green-700 dark:text-green-300">Learning Journey created! Moving to Script stage…</p>
         </div>
       )}
 
       {/* Upload area */}
-      <div className="rounded-xl border border-white/[0.08] bg-slate-900/40 p-5 mb-5">
+      <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 mb-5">
         <div className="flex gap-2 mb-4">
           {['file', 'url'].map((t) => (
             <button key={t} onClick={() => setTab(t)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
               {t === 'file' ? 'Upload File' : 'Add URL'}
             </button>
           ))}
@@ -150,10 +150,10 @@ export default function SourcesPanel({ project, onStageChange }) {
         {tab === 'file' ? (
           <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-700 rounded-xl p-8 cursor-pointer hover:border-indigo-500/50 transition-colors">
             {uploading
-              ? <Loader2 className="w-10 h-10 text-indigo-400 animate-spin mb-3" />
-              : <Upload className="w-10 h-10 text-slate-600 mb-3" />}
-            <p className="text-sm text-slate-400">{uploading ? 'Uploading…' : 'Click to upload'}</p>
-            <p className="text-xs text-slate-600 mt-1">PDF, DOCX, XLSX, TXT · Max 50 MB</p>
+              ? <Loader2 className="w-10 h-10 text-indigo-500 dark:text-indigo-400 animate-spin mb-3" />
+              : <Upload className="w-10 h-10 text-slate-400 dark:text-slate-600 mb-3" />}
+            <p className="text-sm text-slate-500 dark:text-slate-400">{uploading ? 'Uploading…' : 'Click to upload'}</p>
+            <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">PDF, DOCX, XLSX, TXT · Max 50 MB</p>
             <input
               type="file"
               className="hidden"
@@ -187,16 +187,16 @@ export default function SourcesPanel({ project, onStageChange }) {
             const isDeleting = deleteMutation.isPending && deleteMutation.variables === src.id
             return (
               <li key={src.id}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-900/40 border border-white/[0.06] group transition-opacity ${isDeleting ? 'opacity-40' : ''}`}>
-                <Icon className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] group transition-opacity ${isDeleting ? 'opacity-40' : ''}`}>
+                <Icon className="w-4 h-4 text-indigo-500 dark:text-indigo-400 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white truncate">{src.fileName}</p>
-                  <p className="text-xs text-slate-600 capitalize">{src.fileType}</p>
+                  <p className="text-sm text-slate-900 dark:text-white truncate">{src.fileName}</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-600 capitalize">{src.fileType}</p>
                 </div>
                 <button
                   onClick={() => deleteMutation.mutate(src.id)}
                   disabled={isDeleting}
-                  className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all disabled:cursor-not-allowed"
+                  className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all disabled:cursor-not-allowed"
                 >
                   {isDeleting
                     ? <Loader2 className="w-4 h-4 animate-spin" />

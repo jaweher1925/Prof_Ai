@@ -159,9 +159,9 @@ export default function ScenePreviewPlayer({
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
                 ${scene?.ttsAudioUrl
                   ? playing
-                    ? 'bg-red-500/20 text-red-400 border border-red-500/20 hover:bg-red-500/30'
-                    : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/30'
-                  : 'bg-slate-800/50 text-slate-600 border border-white/[0.04] cursor-not-allowed'}`}>
+                    ? 'bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/20 hover:bg-red-500/30'
+                    : 'bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/30'
+                  : 'bg-slate-100 dark:bg-slate-800/50 text-slate-400 dark:text-slate-600 border border-slate-200 dark:border-white/[0.04] cursor-not-allowed'}`}>
               {playing ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
               {playing ? 'Stop' : scene?.ttsAudioUrl ? 'Preview audio' : 'No audio yet'}
             </button>
@@ -178,8 +178,8 @@ export default function ScenePreviewPlayer({
                 <button key={m.id}
                   onClick={() => onMotionChange?.(m.id)}
                   className={`px-2 py-1.5 rounded-lg text-[10px] font-medium transition-all border ${motionStyle === m.id
-                    ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/30'
-                    : 'bg-slate-800/40 text-slate-500 border-white/[0.04] hover:border-white/20 hover:text-slate-300'}`}>
+                    ? 'bg-indigo-600/20 text-indigo-700 dark:text-indigo-300 border-indigo-500/30'
+                    : 'bg-slate-100 dark:bg-slate-800/40 text-slate-500 border-slate-200 dark:border-white/[0.04] hover:border-slate-300 dark:hover:border-white/20 hover:text-slate-700 dark:hover:text-slate-300'}`}>
                   {m.label}
                 </button>
               ))}
@@ -197,7 +197,7 @@ export default function ScenePreviewPlayer({
                     title={pos.replace(/-/g, ' ')}
                     className={`aspect-square rounded-md border transition-all ${position === pos
                       ? 'bg-indigo-600 border-indigo-500'
-                      : 'bg-slate-800 border-white/[0.06] hover:bg-slate-700 hover:border-white/20'}`}
+                      : 'bg-slate-200 dark:bg-slate-800 border-slate-300 dark:border-white/[0.06] hover:bg-slate-300 dark:hover:bg-slate-700 hover:border-slate-400 dark:hover:border-white/20'}`}
                   >
                     {position === pos && (
                       <div className="w-full h-full flex items-center justify-center">
@@ -208,7 +208,7 @@ export default function ScenePreviewPlayer({
                 ))
               )}
             </div>
-            <p className="text-[10px] text-slate-600 mt-1 capitalize">{position.replace(/-/g, ' ')}</p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1 capitalize">{position.replace(/-/g, ' ')}</p>
           </div>
         </>
       )}

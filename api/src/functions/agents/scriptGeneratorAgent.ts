@@ -443,11 +443,15 @@ The package has exactly three parts:
    segment describing a simple, original educational illustration (flat/infographic style, never
    referencing real people or copyrighted characters).
 
-2. content_scenes — exactly 4 scenes covering the module's sub-topics in depth. Each scene has:
+2. content_scenes — EXACTLY 4 SCENES (no more, no less) covering the module's sub-topics in depth. Each scene has:
    - script_content: ONLY what the presenter says — natural conversational speech, 60-90 words
    - slide_content: ONLY what students read — a DIFFERENT, structured text from the speech, with
      a "blocks" array that MUST include at least one "bullets" block with 2-3 real items pulled
-     from the source (never an empty blocks array)
+     from the source (never an empty blocks array). Make slides VISUALLY INTERESTING:
+     * Use varied layouts (not always bullets): definitions, quotes, two-column, diagrams
+     * Include examples from the source material when possible
+     * Use meaningful subtitles that highlight the KEY INSIGHT students should remember
+     * Add relevant icons or emoji that reinforce the concept (e.g., 🔗 for connections, 📊 for data)
    - visual_prompt, duration_seconds, text_animation_type (one of: "slow-zoom-in", "zoom-out",
      "pan-left", "pan-right", "ken-burns", "static")
 
@@ -456,6 +460,7 @@ The package has exactly three parts:
    a short (1-2 sentence) explanation of why that answer is correct.
 ${specialInstructions}
 
+TOTAL SCENES LIMIT: Maximum 6 total scenes: 1 welcome + 4 content + 1 quiz. No more than 5 different scenes.
 Total estimated duration must not exceed 6 minutes (360 seconds) across welcome + content + quiz.
 
 Return this exact JSON shape:
@@ -485,23 +490,71 @@ Return this exact JSON shape:
       "script_content": "What the presenter says — 60-90 conversational words from source content",
       "slide_content": {
         "title": "Slide title (max 7 words)",
-        "subtitle": "One-line key insight from source",
+        "subtitle": "Key insight students should remember — one line",
         "layout": "bullets",
-        "theme": "light",
+        "theme": "academic",
         "blocks": [
           {
             "type": "bullets",
             "items": [
               { "text": "Specific fact or concept from source", "level": 1 },
-              { "text": "Supporting detail from source",        "level": 2 }
+              { "text": "Supporting detail or example from source",        "level": 2 },
+              { "text": "Real-world application or consequence",        "level": 2 }
             ]
           }
         ],
         "imagePrompt": "Educational diagram that illustrates the concept"
       },
-      "visual_prompt": "Brief visual context",
-      "duration_seconds": 45,
-      "text_animation_type": "ken-burns"
+      "visual_prompt": "Brief visual context, keep static background",
+      "duration_seconds": 60,
+      "text_animation_type": "static"
+    },
+    {
+      "title": "Definition or Key Concept Scene",
+      "script_content": "Explanation of a key term or concept — 60-90 words",
+      "slide_content": {
+        "title": "📚 Key Terminology",
+        "subtitle": "Important definition from source material",
+        "layout": "definition",
+        "theme": "academic",
+        "blocks": [
+          {
+            "type": "definition",
+            "term": "Term from source",
+            "definition": "Clear 1-2 sentence definition from source",
+            "examples": ["Real example from source", "Another relevant example"]
+          }
+        ]
+      },
+      "visual_prompt": "Concept illustration",
+      "duration_seconds": 50,
+      "text_animation_type": "static"
+    },
+    {
+      "title": "Comparison or Two-Part Concept",
+      "script_content": "Compare two ideas or show contrasting approaches — 60-90 words",
+      "slide_content": {
+        "title": "Comparison: Concept A vs. B",
+        "subtitle": "Understanding key differences from source",
+        "layout": "split",
+        "theme": "academic",
+        "blocks": [
+          {
+            "type": "two-column",
+            "left": [
+              { "text": "First concept details from source", "level": 1 },
+              { "text": "Characteristic or feature", "level": 2 }
+            ],
+            "right": [
+              { "text": "Second concept details from source", "level": 1 },
+              { "text": "Contrasting characteristic", "level": 2 }
+            ]
+          }
+        ]
+      },
+      "visual_prompt": "Side-by-side comparison visual",
+      "duration_seconds": 60,
+      "text_animation_type": "static"
     }
   ],
   "quiz_scene": {
@@ -510,9 +563,9 @@ Return this exact JSON shape:
       {
         "question": "Question testing a key idea from source",
         "options": [
-          { "label": "A", "text": "Option A" },
-          { "label": "B", "text": "Option B" },
-          { "label": "C", "text": "Option C" }
+          { "label": "A", "text": "Option A from source material" },
+          { "label": "B", "text": "Option B from source material" },
+          { "label": "C", "text": "Option C from source material" }
         ],
         "correct_option_label": "B",
         "explanation": "Why B is correct, grounded in the source"
@@ -578,7 +631,15 @@ Return this exact JSON shape:
       }
 
       // Scenes 1-4 — content (#30: bullets already guaranteed above).
-      for (const s of contentScenes) {
+      // LIMIT: Ensure we only process maximum 4 content scenes (for max 6 total: welcome + 4 content + quiz)
+      const MAX_CONTENT_SCENES = 4
+      const limitedContentScenes = contentScenes.slice(0, MAX_CONTENT_SCENES)
+      
+      if (contentScenes.length > MAX_CONTENT_SCENES) {
+        context.warn(`Module "${mod.title}" generated ${contentScenes.length} content scenes; limiting to ${MAX_CONTENT_SCENES}`)
+      }
+      
+      for (const s of limitedContentScenes) {
         const scene = await prisma.scene.create({
           data: {
             moduleId:           mod.id,
@@ -659,6 +720,14 @@ Return this exact JSON shape:
         }
         scenes.push(quizScene)
       }
+
+      // ── Validation: Ensure max 6 total scenes ──────────────────────────────
+      const TOTAL_MAX_SCENES = 6  // welcome (1) + content (4) + quiz (1) = 6
+      if (scenes.length > TOTAL_MAX_SCENES) {
+        context.error(`VIOLATION: Module "${mod.title}" has ${scenes.length} scenes but max is ${TOTAL_MAX_SCENES}. This should not happen!`)
+        throw new Error(`Script generation exceeded maximum scene limit: ${scenes.length} > ${TOTAL_MAX_SCENES}`)
+      }
+      context.log(`  ✓ Scene count valid: ${scenes.length}/${TOTAL_MAX_SCENES} (welcome + ${limitedContentScenes.length} content + quiz)`)
 
       // ── Save script record ────────────────────────────────────────────────
       await prisma.script.deleteMany({ where: { moduleId: mod.id } })

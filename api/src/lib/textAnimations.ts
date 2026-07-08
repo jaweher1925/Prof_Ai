@@ -5,6 +5,8 @@
  * Works with both FFmpeg (video generation) and React (Visual Designer preview).
  */
 
+import { getAudioDurationSec, localPathFromUploadUrl } from './ffmpegVideo'
+
 export interface TextAnimationTiming {
   elementIndex: number  // Which element (0=title, 1+=bullets/content)
   startMs: number       // When to start reveal (milliseconds from segment start)
@@ -45,17 +47,70 @@ export function generateDefaultTimings(
 }
 
 /**
- * Parse timing JSON string into structured object
+ * Generate text animation timings automatically based on script and audio duration
+ * Creates staggered reveals for each sentence/phrase
  */
-export function parseTimings(jsonStr?: string): TextAnimationSettings {
-  if (!jsonStr) {
-    return { timings: [] }
-  }
-  
+export async function generateTextAnimationTimingsFromScript(
+  scriptText: string,
+  audioUrl: string,
+  slideDesign: any
+): Promise<string> {
   try {
-    return JSON.parse(jsonStr)
-  } catch {
-    return { timings: [] }
+    // Extract text elements from slide
+    const textElements: string[] = []
+    if (slideDesign.title) textElements.push(slideDesign.title)
+    if (slideDesign.subtitle) textElements.push(slideDesign.subtitle)
+    if (slideDesign.blocks) {
+      for (const block of slideDesign.blocks) {
+        if (block.items && Array.isArray(block.items)) {
+          textElements.push(...block.items.map((i: any) => i.text).filter(Boolean))
+        }
+      }
+    }
+    
+    if (textElements.length === 0) {
+      return JSON.stringify({ timings: [] })
+    }
+    
+    // Get audio duration
+    const audioPath = localPathFromUploadUrl(audioUrl)
+    let durationSec = 10  // default fallback
+    if (audioPath) {
+      try {
+        durationSec = await getAudioDurationSec(audioPath)
+      } catch {
+        /* use default */
+      }
+    }
+    
+    // Split script into phrases (sentences ending with . ! ?)
+    const phrases = scriptText
+      .split(/[.!?]+/)
+      .map(s => s.trim())
+      .filter(s => s.length > 0)
+    
+    // Map phrases to text elements, distribute across duration
+    const timings = []
+    const durationMs = durationSec * 1000
+    const revealDurationMs = Math.max(400, Math.min(1000, durationMs / (textElements.length * 2)))
+    const staggerMs = (durationMs - revealDurationMs) / Math.max(1, textElements.length - 1)
+    
+    for (let i = 0; i < textElements.length; i++) {
+      timings.push({
+        elementIndex: i,
+        startMs: Math.round(i * staggerMs),
+        durationMs: Math.round(revealDurationMs),
+        type: 'fade',
+      })
+    }
+    
+    return JSON.stringify({
+      timings,
+      overallDuration: durationMs,
+    })
+  } catch (err: any) {
+    console.warn(`[generateTextAnimationTimingsFromScript] Failed: ${err?.message}`)
+    return JSON.stringify({ timings: [] })
   }
 }
 

@@ -9,9 +9,20 @@ import { projectsService } from '@/services/projects'
 import { mediaService } from '@/services/media'
 import { scriptsService } from '@/services/scripts'
 import { agentsService } from '@/services/agents'
-import { Settings, User, Play, Square, ChevronDown, Loader2, Save, X, CheckCircle, Pencil, RefreshCw } from 'lucide-react'
+import { Settings, User, Play, Square, ChevronDown, Loader2, Save, X, CheckCircle, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
+
+// Skeleton loader for a list of items
+function SkeletonLoader({ count = 3 }) {
+  return (
+    <div className="space-y-2 p-2">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="h-12 rounded-lg bg-slate-200 dark:bg-slate-700 animate-pulse" />
+      ))}
+    </div>
+  )
+}
 
 const DEFAULT_AVATAR_ID = 'Daisy-inskirt-20220818' // HeyGen's free default avatar — always available
 
@@ -38,9 +49,11 @@ function AvatarPicker({ value, onChange }) {
   const [open, setOpen] = useState(false)
   const [manualMode, setManualMode] = useState(false)
   const [manualValue, setManualValue] = useState(value || '')
+  const [refreshing, setRefreshing] = useState(false)
   const ref = useRef(null)
+  const queryClient = useQueryClient()
 
-  const { data, isLoading: loading, error: queryError } = useQuery(AVATARS_QUERY)
+  const { data, isLoading: loading, error: queryError, isFetching } = useQuery(AVATARS_QUERY)
   const avatars = data?.avatars || []
   const error = queryError
     ? (queryError?.message || 'Failed to load avatars. Check HEYGEN_API_KEY in api/.env.')
@@ -55,6 +68,17 @@ function AvatarPicker({ value, onChange }) {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
+
+  const handleRefresh = async (e) => {
+    e.stopPropagation()
+    setRefreshing(true)
+    try {
+      // Force invalidate cache and refetch
+      await queryClient.refetchQueries({ queryKey: AVATARS_QUERY.queryKey, type: 'active' })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const selected = avatars.find(a => a.avatar_id === value)
 
@@ -95,10 +119,27 @@ function AvatarPicker({ value, onChange }) {
 
       {open && (
         <div className="absolute z-50 mt-1 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden">
-          {loading
-            ? <div className="flex justify-center py-6"><Spinner size="sm" /></div>
+          {loading && !data
+            ? <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <Loader2 className="w-4 h-4 text-indigo-500 dark:text-indigo-400 animate-spin" />
+                  <div>
+                    <p className="text-xs font-medium text-slate-900 dark:text-white">Fetching avatars from HeyGen</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">This takes 2-5 seconds on first load</p>
+                  </div>
+                </div>
+                <SkeletonLoader count={5} />
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={() => { onChange(DEFAULT_AVATAR_ID, 'Daisy (default)', 'female'); setOpen(false) }}
+                    className="flex-1 px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors border border-slate-200 dark:border-white/10"
+                  >
+                    Use default avatar
+                  </button>
+                </div>
+              </div>
             : <>
-                {error && <p className="text-xs text-amber-600 dark:text-amber-400 p-3 border-b border-slate-100 dark:border-white/[0.06]">{error}</p>}
+                {error && <p className="text-xs text-amber-600 dark:text-amber-400 p-3 border-b border-slate-100 dark:border-white/[0.06] flex items-start gap-2"><AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" /> {error}</p>}
                 {avatars.length > 0 && (
                   <ul className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
                     {avatars.map((a, idx) => (
@@ -123,18 +164,38 @@ function AvatarPicker({ value, onChange }) {
                   </ul>
                 )}
                 <div className="p-2 space-y-1 border-t border-slate-100 dark:border-white/[0.06]">
-                  <button
-                    onClick={() => { onChange(DEFAULT_AVATAR_ID, 'Daisy (default)', 'female'); setOpen(false) }}
-                    className="w-full text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors"
-                  >
-                    Use free default avatar
-                  </button>
-                  <button
-                    onClick={() => { setManualMode(true); setOpen(false) }}
-                    className="w-full flex items-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors"
-                  >
-                    <Pencil className="w-3 h-3" /> Enter avatar ID manually
-                  </button>
+                  {isFetching && !loading && (
+                    <button
+                      disabled
+                      className="w-full flex items-center justify-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400"
+                    >
+                      <Loader2 className="w-3 h-3 animate-spin" /> Refreshing avatars…
+                    </button>
+                  )}
+                  {!isFetching && (
+                    <>
+                      <button
+                        onClick={handleRefresh}
+                        disabled={refreshing}
+                        className="w-full flex items-center justify-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors disabled:opacity-50"
+                      >
+                        {refreshing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        {refreshing ? 'Refreshing…' : 'Refresh avatar list'}
+                      </button>
+                      <button
+                        onClick={() => { onChange(DEFAULT_AVATAR_ID, 'Daisy (default)', 'female'); setOpen(false) }}
+                        className="w-full text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors"
+                      >
+                        Use free default avatar
+                      </button>
+                      <button
+                        onClick={() => { setManualMode(true); setOpen(false) }}
+                        className="w-full flex items-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors"
+                      >
+                        <Pencil className="w-3 h-3" /> Enter avatar ID manually
+                      </button>
+                    </>
+                  )}
                 </div>
               </>}
         </div>
@@ -153,10 +214,12 @@ function VoicePicker({ value, onChange, genderHint }) {
   const [open, setOpen] = useState(false)
   const [playingId, setPlayingId] = useState(null)
   const [showAllGenders, setShowAllGenders] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const audioRef = useRef(null)
   const ref = useRef(null)
+  const queryClient = useQueryClient()
 
-  const { data, isLoading: loading, error: queryError } = useQuery(VOICES_QUERY)
+  const { data, isLoading: loading, error: queryError, isFetching } = useQuery(VOICES_QUERY)
   const allVoices = data?.voices || []
   const error = queryError ? 'Failed to load voices. Check your voice API key.' : null
 
@@ -167,6 +230,17 @@ function VoicePicker({ value, onChange, genderHint }) {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
+
+  const handleRefresh = async (e) => {
+    e.stopPropagation()
+    setRefreshing(true)
+    try {
+      // Force invalidate cache and refetch
+      await queryClient.refetchQueries({ queryKey: VOICES_QUERY.queryKey, type: 'active' })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const matching = genderHint ? allVoices.filter(v => normGender(v.labels?.gender) === genderHint) : allVoices
   const filtered = (genderHint && !showAllGenders && matching.length > 0) ? matching : allVoices
@@ -203,10 +277,19 @@ function VoicePicker({ value, onChange, genderHint }) {
 
       {open && (
         <div className="absolute z-50 mt-1 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden">
-          {loading
-            ? <div className="flex justify-center py-6"><Spinner size="sm" /></div>
+          {loading && !data
+            ? <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <Loader2 className="w-4 h-4 text-indigo-500 dark:text-indigo-400 animate-spin" />
+                  <div>
+                    <p className="text-xs font-medium text-slate-900 dark:text-white">Fetching voices from ElevenLabs</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">This takes 1-3 seconds on first load</p>
+                  </div>
+                </div>
+                <SkeletonLoader count={5} />
+              </div>
             : error
-            ? <p className="text-xs text-red-500 dark:text-red-400 p-4">{error}</p>
+            ? <p className="text-xs text-red-500 dark:text-red-400 p-4 flex items-start gap-2"><AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />{error}</p>
             : allVoices.length === 0
             ? <p className="text-xs text-slate-500 p-4 text-center">No voices found — check your voice API key in Integrations</p>
             : <>
@@ -251,6 +334,26 @@ function VoicePicker({ value, onChange, genderHint }) {
                     </li>
                   ))}
                 </ul>
+                <div className="p-2 space-y-1 border-t border-slate-100 dark:border-white/[0.06]">
+                  {isFetching && !loading && (
+                    <button
+                      disabled
+                      className="w-full flex items-center justify-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400"
+                    >
+                      <Loader2 className="w-3 h-3 animate-spin" /> Refreshing voices…
+                    </button>
+                  )}
+                  {!isFetching && (
+                    <button
+                      onClick={handleRefresh}
+                      disabled={refreshing}
+                      className="w-full flex items-center justify-center gap-1.5 text-left px-2 py-2 rounded-lg text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white transition-colors disabled:opacity-50"
+                    >
+                      {refreshing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      {refreshing ? 'Refreshing…' : 'Refresh voice list'}
+                    </button>
+                  )}
+                </div>
               </>}
         </div>
       )}

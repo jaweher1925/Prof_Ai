@@ -6,11 +6,19 @@
  *
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
+import { join, parse } from 'path'
+import { existsSync, readFileSync, copyFileSync, unlinkSync } from 'fs'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
-import { compositeAvatarOverlay } from '../../lib/ffmpegVideo'
+import { compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl } from '../../lib/ffmpegVideo'
+import { downloadToUploads } from '../../lib/heygenAvatar'
 
 const HEYGEN_API = 'https://api.heygen.com'
+const UPLOAD_DIR = join(process.cwd(), 'uploads')
+
+// Guards against two pollers (VideoPanel loop + workspace render watcher)
+// finalizing the same completed video concurrently.
+const finalizing = new Set<string>()
 
 async function pollHeyGenVideoHandler(
   request: HttpRequest,
@@ -68,6 +76,85 @@ async function pollHeyGenVideoHandler(
         include: { module: { include: { project: true } } },
       })
 
+      // Already finalized (e.g. by a concurrent poll) — don't redo the work
+      // or overwrite the composited video with a re-derived one.
+      if (scene?.avatarVideoUrl && !scene.avatarVideoUrl.startsWith('heygen:')) {
+        return {
+          status: 200,
+          jsonBody: {
+            video_id: body.video_id,
+            status: 'completed',
+            video_url: scene.avatarVideoUrl,
+            thumbnail_url: thumbnailUrl || null,
+            completed: true,
+          },
+        }
+      }
+
+      // ── Async job path (generateHeyGenAvatar submitted the job and left a
+      // sidecar with the slide video + cache path) — finish it here:
+      // download the clip, populate the avatar cache, composite the overlay.
+      const sidecarPath = join(UPLOAD_DIR, `heygen_pending_${body.video_id}.json`)
+      if (existsSync(sidecarPath)) {
+        if (finalizing.has(body.video_id)) {
+          // Another request is already compositing — report still-processing
+          return {
+            status: 200,
+            jsonBody: { video_id: body.video_id, status: 'processing', video_url: null, completed: false },
+          }
+        }
+        finalizing.add(body.video_id)
+        try {
+          const meta = JSON.parse(readFileSync(sidecarPath, 'utf8')) as {
+            slideVideoUrl: string; cachePath?: string; createdAt?: number
+          }
+          
+          // Check if this job has been pending for too long (>30 min indicates a problem)
+          const createdAt = meta.createdAt || Date.now()
+          const elapsedMin = Math.round((Date.now() - createdAt) / 60_000)
+          if (elapsedMin > 30) {
+            context.warn(`Scene ${body.scene_id}: HeyGen job ${body.video_id} pending for ${elapsedMin}min, possible stuck job`)
+          }
+          
+          const avatarPath = await downloadToUploads(videoUrl)
+          if (meta.cachePath) {
+            try { copyFileSync(avatarPath, meta.cachePath) } catch { /* cache is best-effort */ }
+          }
+
+          let finalUrl = meta.slideVideoUrl // fallback: slide-only video
+          const basePath = localPathFromUploadUrl(meta.slideVideoUrl)
+          if (basePath) {
+            try {
+              const finalPath = await overlayAvatarOnVideo(basePath, avatarPath)
+              finalUrl = `/api/uploads/${parse(finalPath).base}`
+              context.log(`Scene ${body.scene_id}: async avatar composited onto slide video after ${elapsedMin}min`)
+            } catch (e: any) {
+              context.warn(`Scene ${body.scene_id}: overlay failed, keeping slide-only video — ${e?.message}`)
+            }
+          }
+
+          await prisma.scene.update({
+            where: { id: body.scene_id },
+            data: { avatarVideoUrl: finalUrl, status: 'completed' },
+          })
+          try { unlinkSync(sidecarPath) } catch { /* best-effort cleanup */ }
+
+          return {
+            status: 200,
+            jsonBody: {
+              video_id: body.video_id,
+              status: 'completed',
+              video_url: finalUrl,
+              thumbnail_url: thumbnailUrl || null,
+              completed: true,
+            },
+          }
+        } finally {
+          finalizing.delete(body.video_id)
+        }
+      }
+
+      // ── Legacy path: composite from the slide image + TTS audio
       if (scene?.ttsAudioUrl) {
         try {
           let parsedCues: { text: string; duration_seconds?: number }[] | null = null
@@ -121,10 +208,24 @@ async function pollHeyGenVideoHandler(
       })
       context.log(`Scene ${body.scene_id} updated with video URL`)
     } else if (status === 'failed' && body.scene_id) {
+      context.warn(`Scene ${body.scene_id}: HeyGen job ${body.video_id} failed`)
       await prisma.scene.update({
         where: { id: body.scene_id },
         data: { status: 'assets_ready' }, // Reset so user can retry
       })
+    } else if (status === 'processing' && body.scene_id) {
+      // Check sidecar for how long this has been pending
+      const sidecarPath = join(UPLOAD_DIR, `heygen_pending_${body.video_id}.json`)
+      if (existsSync(sidecarPath)) {
+        try {
+          const meta = JSON.parse(readFileSync(sidecarPath, 'utf8')) as { createdAt?: number }
+          const createdAt = meta.createdAt || Date.now()
+          const elapsedMin = Math.round((Date.now() - createdAt) / 60_000)
+          if (elapsedMin > 25) {
+            context.warn(`Scene ${body.scene_id}: HeyGen job still processing after ${elapsedMin}min (approaching timeout)`)
+          }
+        } catch { /* ignore sidecar read errors */ }
+      }
     }
 
     return {

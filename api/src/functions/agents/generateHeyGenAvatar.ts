@@ -8,7 +8,8 @@
  * Simply: Convert slideDesign + audio → video
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
-import { parse } from 'path'
+import { parse, join } from 'path'
+import { writeFileSync } from 'fs'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import {
@@ -17,25 +18,34 @@ import {
   localPathFromUploadUrl,
   extractAudioTrack,
 } from '../../lib/ffmpegVideo'
-import { generateAvatarClip } from '../../lib/heygenAvatar'
+import { startAvatarClipJob } from '../../lib/heygenAvatar'
+
+const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
 /**
- * Talking-avatar overlay (#40): if the project has a HeyGen avatar selected
- * (Avatar Studio / Casting Settings) and an API key is configured, generate a
- * lip-synced presenter from the scene's TTS audio and composite it
- * bottom-right — exactly where the Visual Designer preview shows it.
+ * Talking-avatar overlay (#40), now NON-BLOCKING:
+ * - avatar cached (narration unchanged) → composite immediately, done.
+ * - cache miss → submit the HeyGen job and return its video_id; a sidecar
+ *   JSON next to the uploads remembers the slide video + cache path so
+ *   pollHeyGenVideo.ts can finish (download → cache → composite) when HeyGen
+ *   completes. The HTTP request no longer sits open for the 2–15 min render.
  * Any failure falls back to the slide-only video so rendering never breaks.
  */
-async function tryAddAvatar(
+async function addAvatarOrQueue(
   context: InvocationContext,
   slideVideoUrl: string,
   audioUrls: string[],
-  moduleId: string
-): Promise<string> {
+  moduleId: string,
+  useAvatar: boolean
+): Promise<{ pending: false; videoUrl: string } | { pending: true; heygenVideoId: string }> {
   try {
+    if (!useAvatar) {
+      context.log('[generateHeyGenAvatar] Voice-only mode requested — skipping avatar overlay')
+      return { pending: false, videoUrl: slideVideoUrl }
+    }
     if (!process.env.HEYGEN_API_KEY) {
       context.log('[generateHeyGenAvatar] No HEYGEN_API_KEY — skipping avatar overlay')
-      return slideVideoUrl
+      return { pending: false, videoUrl: slideVideoUrl }
     }
     const module_ = await prisma.module.findUnique({
       where: { id: moduleId },
@@ -44,13 +54,13 @@ async function tryAddAvatar(
     const project = module_?.project
     if (!project?.defaultAvatarId) {
       context.log('[generateHeyGenAvatar] No avatar selected on project — skipping avatar overlay')
-      return slideVideoUrl
+      return { pending: false, videoUrl: slideVideoUrl }
     }
 
     const basePath = localPathFromUploadUrl(slideVideoUrl)
     if (!basePath) {
       context.warn('[generateHeyGenAvatar] Slide video not found locally — skipping avatar overlay')
-      return slideVideoUrl
+      return { pending: false, videoUrl: slideVideoUrl }
     }
 
     // Drive the avatar from the FINAL video's own audio track (not the raw
@@ -67,11 +77,10 @@ async function tryAddAvatar(
     }
     if (!audioPaths.length) {
       context.warn('[generateHeyGenAvatar] No audio available — skipping avatar overlay')
-      return slideVideoUrl
+      return { pending: false, videoUrl: slideVideoUrl }
     }
 
-    context.log(`[generateHeyGenAvatar] Generating HeyGen avatar (${project.defaultAvatarId}) — cached if narration unchanged, otherwise a few minutes…`)
-    const avatarPath = await generateAvatarClip({
+    const job = await startAvatarClipJob({
       audioPaths,
       avatarId: project.defaultAvatarId,
       avatarStyle: project.avatarStyle,
@@ -83,13 +92,63 @@ async function tryAddAvatar(
         .filter((p): p is string => !!p),
     })
 
-    const finalPath = await overlayAvatarOnVideo(basePath, avatarPath)
-    const finalUrl = `/api/uploads/${parse(finalPath).base}`
-    context.log(`[generateHeyGenAvatar] ✅ Avatar composited: ${finalUrl}`)
-    return finalUrl
+    if (job.cached) {
+      const finalPath = await overlayAvatarOnVideo(basePath, job.avatarPath)
+      const finalUrl = `/api/uploads/${parse(finalPath).base}`
+      context.log(`[generateHeyGenAvatar] ✅ Avatar composited from cache: ${finalUrl}`)
+      return { pending: false, videoUrl: finalUrl }
+    }
+
+    // Sidecar so pollHeyGenVideo can finish the job later
+    writeFileSync(
+      join(UPLOAD_DIR, `heygen_pending_${job.videoId}.json`),
+      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now() })
+    )
+    context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
+    return { pending: true, heygenVideoId: job.videoId }
   } catch (err: any) {
     context.warn(`[generateHeyGenAvatar] Avatar overlay failed — using slide-only video: ${err?.message}`)
-    return slideVideoUrl
+    return { pending: false, videoUrl: slideVideoUrl }
+  }
+}
+
+/** Shared tail for both scene shapes: either finish now (voice-only / cached
+ *  avatar) or persist the pending HeyGen job and return the video_id the
+ *  frontend polls. */
+async function finishOrQueue(
+  context: InvocationContext,
+  sceneId: string,
+  moduleId: string,
+  slideVideoUrl: string,
+  audioUrls: string[],
+  useAvatar: boolean
+): Promise<HttpResponseInit> {
+  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, useAvatar)
+
+  if (avatar.pending) {
+    await prisma.scene.update({
+      where: { id: sceneId },
+      data: { avatarVideoUrl: `heygen:${avatar.heygenVideoId}`, status: 'rendering' },
+    })
+    return {
+      status: 200,
+      jsonBody: {
+        success: true,
+        scene_id: sceneId,
+        video_id: avatar.heygenVideoId,
+        status: 'rendering',
+      },
+    }
+  }
+
+  await prisma.scene.update({
+    where: { id: sceneId },
+    data: { avatarVideoUrl: avatar.videoUrl, status: 'completed' },
+  })
+  context.log(`[generateHeyGenAvatar] ✅ Completed: ${avatar.videoUrl}`)
+  return {
+    status: 200,
+    jsonBody: { success: true, scene_id: sceneId, video_url: avatar.videoUrl },
   }
 }
 
@@ -101,11 +160,13 @@ async function generateHeyGenAvatarHandler(
   if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
 
   try {
-    const body = (await request.json()) as { scene_id?: string }
+    const body = (await request.json()) as { scene_id?: string; use_avatar?: boolean }
 
     if (!body.scene_id) {
       return { status: 400, jsonBody: { error: 'scene_id is required' } }
     }
+    // Honour the frontend's voice-only toggle (was previously ignored)
+    const useAvatar = body.use_avatar !== false
 
     // Get scene with module and segments (explicitly select all segment fields)
     const scene = await prisma.scene.findUnique({
@@ -152,37 +213,20 @@ async function generateHeyGenAvatarHandler(
       context.log(`[generateHeyGenAvatar] Rendering ${segments.length} segments for scene ${body.scene_id}`)
 
       try {
-        let videoUrl = await renderSegmentsToVideo({
+        const videoUrl = await renderSegmentsToVideo({
           segments,
           moduleTitle: scene.module?.title,
         })
 
-        // Talking-avatar overlay (#40)
-        videoUrl = await tryAddAvatar(
+        // Talking-avatar overlay (#40) — async when not cached
+        return await finishOrQueue(
           context,
+          body.scene_id,
+          scene.moduleId,
           videoUrl,
           segments.map(s => s.ttsAudioUrl),
-          scene.moduleId
+          useAvatar
         )
-
-        await prisma.scene.update({
-          where: { id: body.scene_id },
-          data: {
-            avatarVideoUrl: videoUrl,
-            status: 'completed',
-          },
-        })
-
-        context.log(`[generateHeyGenAvatar] ✅ Completed: ${videoUrl}`)
-
-        return {
-          status: 200,
-          jsonBody: {
-            success: true,
-            scene_id: body.scene_id,
-            video_url: videoUrl,
-          },
-        }
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
         await prisma.scene.update({
@@ -216,32 +260,20 @@ async function generateHeyGenAvatarHandler(
           motionId: scene.textAnimationType || 'word-by-word',
         }
         
-        let videoUrl = await renderSegmentsToVideo({
+        const videoUrl = await renderSegmentsToVideo({
           segments: [segment],
           moduleTitle: scene.module?.title,
         })
 
-        // Talking-avatar overlay (#40)
-        videoUrl = await tryAddAvatar(context, videoUrl, [scene.ttsAudioUrl || ''], scene.moduleId)
-
-        await prisma.scene.update({
-          where: { id: body.scene_id },
-          data: {
-            avatarVideoUrl: videoUrl,
-            status: 'completed',
-          },
-        })
-
-        context.log(`[generateHeyGenAvatar] ✅ Completed: ${videoUrl}`)
-
-        return {
-          status: 200,
-          jsonBody: {
-            success: true,
-            scene_id: body.scene_id,
-            video_url: videoUrl,
-          },
-        }
+        // Talking-avatar overlay (#40) — async when not cached
+        return await finishOrQueue(
+          context,
+          body.scene_id,
+          scene.moduleId,
+          videoUrl,
+          [scene.ttsAudioUrl || ''],
+          useAvatar
+        )
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
         await prisma.scene.update({

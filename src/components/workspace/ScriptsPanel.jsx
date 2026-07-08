@@ -168,17 +168,17 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
   return (
     <div className="p-6 max-w-3xl">
       <div className="flex items-center gap-3 mb-6">
-        <FileText className="w-5 h-5 text-indigo-400" />
-        <h2 className="text-lg font-medium text-white tracking-wide">Script Generation</h2>
-        <span className="text-xs text-slate-600">5 videos · 6 min each</span>
+        <FileText className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
+        <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Script Generation</h2>
+        <span className="text-xs text-slate-400 dark:text-slate-600">5 videos · 6 min each</span>
       </div>
 
       {/* ── Step 1: Librarian ── */}
-      <div className="mb-6 p-4 rounded-xl bg-slate-900/40 border border-white/[0.06]">
+      <div className="mb-6 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-blue-400" />
-            <h3 className="text-sm font-medium text-white">Step 1 — Analyze Sources</h3>
+            <BookOpen className="w-4 h-4 text-blue-500 dark:text-blue-400" />
+            <h3 className="text-sm font-medium text-slate-900 dark:text-white">Step 1 — Analyze Sources</h3>
           </div>
           {hasModules && <Badge variant="green"><CheckCircle className="w-3 h-3 mr-1" />Done</Badge>}
         </div>
@@ -187,15 +187,15 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
         </p>
         {isStuck && !runningLibrarian && (
           <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-3">
-            <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-300 flex-1">Analysis stuck.</p>
-            <button onClick={handleResetStuck} className="text-xs text-amber-400 underline hover:text-amber-300 flex-shrink-0">Reset</button>
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-700 dark:text-amber-300 flex-1">Analysis stuck.</p>
+            <button onClick={handleResetStuck} className="text-xs text-amber-600 dark:text-amber-400 underline hover:text-amber-700 dark:hover:text-amber-300 flex-shrink-0">Reset</button>
           </div>
         )}
         {librarianError && (
           <div className="flex items-start gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20 mb-3">
-            <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-red-300">{librarianError}</p>
+            <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-700 dark:text-red-300">{librarianError}</p>
           </div>
         )}
         <Button onClick={handleRunLibrarian} disabled={runningLibrarian || isGenerating} variant={hasModules ? 'secondary' : 'primary'} size="sm">
@@ -204,8 +204,8 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
         {hasModules && scripts.length > 0 && (
           <div className="mt-3 space-y-1">
             {scripts.map((s, i) => (
-              <div key={s.id} className="flex items-center gap-2 text-xs text-slate-400">
-                <span className="text-indigo-400 font-bold">Video {i + 1}</span>
+              <div key={s.id} className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span className="text-indigo-500 dark:text-indigo-400 font-bold">Video {i + 1}</span>
                 <span>{s.title}</span>
               </div>
             ))}
@@ -214,30 +214,30 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
       </div>
 
       {/* ── Step 2: Script Generator ── */}
-      <div className="mb-6 p-4 rounded-xl bg-slate-900/40 border border-white/[0.06]">
+      <div className="mb-6 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-purple-400" />
-            <h3 className="text-sm font-medium text-white">Step 2 — Generate Scripts</h3>
+            <FileText className="w-4 h-4 text-purple-500 dark:text-purple-400" />
+            <h3 className="text-sm font-medium text-slate-900 dark:text-white">Step 2 — Generate Scripts</h3>
           </div>
           {allApproved && <Badge variant="green"><CheckCircle className="w-3 h-3 mr-1" />All Approved</Badge>}
         </div>
         <p className="text-xs text-slate-500 mb-3">
           Writes 6 scenes per video (6 min total) — Scene 1: welcome + objectives, Scene 6: summary. You can edit any scene before approving.
         </p>
-        <button onClick={() => setShowInstructions(v => !v)} className="text-xs text-slate-500 hover:text-indigo-400 transition-colors mb-3 flex items-center gap-1">
+        <button onClick={() => setShowInstructions(v => !v)} className="text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors mb-3 flex items-center gap-1">
           {showInstructions ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           Special instructions (optional)
         </button>
         {showInstructions && (
           <textarea value={instructions} onChange={e => setInstructions(e.target.value)}
             placeholder="e.g. Friendly tone, target: university students, examples from biology"
-            className="w-full bg-slate-800/60 border border-white/10 rounded-lg p-3 text-xs text-white placeholder:text-slate-600 resize-none focus:outline-none focus:border-indigo-500/50 mb-3" rows={3} />
+            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-3 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 resize-none focus:outline-none focus:border-indigo-500/50 mb-3" rows={3} />
         )}
         {scriptError && (
           <div className="flex items-start gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20 mb-3">
-            <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-            <p className="text-xs text-red-300">{scriptError}</p>
+            <AlertTriangle className="w-4 h-4 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-700 dark:text-red-300">{scriptError}</p>
           </div>
         )}
         <Button onClick={handleRunScriptGenerator} disabled={runningScripts || isGenerating || !hasModules} variant={scripts.length > 0 ? 'secondary' : 'primary'} size="sm">
@@ -250,24 +250,31 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
         <div className="flex justify-center py-8"><Spinner /></div>
       ) : scripts.length > 0 ? (
         <div className="space-y-3">
-          <h3 className="text-xs text-slate-400 uppercase tracking-widest">Review & Edit Scripts</h3>
+          <h3 className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-widest">Review & Edit Scripts</h3>
           {scripts.map((script, videoIdx) => {
             const badge = STATUS_BADGE[script.status] || { label: script.status, variant: 'default' }
             const isExpanded = expandedScript === script.id
             const sections = (() => { try { return JSON.parse(script.sections || '{}') } catch { return {} } })()
             const objectives = (() => { try { return JSON.parse(script.learningObjectives || '[]') } catch { return [] } })()
             const displayItems = buildDisplayItems(sections)
+            
+            // Count actual scenes, not segments: welcome (1) + content_scenes (N) + quiz (1)
+            const actualSceneCount = (
+              (sections.welcome ? 1 : 0) +
+              (sections.content_scenes?.length || 0) +
+              (sections.quiz_scene ? 1 : 0)
+            )
 
             return (
-              <div key={script.id} className="rounded-xl bg-slate-900/40 border border-white/[0.06] overflow-hidden">
-                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-800/30 transition-colors"
+              <div key={script.id} className="rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
+                <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors"
                   onClick={() => setExpandedScript(isExpanded ? null : script.id)}>
                   <div className="w-7 h-7 rounded-lg bg-indigo-500/20 border border-indigo-500/20 flex items-center justify-center flex-shrink-0">
-                    <span className="text-xs font-bold text-indigo-400">{videoIdx + 1}</span>
+                    <span className="text-xs font-bold text-indigo-500 dark:text-indigo-400">{videoIdx + 1}</span>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">{script.title}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">~{script.estimatedDurationMinutes} min · {displayItems.length} scenes</p>
+                    <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{script.title}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">~{script.estimatedDurationMinutes} min · {actualSceneCount} scenes</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <Badge variant={badge.variant}>{badge.label}</Badge>
@@ -276,13 +283,13 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
                 </div>
 
                 {isExpanded && (
-                  <div className="border-t border-white/[0.06] px-4 py-4 space-y-4">
+                  <div className="border-t border-slate-200 dark:border-white/[0.06] px-4 py-4 space-y-4">
                     {objectives.length > 0 && (
                       <div>
-                        <p className="text-xs text-slate-400 font-medium mb-1">Learning Objectives</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mb-1">Learning Objectives</p>
                         <ul className="space-y-1">
                           {objectives.map((o, i) => (
-                            <li key={i} className="text-xs text-slate-300 flex gap-2"><span className="text-indigo-400">•</span>{o}</li>
+                            <li key={i} className="text-xs text-slate-600 dark:text-slate-300 flex gap-2"><span className="text-indigo-500 dark:text-indigo-400">•</span>{o}</li>
                           ))}
                         </ul>
                       </div>
@@ -290,26 +297,26 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
 
                     {displayItems.length > 0 && (
                       <div>
-                        <p className="text-xs text-slate-400 font-medium mb-2">Scenes ({displayItems.length})</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mb-2">Scenes ({actualSceneCount})</p>
                         <div className="space-y-3">
                           {displayItems.map((item, i) => {
                             if (item.kind === 'quiz') {
                               return (
-                                <div key="quiz" className="rounded-xl bg-slate-800/50 border border-white/[0.06] overflow-hidden">
-                                  <div className="flex items-center justify-between px-3 py-2 bg-slate-900/30 border-b border-white/[0.04]">
+                                <div key="quiz" className="rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
+                                  <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-900/30 border-b border-slate-100 dark:border-white/[0.04]">
                                     <div className="flex items-center gap-2">
-                                      <span className="w-5 h-5 rounded-md bg-indigo-500/20 flex items-center justify-center text-[10px] font-bold text-indigo-400 flex-shrink-0">{i + 1}</span>
-                                      <p className="text-xs font-medium text-white">{item.title}</p>
-                                      <span className="text-[10px] text-slate-600 font-mono">{item.questions.length} questions</span>
+                                      <span className="w-5 h-5 rounded-md bg-indigo-500/20 flex items-center justify-center text-[10px] font-bold text-indigo-500 dark:text-indigo-400 flex-shrink-0">{i + 1}</span>
+                                      <p className="text-xs font-medium text-slate-900 dark:text-white">{item.title}</p>
+                                      <span className="text-[10px] text-slate-400 dark:text-slate-600 font-mono">{item.questions.length} questions</span>
                                     </div>
                                   </div>
                                   <div className="p-3 space-y-2">
                                     {item.questions.map((q, qi) => (
-                                      <div key={qi} className="text-xs text-slate-400 leading-relaxed">
-                                        <span className="text-indigo-400 font-medium">{qi + 1}. </span>{q.question}
+                                      <div key={qi} className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                                        <span className="text-indigo-500 dark:text-indigo-400 font-medium">{qi + 1}. </span>{q.question}
                                       </div>
                                     ))}
-                                    <p className="text-[9px] text-slate-600 mt-1 italic">Edit questions in Visual Designer →</p>
+                                    <p className="text-[9px] text-slate-400 dark:text-slate-600 mt-1 italic">Edit questions in Visual Designer →</p>
                                   </div>
                                 </div>
                               )
@@ -318,78 +325,78 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
                             const isEditing = editingScene?.scriptId === script.id && editingScene?.kind === item.kind && editingScene?.idx === item.idx
                             const slideBullets = item.slideContent?.blocks?.[0]?.items || []
                             return (
-                              <div key={`${item.kind}-${item.idx}`} className="rounded-xl bg-slate-800/50 border border-white/[0.06] overflow-hidden">
+                              <div key={`${item.kind}-${item.idx}`} className="rounded-xl bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
                                 {/* Scene header */}
-                                <div className="flex items-center justify-between px-3 py-2 bg-slate-900/30 border-b border-white/[0.04]">
+                                <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-900/30 border-b border-slate-100 dark:border-white/[0.04]">
                                   <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-md bg-indigo-500/20 flex items-center justify-center text-[10px] font-bold text-indigo-400 flex-shrink-0">{i + 1}</span>
-                                    <p className="text-xs font-medium text-white">{item.title}</p>
-                                    {item.duration && <span className="text-[10px] text-slate-600 font-mono">{item.duration}s</span>}
+                                    <span className="w-5 h-5 rounded-md bg-indigo-500/20 flex items-center justify-center text-[10px] font-bold text-indigo-500 dark:text-indigo-400 flex-shrink-0">{i + 1}</span>
+                                    <p className="text-xs font-medium text-slate-900 dark:text-white">{item.title}</p>
+                                    {item.duration && <span className="text-[10px] text-slate-400 dark:text-slate-600 font-mono">{item.duration}s</span>}
                                   </div>
                                   {!isEditing ? (
                                     <button
                                       onClick={() => setEditingScene({ scriptId: script.id, kind: item.kind, idx: item.idx, text: item.text })}
-                                      className="flex items-center gap-1 text-[10px] text-slate-600 hover:text-indigo-400 transition-colors"
+                                      className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-600 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
                                     >
                                       <Edit2 className="w-3 h-3" /> Edit voice
                                     </button>
                                   ) : (
                                     <div className="flex items-center gap-2">
                                       <button onClick={() => handleSaveScene(script, item)} disabled={savingScene}
-                                        className="flex items-center gap-1 text-[10px] text-green-400 hover:text-green-300 transition-colors">
+                                        className="flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300 transition-colors">
                                         {savingScene ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Save
                                       </button>
-                                      <button onClick={() => setEditingScene(null)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition-colors">
+                                      <button onClick={() => setEditingScene(null)} className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
                                         <X className="w-3 h-3" /> Cancel
                                       </button>
                                     </div>
                                   )}
                                 </div>
 
-                                <div className="grid grid-cols-2 divide-x divide-white/[0.04]">
+                                <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-white/[0.04]">
                                   {/* LEFT: Voice script (what presenter SAYS) */}
                                   <div className="p-3">
-                                    <p className="text-[10px] font-semibold text-blue-400/80 uppercase tracking-widest mb-1.5 flex items-center gap-1">
+                                    <p className="text-[10px] font-semibold text-blue-600/80 dark:text-blue-400/80 uppercase tracking-widest mb-1.5 flex items-center gap-1">
                                       🎙 Voice Script
                                     </p>
                                     {isEditing ? (
                                       <textarea
                                         value={editingScene.text}
                                         onChange={e => setEditingScene(prev => ({ ...prev, text: e.target.value }))}
-                                        className="w-full bg-slate-900/60 border border-indigo-500/30 rounded-lg p-2 text-xs text-white resize-none focus:outline-none focus:border-indigo-500/60"
+                                        className="w-full bg-white dark:bg-slate-900/60 border border-indigo-500/30 rounded-lg p-2 text-xs text-slate-900 dark:text-white resize-none focus:outline-none focus:border-indigo-500/60"
                                         rows={6}
                                         autoFocus
                                       />
                                     ) : (
-                                      <p className="text-xs text-slate-400 leading-relaxed">{item.text}</p>
+                                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{item.text}</p>
                                     )}
                                   </div>
 
                                   {/* RIGHT: Slide content (what students READ) */}
                                   <div className="p-3">
-                                    <p className="text-[10px] font-semibold text-violet-400/80 uppercase tracking-widest mb-1.5 flex items-center gap-1">
+                                    <p className="text-[10px] font-semibold text-violet-600/80 dark:text-violet-400/80 uppercase tracking-widest mb-1.5 flex items-center gap-1">
                                       📋 Slide Content
                                     </p>
                                     {item.slideContent?.title ? (
                                       <div className="space-y-1.5">
-                                        <p className="text-xs font-semibold text-white leading-snug">{item.slideContent.title}</p>
+                                        <p className="text-xs font-semibold text-slate-900 dark:text-white leading-snug">{item.slideContent.title}</p>
                                         {item.slideContent.subtitle && (
-                                          <p className="text-[11px] text-slate-400 italic leading-snug">{item.slideContent.subtitle}</p>
+                                          <p className="text-[11px] text-slate-500 dark:text-slate-400 italic leading-snug">{item.slideContent.subtitle}</p>
                                         )}
                                         {slideBullets.length > 0 && (
                                           <ul className="space-y-1 mt-1">
                                             {slideBullets.slice(0, 4).map((b, bi) => (
-                                              <li key={bi} className={`text-[11px] leading-snug flex gap-1.5 ${b.level === 2 ? 'text-slate-500 ml-2' : 'text-slate-300'}`}>
-                                                <span className="text-violet-400 flex-shrink-0">{b.level === 2 ? '◦' : '▸'}</span>
+                                              <li key={bi} className={`text-[11px] leading-snug flex gap-1.5 ${b.level === 2 ? 'text-slate-500 ml-2' : 'text-slate-600 dark:text-slate-300'}`}>
+                                                <span className="text-violet-500 dark:text-violet-400 flex-shrink-0">{b.level === 2 ? '◦' : '▸'}</span>
                                                 {b.text}
                                               </li>
                                             ))}
                                           </ul>
                                         )}
-                                        <p className="text-[9px] text-slate-600 mt-1 italic">Edit slides in Visual Designer →</p>
+                                        <p className="text-[9px] text-slate-400 dark:text-slate-600 mt-1 italic">Edit slides in Visual Designer →</p>
                                       </div>
                                     ) : (
-                                      <p className="text-[11px] text-slate-600 italic">Slide content generated with script</p>
+                                      <p className="text-[11px] text-slate-400 dark:text-slate-600 italic">Slide content generated with script</p>
                                     )}
                                   </div>
                                 </div>
@@ -416,8 +423,8 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
             <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/20">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-green-400" />
-                  <p className="text-sm text-green-300 font-medium">All 5 scripts approved!</p>
+                  <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />
+                  <p className="text-sm text-green-700 dark:text-green-300 font-medium">All 5 scripts approved!</p>
                 </div>
                 <button
                   onClick={() => onContinue?.('voice')}

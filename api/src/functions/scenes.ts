@@ -177,6 +177,52 @@ Return JSON with rewritten bullets:
   },
 })
 
+// POST /api/scenes/{id}/rebuild-slide
+// Rebuilds the whole slide content (title + key insight + content points)
+// FROM the voice script, so the slide always matches what the narrator says.
+app.http('rebuildSlideFromScript', {
+  methods: ['POST'], route: 'scenes/{id}/rebuild-slide', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const sceneId = req.params.id
+      const body = (await req.json()) as { script_text?: string }
+
+      // Fall back to the scene's own script if the caller didn't send text
+      let scriptText = body.script_text?.trim()
+      if (!scriptText) {
+        const scene = await prisma.scene.findUnique({ where: { id: sceneId } })
+        scriptText = scene?.scriptContent?.trim() || ''
+      }
+      if (!scriptText) return { status: 400, jsonBody: { error: 'No script text available for this scene' } }
+
+      const { generateJson } = await import('../lib/llm')
+      const result = await generateJson<{
+        title: string
+        subtitle: string
+        bullets: Array<{ text: string; level: number }>
+      }>(
+        `You are an educational slide designer. Given the narrator's voice script for one slide, ` +
+        `produce the on-screen slide content that MATCHES it exactly — students read the slide ` +
+        `while hearing this narration. Rules: the slide must only contain ideas actually present ` +
+        `in the script; title is a short concept name (3-7 words); subtitle is the single key ` +
+        `insight students should remember (one sentence, 8-16 words); 3-5 bullet points, each a ` +
+        `complete meaningful idea of 8-16 words, in the same order the script presents them. ` +
+        `Use the same language the script is written in. Always respond with valid JSON only.`,
+        `Voice script for this slide:
+"""
+${scriptText.slice(0, 4000)}
+"""
+
+Return JSON:
+{ "title": "string", "subtitle": "string", "bullets": [{ "text": "string", "level": 1 }] }`,
+        1024
+      )
+      return { status: 200, jsonBody: result }
+    } catch (e: any) { ctx.error(e); return err500(e) }
+  },
+})
+
 // POST /api/scenes/{id}/apply-theme-to-segments
 // Applies a theme to ALL segments in a scene at once
 app.http('applyThemeToSegments', {
@@ -201,6 +247,10 @@ app.http('applyThemeToSegments', {
             const design = JSON.parse(seg.slideDesign || '{}')
             // Update only the theme, keep layout, positions, and other properties
             design.theme = body.theme
+            // The saved WYSIWYG snapshot still shows the OLD theme — drop it so
+            // the video re-renders this segment with the new theme instead of
+            // silently using the stale image.
+            delete design.renderedSlideUrl
             return prisma.sceneSegment.update({
               where: { id: seg.id },
               data: { slideDesign: JSON.stringify(design) },

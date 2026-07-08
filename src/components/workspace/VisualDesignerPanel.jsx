@@ -188,9 +188,9 @@ class SlideEditorBoundary extends Component {
       return (
         <div className="flex flex-col items-center justify-center h-full p-8 text-center">
           <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
-            <span className="text-red-400 text-xl">!</span>
+            <span className="text-red-500 dark:text-red-400 text-xl">!</span>
           </div>
-          <p className="text-white font-medium mb-1">Slide editor error</p>
+          <p className="text-slate-900 dark:text-white font-medium mb-1">Slide editor error</p>
           <p className="text-slate-500 text-xs mb-4 max-w-xs">{this.state.error?.message || 'Unknown error'}</p>
           <button
             onClick={() => this.setState({ error: null })}
@@ -278,16 +278,16 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
   if (!scripts.length) return (
     <div className="flex flex-col items-center justify-center h-full p-12 text-center">
       <Layers className="w-10 h-10 text-slate-700 mb-3" />
-      <p className="text-slate-400">Complete the Script stage first.</p>
+      <p className="text-slate-500 dark:text-slate-400">Complete the Script stage first.</p>
     </div>
   )
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06] flex-shrink-0">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/[0.06] flex-shrink-0">
         <div>
-          <h2 className="text-base font-semibold text-white flex items-center gap-2">
-            <Layers className="w-4 h-4 text-indigo-400" /> Visual Designer
+          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-400" /> Visual Designer
           </h2>
          
         </div>
@@ -299,7 +299,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left: scene list - Clean inline layout */}
-        <div className="w-72 flex-shrink-0 border-r border-gray-700 overflow-y-auto bg-slate-950">
+        <div className="w-72 flex-shrink-0 border-r border-slate-200 dark:border-gray-700 overflow-y-auto bg-slate-50 dark:bg-slate-950">
           {scripts.map((script, vi) => (
             <SceneGroupList key={script.id} script={script} videoIndex={vi}
               selectedId={selected?.scene?.id} generating={generating}
@@ -309,7 +309,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
         </div>
 
         {/* Right: editor */}
-        <div className="flex-1 overflow-y-auto bg-slate-950">
+        <div className="flex-1 overflow-y-auto bg-slate-100 dark:bg-slate-950">
           {needsThemeGate ? (
             <ModuleThemeGate moduleTitle={selected.script.title}
               onChoose={(themeId) => resolveModuleTheme(themeId)} />
@@ -325,10 +325,10 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
             </SlideEditorBoundary>
           ) : (
             <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-white/[0.06] flex items-center justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/[0.06] flex items-center justify-center mb-4">
                 <Layers className="w-7 h-7 text-slate-700" />
               </div>
-              <p className="text-white font-medium mb-1">Select a scene</p>
+              <p className="text-slate-900 dark:text-white font-medium mb-1">Select a scene</p>
               <p className="text-slate-500 text-sm">Click any scene on the left to design its slide</p>
             </div>
           )}
@@ -348,19 +348,19 @@ function ModuleThemeGate({ moduleTitle, onChoose }) {
     <div className="flex flex-col items-center justify-center h-full p-12 text-center">
       <div className="w-full max-w-md">
         <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 mx-auto">
-          <Sparkles className="w-6 h-6 text-indigo-400" />
+          <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />
         </div>
-        <p className="text-white font-medium mb-1">Choose a theme for this module</p>
+        <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this module</p>
         <p className="text-slate-500 text-sm mb-5">
           "{moduleTitle}" — applies to every scene in this module
         </p>
         <div className="space-y-1.5">
           {THEMES.map(th => (
             <button key={th.id} onClick={() => onChoose(th.id)}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded border border-white/[0.10] hover:border-indigo-400/40 hover:bg-white/[0.03] transition-all text-left"
+              className="w-full flex items-center gap-3 px-3 py-2 rounded border border-slate-200 dark:border-white/[0.10] hover:border-indigo-400/40 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all text-left"
               style={{ background: th.isDark ? 'transparent' : 'rgba(248,250,252,0.05)' }}>
-              <div className="w-3 h-3 rounded-full flex-shrink-0 border border-white/20" style={{ background: th.accent }} />
-              <span className="text-sm font-medium text-white">{th.label}</span>
+              <div className="w-3 h-3 rounded-full flex-shrink-0 border border-slate-300 dark:border-white/20" style={{ background: th.accent }} />
+              <span className="text-sm font-medium text-slate-900 dark:text-white">{th.label}</span>
             </button>
           ))}
         </div>
@@ -380,7 +380,9 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
       ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       : Promise.resolve([]),
     enabled:  !!script.moduleId,
-    refetchInterval: 5000,
+    // Only poll while scene assets are being generated — not forever.
+    refetchInterval: (query) =>
+      query.state.data?.some?.(s => s.status === 'assets_generating' || s.status === 'rendering') ? 5000 : false,
   })
 
   const handleAddScene = async () => {
@@ -411,9 +413,9 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
 
   return (
     <div>
-      <div className="px-3 py-2 sticky top-0 bg-slate-950 backdrop-blur-sm border-b border-gray-700 z-10">
-        <p className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
-        <p className="text-xs text-white font-medium truncate mt-0.5">{script.title}</p>
+      <div className="px-3 py-2 sticky top-0 bg-slate-50 dark:bg-slate-950 backdrop-blur-sm border-b border-slate-200 dark:border-gray-700 z-10">
+        <p className="text-[10px] font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
+        <p className="text-xs text-slate-900 dark:text-white font-medium truncate mt-0.5">{script.title}</p>
       </div>
       {isLoading
         ? <div className="py-3 flex justify-center"><Spinner size="sm" /></div>
@@ -427,8 +429,8 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
             const layoutId   = parsed.layout || 'bullets'
             return (
               <button key={scene.id} onClick={() => onSelect(scene, scenes.length)}
-                className={`group w-full text-left border-b border-gray-800 transition-all ${
-                  isSel ? 'bg-indigo-500/15 border-l-2 border-l-indigo-500' : 'hover:bg-white/[0.02]'
+                className={`group w-full text-left border-b border-slate-100 dark:border-gray-800 transition-all ${
+                  isSel ? 'bg-indigo-500/15 border-l-2 border-l-indigo-500' : 'hover:bg-slate-100 dark:hover:bg-white/[0.02]'
                 }`}>
                 <div className="flex items-center gap-2 px-3 py-2">
                   {/* Compact inline layout - 3D styled icon */}
@@ -450,15 +452,15 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
                     </span>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-white truncate">{slideTitle}</p>
+                    <p className="text-xs font-medium text-slate-900 dark:text-white truncate">{slideTitle}</p>
                     <p className="text-[10px] text-slate-500 truncate">
                       {hasAst ? '✓ Ready' : isGen ? 'Generating...' : 'Draft'}
                     </p>
                   </div>
-                  {isGen && <Loader2 className="w-3 h-3 text-indigo-400 animate-spin flex-shrink-0" />}
-                  {hasAst && !isGen && <CheckCircle className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
+                  {isGen && <Loader2 className="w-3 h-3 text-indigo-500 dark:text-indigo-400 animate-spin flex-shrink-0" />}
+                  {hasAst && !isGen && <CheckCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />}
                   <div onClick={(e) => handleDeleteScene(e, scene.id)} title="Delete scene"
-                    className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all flex-shrink-0 cursor-pointer">
+                    className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all flex-shrink-0 cursor-pointer">
                     <Trash2 className="w-3.5 h-3.5" />
                   </div>
                 </div>
@@ -467,7 +469,7 @@ function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, 
           })
       }
       <button onClick={handleAddScene} disabled={adding}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs text-slate-500 hover:text-indigo-400 border-b border-white/[0.03] transition-colors disabled:opacity-50">
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 border-b border-slate-100 dark:border-white/[0.03] transition-colors disabled:opacity-50">
         {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
         Add scene
       </button>
@@ -548,6 +550,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const [aiLoading,   setAiLoading]   = useState(false)
   const [aiAction,    setAiAction]    = useState(null)
   const [showImgPanel,setShowImgPanel]= useState(!!parsed.imageUrl)
+  // AI image generation (Gemini) — prompt → /api/generate-image → imageUrl
+  const [genPrompt,   setGenPrompt]   = useState('')
+  const [genLoading,  setGenLoading]  = useState(false)
+  const [genError,    setGenError]    = useState(null)
 
   // Live narration playback (#attractive VD): play the scene's voiceover
   // right on the preview canvas and reveal the script one word at a time,
@@ -688,6 +694,13 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         // shared scene.slideDeckContent, so this segment's slide stays its
         // own ("keep it in her own vd not with other vd").
         await agentsService.updateSceneSegment(activeSegmentId, { slide_design: designJson })
+        // Keep the LOCAL segments list in sync with what was just saved —
+        // otherwise clicking back to this segment reloads the stale design
+        // from mount time and the user's edits appear lost (and the next
+        // auto-save overwrites the real design with the stale one).
+        setSegments(prev => prev.map(seg =>
+          seg.id === activeSegmentId ? { ...seg, slideDesign: designJson } : seg
+        ))
         await fetch('/api/scenes/' + scene.id, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -706,7 +719,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
   const handleLayoutChange = (newLayout) => {
     setLayout(newLayout)
-    // Preserve image position + any custom scale the user set, otherwise use default
+    // Preserve image position + any custom scale the user set, otherwise use default  
     const def = DEFAULT_POSITIONS[newLayout] || DEFAULT_POSITIONS.bullets
     setPositions(prev => Object.keys(def).reduce((acc, k) => ({
       ...acc,
@@ -717,7 +730,6 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   }
 
   // File → upload to server and get /api/uploads/... URL
-  // (not base64 data URL, since SVG rasterization doesn't handle embedded data URLs well)
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -739,6 +751,28 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     e.target.value = ''  // allow re-upload of same file
   }
 
+  // Prompt → Gemini image generation → same flow as an uploaded image
+  const handleGenerateImage = async () => {
+    const prompt = genPrompt.trim()
+    if (!prompt || genLoading) return
+    setGenLoading(true); setGenError(null)
+    try {
+      const res = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Image generation failed')
+      setImageUrl(data.file_url)
+      setGenPrompt('')
+      setTimeout(saveContent, 50)
+    } catch (err) {
+      console.error('Image generation failed:', err)
+      setGenError(err.message || 'Image generation failed')
+    } finally { setGenLoading(false) }
+  }
+
   const handlePositionChange = (key, newPos) => {
     setPositions(prev => ({ ...prev, [key]: { ...prev[key], ...newPos } }))
   }
@@ -758,6 +792,38 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   }
 
   const handleGenerate = async () => { await saveContent(); onGenerate(scene.id) }
+
+  // Rebuild the ENTIRE slide content (title + key insight + content points)
+  // from the voice script, so what students read matches what they hear.
+  // For segmented scenes uses the active segment's script text.
+  const handleRebuildFromScript = async () => {
+    setAiLoading(true); setAiAction('rebuild')
+    try {
+      const scriptText = activeSegmentId
+        ? (segmentDrafts[activeSegmentId] ?? segments.find(s => s.id === activeSegmentId)?.text ?? '')
+        : (scene.scriptContent || '')
+      const res = await fetch('/api/scenes/' + scene.id + '/rebuild-slide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ script_text: scriptText }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Rebuild failed')
+      setTitle(data.title || '')
+      setSubtitle(data.subtitle || '')
+      if (data.bullets?.length) {
+        const bulletsClean = data.bullets.map(b => ({ text: b.text || '', level: b.level === 2 ? 2 : 1 }))
+        setBullets(bulletsClean)
+        originalBulletsRef.current = bulletsClean
+      }
+      setTimeout(saveContent, 50)
+    } catch (e) {
+      console.error('Rebuild from script failed:', e)
+      alert(e.message || 'Rebuild from script failed')
+    } finally {
+      setAiLoading(false); setAiAction(null)
+    }
+  }
 
   const handleAiRewrite = async (action, prompt) => {
     setAiLoading(true); setAiAction(action)
@@ -919,21 +985,21 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 <button onClick={toggleNarration} title={narrationPlaying ? 'Stop narration' : 'Play narration with synced captions'}
                   className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
                     narrationPlaying ? 'bg-red-500/80 hover:bg-red-500' : 'bg-black/60 hover:bg-black/80'}`}>
-                  {narrationPlaying ? <Square className="w-3 h-3 text-white" /> : <Volume2 className="w-3.5 h-3.5 text-white" />}
+                  {narrationPlaying ? <Square className="w-3 h-3 text-slate-900 dark:text-white" /> : <Volume2 className="w-3.5 h-3.5 text-slate-900 dark:text-white" />}
                 </button>
               )}
               <button onClick={() => setPreviewKey(k=>k+1)} title="Replay animations"
                 className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-                <Play className="w-3.5 h-3.5 text-white" />
+                <Play className="w-3.5 h-3.5 text-slate-900 dark:text-white" />
               </button>
               <button onClick={() => { setPositions(DEFAULT_POSITIONS[layout]||DEFAULT_POSITIONS.bullets); saveContent() }}
                 title="Reset element positions to layout defaults"
                 className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-                <Move className="w-3.5 h-3.5 text-white" />
+                <Move className="w-3.5 h-3.5 text-slate-900 dark:text-white" />
               </button>
             </div>
             {saving && (
-              <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-400">
+              <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-500 dark:text-slate-400">
                 <Loader2 className="w-3 h-3 animate-spin" /> Saving…
               </div>
             )}
@@ -944,7 +1010,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
               <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
                 <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
                   {scriptWords.slice(0, revealedWordCount).map((w, i) => (
-                    <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-300' : 'text-white'}>
+                    <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-700 dark:text-amber-300' : 'text-slate-900 dark:text-white'}>
                       {w}{' '}
                     </span>
                   ))}
@@ -958,7 +1024,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           </div>
 
           {/* Drag hint */}
-          <p className="text-[10px] text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
+          <p className="text-[10px] text-slate-400 dark:text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
             <Move className="w-3 h-3" /> Hover any element on the slide and drag to reposition it
           </p>
         </div>
@@ -967,13 +1033,13 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         <div className="space-y-4">
 
       {/* ── LOGO TOGGLE ────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-3 p-3 rounded-xl bg-slate-900/40 border border-white/[0.06]">
+      <div className="flex items-center justify-between mb-3 p-3 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
         <div className="flex items-center gap-2">
           <div className="w-8 h-5 flex-shrink-0">
             <GVSULogoSVG isDark={themeObj.isDark} />
           </div>
           <div>
-            <p className="text-xs font-semibold text-white">GVSU Logo</p>
+            <p className="text-xs font-semibold text-slate-900 dark:text-white">GVSU Logo</p>
             <p className="text-[10px] text-slate-500">Drag on slide to reposition</p>
           </div>
         </div>
@@ -981,8 +1047,8 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           onClick={() => { setShowLogo(v => !v); setTimeout(saveContent, 0) }}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
             showLogo
-              ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-300'
-              : 'bg-slate-800/60 border-white/[0.06] text-slate-500'
+              ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-700 dark:text-indigo-300'
+              : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500'
           }`}
         >
           {showLogo ? <><Eye className="w-3 h-3" />Visible</> : <><EyeOff className="w-3 h-3" />Hidden</>}
@@ -990,22 +1056,22 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       </div>
 
       {/* ── IMAGE / FIGURE ─────────────────────────────────────────────────── */}
-      <div className="mb-4 rounded-xl bg-slate-900/40 border border-white/[0.06] overflow-hidden">
+      <div className="mb-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
         {/* Header */}
         <button
           onClick={() => setShowImgPanel(v => !v)}
-          className="w-full flex items-center justify-between px-3 py-3 hover:bg-white/[0.02] transition-colors"
+          className="w-full flex items-center justify-between px-3 py-3 hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors"
         >
           <div className="flex items-center gap-2">
-            <Image className="w-4 h-4 text-violet-400" />
-            <p className="text-xs font-semibold text-white">Image / Figure</p>
-            {imageUrl && <span className="text-[9px] text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded-full">Added · drag to move</span>}
+            <Image className="w-4 h-4 text-violet-500 dark:text-violet-400" />
+            <p className="text-xs font-semibold text-slate-900 dark:text-white">Image / Figure</p>
+            {imageUrl && <span className="text-[9px] text-emerald-600 dark:text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded-full">Added · drag to move</span>}
           </div>
           <span className="text-slate-500 text-xs">{showImgPanel ? '▲' : '▼'}</span>
         </button>
 
         {showImgPanel && (
-          <div className="px-3 pb-3 space-y-3 border-t border-white/[0.04]">
+          <div className="px-3 pb-3 space-y-3 border-t border-slate-100 dark:border-white/[0.04]">
             {/* Upload or URL */}
             <div className="pt-3 flex gap-2">
               <input
@@ -1014,21 +1080,56 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 onChange={e => setImageUrl(e.target.value)}
                 onBlur={saveContent}
                 placeholder="Paste image URL…"
-                className="flex-1 bg-slate-800/60 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
+                className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
               />
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-white/10 bg-slate-800/60 text-slate-300 hover:border-violet-500/40 hover:text-violet-300 transition-colors"
+                className="flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:border-violet-500/40 hover:text-violet-300 transition-colors"
               >
                 Upload
               </button>
               <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
             </div>
 
+            {/* Generate with AI (Gemini) */}
+            <div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={genPrompt}
+                  onChange={e => { setGenPrompt(e.target.value); if (genError) setGenError(null) }}
+                  onKeyDown={e => { if (e.key === 'Enter') handleGenerateImage() }}
+                  disabled={genLoading}
+                  placeholder="Or describe an image to generate… e.g. diagram of a plant cell"
+                  className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors disabled:opacity-60"
+                />
+                <button
+                  onClick={handleGenerateImage}
+                  disabled={genLoading || !genPrompt.trim()}
+                  className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {genLoading
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Generating…</>
+                    : <><Sparkles className="w-3.5 h-3.5" />Generate</>}
+                </button>
+              </div>
+              {genError && (
+                <div className="flex items-start gap-1.5 mt-1.5">
+                  <AlertCircle className="w-3 h-3 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-[10px] text-red-600 dark:text-red-300">{genError}</p>
+                </div>
+              )}
+              {genLoading && (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5">
+                  Creating your image with Gemini — usually takes 5–15 seconds…
+                </p>
+              )}
+            </div>
+
             {/* Preview strip */}
             {imageUrl && (
               <div className="flex items-center gap-3">
-                <div className="w-20 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 bg-slate-800">
+                <div className="w-20 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800">
                   <img src={imageUrl} alt="" className="w-full h-full object-cover"
                     onError={e => { e.target.src = ''; e.target.style.opacity = '0.3' }} />
                 </div>
@@ -1037,7 +1138,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   <div>
                     <div className="flex justify-between mb-1">
                       <span className="text-[10px] text-slate-500">Width on slide</span>
-                      <span className="text-[10px] text-slate-400">{imageWidth}%</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">{imageWidth}%</span>
                     </div>
                     <input type="range" min="15" max="70" value={imageWidth}
                       onChange={e => setImageWidth(Number(e.target.value))}
@@ -1051,11 +1152,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                         className={`px-2 py-1 rounded-md text-[10px] font-medium border transition-all ${
                           imageShape===v
                             ? 'bg-violet-600/20 border-violet-500/40 text-violet-300'
-                            : 'bg-slate-800/60 border-white/[0.06] text-slate-500 hover:border-white/20'
+                            : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 hover:border-slate-300 dark:hover:border-white/20'
                         }`}>{l}</button>
                     ))}
                     <button onClick={() => { setImageUrl(''); saveContent() }}
-                      className="ml-auto px-2 py-1 rounded-md text-[10px] text-slate-600 hover:text-red-400 border border-transparent hover:border-red-500/20 transition-all">
+                      className="ml-auto px-2 py-1 rounded-md text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400 border border-transparent hover:border-red-500/20 transition-all">
                       Remove
                     </button>
                   </div>
@@ -1072,7 +1173,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           how the narration-synced caption reveals, which is the attractive
           effect: text appearing in step with the voiceover, not all at once. */}
       <div className="mb-5">
-        <p className="text-xs font-semibold text-white mb-1.5">Text Motion</p>
+        <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Text Motion</p>
      
         <div className="grid grid-cols-3 gap-1.5">
           {MOTION_STYLES.map(m => (
@@ -1085,8 +1186,8 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
               title={m.desc}
               className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
                 motion.id===m.id
-                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300 shadow-md shadow-indigo-500/20'
-                  : 'bg-slate-800/60 border-white/[0.06] text-slate-400 hover:border-white/20 hover:text-white hover:bg-slate-800/80'
+                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-700 dark:text-indigo-300 shadow-md shadow-indigo-500/20'
+                  : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20 hover:text-slate-900 dark:hover:text-white hover:bg-slate-800/80'
               }`}>
               <div className="text-lg">{m.icon}</div>
               <span className="text-[10px] leading-tight text-center">{m.label}</span>
@@ -1095,33 +1196,50 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         </div>
       </div>
 
-      <div className="border-t border-white/[0.06] mb-5" />
+      <div className="border-t border-slate-200 dark:border-white/[0.06] mb-5" />
 
       {/* ── CONTENT ────────────────────────────────────────────────────────── */}
       <div className="space-y-5">
 
+        {/* Rebuild everything from the narration so slide ↔ voice always match */}
+        <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-indigo-500/5 border border-indigo-500/15">
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            Slide doesn't match the narration? Regenerate title, key insight and points from the voice script.
+          </p>
+          <button onClick={handleRebuildFromScript} disabled={aiLoading}
+            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors ${
+              aiLoading && aiAction === 'rebuild'
+                ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400'
+                : 'bg-indigo-600 hover:bg-indigo-500 border-transparent text-white'
+            }`}>
+            {aiLoading && aiAction === 'rebuild'
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Rebuilding…</>
+              : <><Sparkles className="w-3.5 h-3.5" />Rebuild from script</>}
+          </button>
+        </div>
+
         <div>
-          <label className="block text-xs font-semibold text-white mb-1.5">
+          <label className="block text-xs font-semibold text-slate-900 dark:text-white mb-1.5">
             Slide Title <span className="font-normal text-slate-500">(optional - leave blank for untitled intro)</span>
           </label>
           <input value={title} onChange={e=>setTitle(e.target.value)} onBlur={saveContent}
             placeholder="Key concept students will learn"
-            className="w-full bg-slate-800/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
+            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
         </div>
 
         <div>
-          <label className="block text-xs font-semibold text-white mb-1.5">
+          <label className="block text-xs font-semibold text-slate-900 dark:text-white mb-1.5">
             Key Insight <span className="font-normal text-slate-500"></span>
           </label>
           <input value={subtitle} onChange={e=>setSubtitle(e.target.value)} onBlur={saveContent}
             placeholder="The main idea students should remember"
-            className="w-full bg-slate-800/60 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
+            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
         </div>
 
         {/* Bullets */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-semibold text-white">
+            <label className="text-xs font-semibold text-slate-900 dark:text-white">
               Content Points <span className="font-normal text-slate-500"></span>
             </label>
             <div className="flex items-center gap-1.5">
@@ -1133,8 +1251,8 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 <button key={a.id} onClick={() => handleAiRewrite(a.id, a.prompt)} disabled={aiLoading}
                   className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border transition-colors ${
                     aiLoading && aiAction===a.id
-                      ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-400'
-                      : 'bg-slate-800/60 border-white/10 text-slate-400 hover:border-indigo-500/30 hover:text-indigo-400'
+                      ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400'
+                      : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:border-indigo-500/30 hover:text-indigo-600 dark:hover:text-indigo-400'
                   }`}>
                   {aiLoading && aiAction===a.id ? <Loader2 className="w-3 h-3 animate-spin"/> : <Wand2 className="w-3 h-3"/>}
                   {a.label}
@@ -1142,7 +1260,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
               ))}
               <button onClick={() => { setBullets(originalBulletsRef.current); setTimeout(saveContent,0) }}
                 disabled={aiLoading} title="Reset to original AI-generated content"
-                className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border border-white/10 bg-slate-800/60 text-slate-500 hover:text-amber-400 hover:border-amber-500/30 transition-colors">
+                className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-500 hover:text-amber-400 hover:border-amber-500/30 transition-colors">
                 <RotateCw className="w-3 h-3" /> Reset
               </button>
             </div>
@@ -1153,17 +1271,17 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
               <div key={i} className="flex items-center gap-2 group">
                 <button onClick={() => setBullets(bs=>bs.map((x,idx)=>idx===i?{...x,level:x.level===1?2:1}:x))}
                   className={`w-5 h-5 rounded text-xs font-bold flex items-center justify-center flex-shrink-0 transition-colors ${
-                    b.level===2?'bg-slate-700 text-slate-400':'bg-indigo-500/20 text-indigo-400'}`}>
+                    b.level===2?'bg-slate-700 text-slate-500 dark:text-slate-400':'bg-indigo-500/20 text-indigo-500 dark:text-indigo-400'}`}>
                   {b.level===2?'◦':'•'}
                 </button>
                 <input value={b.text}
                   onChange={e=>setBullets(bs=>bs.map((x,idx)=>idx===i?{...x,text:e.target.value}:x))}
                   onBlur={saveContent}
                   placeholder={b.level===1?'Key fact or concept':'Supporting detail or example'}
-                  className={`flex-1 bg-slate-800/40 border border-white/[0.06] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500/40 transition-colors ${b.level===2?'text-slate-400 ml-3':'text-white'}`}
+                  className={`flex-1 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-white/[0.06] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500/40 transition-colors ${b.level===2?'text-slate-500 dark:text-slate-400 ml-3':'text-slate-900 dark:text-white'}`}
                 />
                 <button onClick={()=>{ setBullets(bs=>bs.filter((_,idx)=>idx!==i)); setTimeout(saveContent,0) }}
-                  className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all flex-shrink-0">
+                  className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all flex-shrink-0">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -1171,11 +1289,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           </div>
           <div className="flex gap-4 mt-2">
             <button onClick={()=>setBullets(b=>[...b,{text:'',level:1}])}
-              className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors">
+              className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
               <Plus className="w-3 h-3"/>Add point
             </button>
             <button onClick={()=>setBullets(b=>[...b,{text:'',level:2}])}
-              className="flex items-center gap-1 text-xs text-slate-600 hover:text-slate-400 transition-colors">
+              className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
               <Plus className="w-3 h-3"/>Add sub-point
             </button>
           </div>
@@ -1196,15 +1314,15 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         {/* Layout + Theme - Inline horizontal layout */}
         <div className="space-y-2 pt-1">
           <div>
-            <p className="text-xs font-semibold text-white mb-1.5">Layout</p>
+            <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Layout</p>
             <div className="flex gap-1 overflow-x-auto pb-1">
               {LAYOUTS.map(l => (
                 <button key={l.id} onClick={()=>handleLayoutChange(l.id)}
                   title={l.label}
                   className={`flex-shrink-0 w-8 h-8 rounded-lg border transition-all flex items-center justify-center ${
                     layout===l.id
-                      ?'border-indigo-500 bg-indigo-500/20 text-white shadow-lg shadow-indigo-500/20'
-                      :'border-white/[0.10] bg-slate-800/50 text-slate-400 hover:border-white/25 hover:bg-slate-800/80 hover:text-slate-200'
+                      ?'border-indigo-500 bg-indigo-500/20 text-indigo-700 dark:text-white shadow-lg shadow-indigo-500/20'
+                      :'border-slate-200 dark:border-white/[0.10] bg-slate-100 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/25 hover:bg-slate-200 dark:hover:bg-slate-800/80 hover:text-slate-800 dark:hover:text-slate-200'
                   }`}
                   style={{
                     transform: layout===l.id ? 'translateZ(4px) perspective(600px)' : 'none',
@@ -1217,7 +1335,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           </div>
 
           <div>
-            <p className="text-xs font-semibold text-white mb-1.5">Theme</p>
+            <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Theme</p>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {THEMES.map(th => (
                 <button key={th.id} onClick={async () => {
@@ -1259,10 +1377,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 }}
                   title={th.label}
                   className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-                    theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-lg shadow-indigo-500/15':'border-white/[0.10] bg-slate-800/50 hover:border-white/25 hover:bg-slate-800/80'}`}>
-                  <div className="w-4 h-4 rounded-full border border-white/30" style={{ backgroundColor: th.accent }}/>
-                  <span className={`text-xs font-medium whitespace-nowrap ${theme===th.id?'text-white':'text-slate-300'}`}>{th.label}</span>
-                  {theme===th.id && <span className="ml-0.5 text-white">✓</span>}
+                    theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-lg shadow-indigo-500/15':'border-slate-200 dark:border-white/[0.10] bg-slate-100 dark:bg-slate-800/50 hover:border-slate-300 dark:hover:border-white/25 hover:bg-slate-200 dark:hover:bg-slate-800/80'}`}>
+                  <div className="w-4 h-4 rounded-full border border-slate-300 dark:border-white/30" style={{ backgroundColor: th.accent }}/>
+                  <span className={`text-xs font-medium whitespace-nowrap ${theme===th.id?'text-slate-900 dark:text-white':'text-slate-600 dark:text-slate-300'}`}>{th.label}</span>
+                  {theme===th.id && <span className="ml-0.5 text-slate-900 dark:text-white">✓</span>}
                 </button>
               ))}
             </div>
@@ -1281,22 +1399,27 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 mb-2">
               {segments.map((seg, i) => (
                 <button key={seg.id} onClick={() => toggleSegment(seg.id)}
-                  title={seg.segmentType}
+                  title={seg.slideTitle ? `${seg.segmentType} — ${seg.slideTitle}` : seg.segmentType}
                   className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
                     activeSegmentId === seg.id
-                      ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-300'
-                      : 'border-white/[0.06] bg-slate-900/40 text-slate-400 hover:border-white/15'
+                      ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'
+                      : 'border-slate-200 dark:border-white/[0.06] bg-white dark:bg-slate-900/40 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/15'
                   }`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${seg.ttsAudioUrl ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                  {i + 1}. {seg.segmentType}
+                  {/* Show WHAT the segment is about, not just its generic type —
+                      the welcome scene has two "content" segments (first and
+                      second main point) that were indistinguishable before. */}
+                  <span className="max-w-[130px] truncate">
+                    {i + 1}. {seg.slideTitle || seg.segmentType}
+                  </span>
                 </button>
               ))}
             </div>
             {segments.filter(s => s.id === activeSegmentId).map(seg => (
-              <div key={seg.id} className="p-3 rounded-xl bg-slate-800/30 border border-white/[0.04]">
+              <div key={seg.id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/30 border border-slate-100 dark:border-white/[0.04]">
               
                 {seg.slideTitle && (
-                  <p className="text-[10px] text-blue-400/80 uppercase tracking-widest mb-1.5 font-semibold">
+                  <p className="text-[10px] text-blue-600/80 dark:text-blue-400/80 uppercase tracking-widest mb-1.5 font-semibold">
                     {seg.slideTitle}
                   </p>
                 )}
@@ -1306,13 +1429,13 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   onBlur={() => handleSaveSegmentText(seg.id)}
                   rows={4}
                   placeholder="What the presenter says during this segment…"
-                  className="w-full bg-slate-800/60 border border-white/10 rounded-lg p-2.5 text-xs text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
+                  className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-2.5 text-xs text-slate-900 dark:text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
                 />
                 <div className="flex items-center gap-2 mt-2">
                   <button onClick={() => handleRegenerateSegmentVoice(seg.id)} disabled={!!segmentBusy[seg.id]}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                       segmentBusy[seg.id]
-                        ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-400 cursor-not-allowed'
+                        ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400 cursor-not-allowed'
                         : 'bg-indigo-600 hover:bg-indigo-500 border-transparent text-white'
                     }`}>
                     {segmentBusy[seg.id] === 'voicing'
@@ -1322,10 +1445,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                       : <><RotateCcw className="w-3 h-3" />Regenerate Voice</>}
                   </button>
                   {!segmentBusy[seg.id] && seg.ttsAudioUrl && (
-                    <span className="flex items-center gap-1 text-[10px] text-emerald-400"><CheckCircle className="w-3 h-3" />Has voice</span>
+                    <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400"><CheckCircle className="w-3 h-3" />Has voice</span>
                   )}
                   {segmentError[seg.id] && (
-                    <span className="flex items-center gap-1 text-[10px] text-red-400"><AlertCircle className="w-3 h-3" />{segmentError[seg.id]}</span>
+                    <span className="flex items-center gap-1 text-[10px] text-red-500 dark:text-red-400"><AlertCircle className="w-3 h-3" />{segmentError[seg.id]}</span>
                   )}
                 </div>
               </div>
@@ -1420,7 +1543,7 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
     <div
       ref={containerRef}
       data-slide-canvas
-      className="relative w-full rounded-2xl overflow-hidden border border-white/[0.08] shadow-2xl select-none"
+      className="relative w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-white/[0.08] shadow-2xl select-none"
       style={{ aspectRatio:'16/9', containerType:'inline-size', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
     >
       {/* Geometric background (animated) */}

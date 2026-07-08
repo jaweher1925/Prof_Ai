@@ -3,7 +3,6 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
   BookOpen,
-  HelpCircle,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -68,18 +67,6 @@ export default function Sidebar() {
 
       {/* Bottom utilities */}
       <div className="px-2 lg:px-3 space-y-1 pb-1">
-        {/* Help */}
-        <a
-          href="https://hyperframes.heygen.com/guides/mcp"
-          target="_blank"
-          rel="noopener noreferrer"
-          title="HeyGen / HyperFrames docs"
-          className="w-full flex items-center justify-center lg:justify-start gap-3 px-3 py-2.5 rounded-xl text-sm text-slate-400 hover:bg-white/5 hover:text-white transition-all duration-150"
-        >
-          <HelpCircle className="w-4 h-4 flex-shrink-0" />
-          {!isCompact && <span className="hidden lg:block">Help &amp; Docs</span>}
-        </a>
-
         {/* Theme toggle */}
         <button
           onClick={toggleTheme}

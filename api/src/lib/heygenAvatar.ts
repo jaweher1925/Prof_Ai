@@ -124,26 +124,46 @@ export async function createAvatarVideo(opts: {
 /** Poll until the avatar video is rendered → returns the temporary video URL. */
 export async function waitForAvatarVideo(videoId: string, maxWaitMs = 15 * 60_000): Promise<string> {
   const start = Date.now()
-  while (Date.now() - start < maxWaitMs) {
-    const res = await fetch(`${HEYGEN_API}/v1/video_status.get?video_id=${videoId}`, {
-      headers: { 'x-api-key': apiKey() },
-    })
-    if (!res.ok) throw new Error(`HeyGen status check failed (${res.status})`)
-    const json: any = await res.json()
-    const status = json?.data?.status
-    if (status === 'completed') {
-      const url = json?.data?.video_url
-      if (!url) throw new Error('HeyGen completed but no video_url')
-      console.log(`[heygenAvatar] Avatar video ${videoId} completed`)
-      return url
+  let pollCount = 0
+  const maxPolls = Math.ceil(maxWaitMs / 5_000)
+  
+  while (Date.now() - start < maxWaitMs && pollCount < maxPolls) {
+    pollCount++
+    try {
+      const res = await fetch(`${HEYGEN_API}/v1/video_status.get?video_id=${videoId}`, {
+        headers: { 'x-api-key': apiKey() },
+      })
+      if (!res.ok) {
+        console.warn(`[heygenAvatar] Status check failed (${res.status}), will retry...`)
+        await new Promise(r => setTimeout(r, 5_000))
+        continue
+      }
+      const json: any = await res.json()
+      const status = json?.data?.status
+      const elapsedSec = Math.round((Date.now() - start) / 1000)
+      
+      if (status === 'completed') {
+        const url = json?.data?.video_url
+        if (!url) throw new Error('HeyGen completed but no video_url')
+        console.log(`[heygenAvatar] ✅ Avatar video ${videoId} completed after ${elapsedSec}s`)
+        return url
+      }
+      if (status === 'failed') {
+        const error = JSON.stringify(json?.data?.error || {}).slice(0, 300)
+        throw new Error(`HeyGen render failed after ${elapsedSec}s: ${error}`)
+      }
+      
+      console.log(`[heygenAvatar] Poll #${pollCount}: ${videoId} status=${status} (${elapsedSec}s elapsed)`)
+      await new Promise(r => setTimeout(r, 5_000))
+    } catch (err: any) {
+      if (err.message.includes('render failed') || err.message.includes('timeout')) throw err
+      console.warn(`[heygenAvatar] Poll error (will retry): ${err.message}`)
+      await new Promise(r => setTimeout(r, 5_000))
     }
-    if (status === 'failed') {
-      throw new Error(`HeyGen render failed: ${JSON.stringify(json?.data?.error || {}).slice(0, 300)}`)
-    }
-    console.log(`[heygenAvatar] Avatar video ${videoId} status: ${status} (${Math.round((Date.now() - start) / 1000)}s)`)
-    await new Promise(r => setTimeout(r, 5_000))
   }
-  throw new Error(`HeyGen render timed out after ${Math.round(maxWaitMs / 60_000)} min`)
+  
+  const elapsedMin = Math.round((Date.now() - start) / 60_000)
+  throw new Error(`HeyGen render timed out after ${elapsedMin}min (${pollCount} polls). Video may still be processing on HeyGen's servers. Try checking status manually or contacting support.`)
 }
 
 /** Download the finished avatar MP4 into the local uploads dir → local path. */
@@ -155,6 +175,50 @@ export async function downloadToUploads(url: string): Promise<string> {
   writeFileSync(outPath, buffer)
   console.log(`[heygenAvatar] Downloaded avatar video to ${outPath} (${buffer.length} bytes)`)
   return outPath
+}
+
+/** Non-blocking variant: checks the cache and, on a miss, SUBMITS the HeyGen
+ *  job and returns immediately with the video_id — no waiting. The caller
+ *  persists the job id and pollHeyGenVideo.ts finishes the work (download,
+ *  cache, composite) when HeyGen reports completed. This keeps API requests
+ *  short instead of holding one open for the whole 2–15 min render. */
+export async function startAvatarClipJob(opts: {
+  audioPaths: string[]
+  avatarId: string
+  avatarStyle?: string | null
+  avatarBackground?: string | null
+  cacheKeyFiles?: string[]
+}): Promise<
+  | { cached: true; avatarPath: string }
+  | { cached: false; videoId: string; cachePath: string }
+> {
+  const audioPath = await concatAudioFiles(opts.audioPaths)
+
+  const hasher = createHash('md5')
+  for (const f of (opts.cacheKeyFiles?.length ? opts.cacheKeyFiles : [audioPath])) {
+    try { hasher.update(readFileSync(f)) } catch { hasher.update(f) }
+  }
+  const hash = hasher
+    .update(opts.avatarId)
+    .update(opts.avatarStyle || 'normal')
+    .update(opts.avatarBackground || '')
+    .digest('hex')
+  const cachePath = join(UPLOAD_DIR, `avatarcache_${hash}.mp4`)
+
+  if (existsSync(cachePath)) {
+    console.log(`[heygenAvatar] Cache hit — reusing avatar clip ${cachePath} (skipping HeyGen render)`)
+    return { cached: true, avatarPath: cachePath }
+  }
+
+  const assetId = await uploadAudioAsset(audioPath)
+  const videoId = await createAvatarVideo({
+    avatarId: opts.avatarId,
+    audioAssetId: assetId,
+    avatarStyle: opts.avatarStyle,
+    background: opts.avatarBackground,
+  })
+  console.log(`[heygenAvatar] Submitted async avatar job ${videoId} (not waiting)`)
+  return { cached: false, videoId, cachePath }
 }
 
 /** Full pipeline: TTS audio files → local path of the rendered avatar MP4.
