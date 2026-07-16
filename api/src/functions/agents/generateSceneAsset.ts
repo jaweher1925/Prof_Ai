@@ -7,7 +7,7 @@ import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/fu
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { uploadBuffer } from '../../lib/storage'
-import { buildSlide, SlideContent } from '../../lib/slideRenderer'
+import { buildSlide, SlideContent, toSlideBlocks } from '../../lib/slideRenderer'
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
@@ -39,14 +39,46 @@ async function generateSceneAssetHandler(
 
     context.log(`Generating slide for scene ${body.scene_id}`)
 
-    // For segmented scenes, use the first segment's design
+    // Get the slide composition (built by Visual Designer or compositions.ts seeding)
+    const composition = await prisma.slideComposition.findUnique({
+      where: { sceneId: body.scene_id },
+    }).catch(() => null)
+
+    // For segmented scenes, use composition if available, else first segment's design
     let slideContent: SlideContent = {}
-    if (scene.segments && scene.segments.length > 0) {
+    if (composition) {
+      // Build slideContent from composition fields
+      try {
+        const contentBlocks = JSON.parse(composition.contentBlocks || '[]')
+        const layout = composition.layout || 'bullets'
+        slideContent = {
+          title: composition.title || 'Slide',
+          subtitle: composition.subtitle || '',
+          layout,
+          theme: composition.templateId || 'modern',
+          // Visual Designer's contentBlocks are {text, keyPoints, x, y, ...}
+          // — a different shape than the {type, items} blocks buildSlide()'s
+          // renderers look up. toSlideBlocks() converts so the points/details
+          // the user actually wrote make it into the generated image instead
+          // of silently disappearing.
+          blocks: contentBlocks.length > 0 ? toSlideBlocks(contentBlocks, layout) : undefined,
+        }
+      } catch (e) {
+        context.warn(`Failed to parse composition contentBlocks: ${e}`)
+        slideContent = {
+          title: composition.title || 'Slide',
+          subtitle: composition.subtitle || '',
+          layout: composition.layout || 'bullets',
+          theme: composition.templateId || 'modern',
+        }
+      }
+    } else if (scene.segments && scene.segments.length > 0) {
+      // Fallback: try first segment's design
       try {
         slideContent = JSON.parse(scene.segments[0].slideDesign || '{}')
       } catch {}
     } else {
-      // For non-segmented scenes, use scene-level design
+      // Last resort: use scene-level design
       try {
         slideContent = JSON.parse(scene.slideDeckContent || '{}')
       } catch {}
@@ -70,13 +102,24 @@ async function generateSceneAssetHandler(
     if (!slideContent.title) {
       slideContent.title = scene.visualPrompt?.split(/[.,]/)[0].trim() || 'Slide'
     }
-    if (!slideContent.blocks?.length) {
+    // Only fall back to auto-splitting the VOICE SCRIPT into bullets when
+    // this scene has never been through Visual Designer at all (no
+    // composition row exists). If a composition exists but the user simply
+    // hasn't added any content points yet (e.g. a title-only intro slide),
+    // that's an intentional, valid state — respect it instead of silently
+    // substituting the spoken narration, which is written to be longer and
+    // more conversational than on-screen text is meant to be (see
+    // VisualDesignerPanel's own title-hero/bullets copy: script and slide
+    // text are deliberately different).
+    if (!composition && !slideContent.blocks?.length) {
       // Generate basic bullets from script
+      // No fixed cap — however many well-formed sentences the script has
+      // become the fallback bullets (renderBullets() auto-scales font size
+      // to fit however many there are; see slideRenderer.ts).
       const sentences = (scene.scriptContent || '')
         .replace(/\n+/g, ' ')
         .split(/(?<=[.!?])\s+/)
         .filter(s => s.length > 20 && s.length < 200)
-        .slice(0, 4)
       slideContent.blocks = [{ type: 'bullets', items: sentences.map(t => ({ text: t, level: 1 })) }]
     }
 

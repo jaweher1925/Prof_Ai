@@ -77,6 +77,7 @@ model Scene {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
   segments          SceneSegment[]
+  composition       SlideComposition?
 
   @@map("scenes")
 }
@@ -132,6 +133,11 @@ model Script {
   sections                 String   @default("[]")                             // JSON string
   status                   String   @default("review")
   estimatedDurationMinutes Float    @default(4.0) @map("estimated_duration_minutes")
+  // Phase 1 HITL: Script lock mechanism
+  approvalStatus           String   @default("draft") @map("approval_status") // 'draft' | 'approved' | 'locked'
+  locked                   Boolean  @default(false)
+  lockedAt                 DateTime? @map("locked_at")
+  lockedBy                 String?  @map("locked_by") // user_id
   createdAt                DateTime @default(now()) @map("created_at")
   updatedAt                DateTime @updatedAt @map("updated_at")
 
@@ -150,4 +156,103 @@ model SourceFile {
   createdAt     DateTime @default(now()) @map("created_at")
 
   @@map("source_files")
+}
+
+/// WYSIWYG Canvas Composition — Visual Designer slide data.
+/// Single source of truth for the Visual Designer canvas. On every save this
+/// is also synced into the scene's first SceneSegment.slideDesign (see
+/// compositions.ts#syncCompositionToSegment) so the actual render pipeline
+/// (slideRenderer.ts + ffmpegVideo.ts) always matches what's shown here.
+model SlideComposition {
+  id              String   @id @default(uuid())
+  sceneId         String   @unique @map("scene_id")
+  scene           Scene    @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  
+  // Template & Styling — maps 1:1 to a slideRenderer.ts THEMES key
+  templateId      String   @default("modern") @map("template_id")
+
+  // Slide Layout — maps 1:1 to a slideRenderer.ts buildSlide() layout switch
+  // case ('title-hero' | 'bullets' | 'split' | 'definition' | 'quote' |
+  // 'summary'). NOT the same for every slide by default: the seed logic in
+  // compositions.ts picks a sensible default per scene (e.g. the module's
+  // intro/welcome scene defaults to 'title-hero' — title centered in the
+  // middle — while ordinary content scenes default to 'bullets'). The user
+  // can override per-slide via the layout picker.
+  layout          String   @default("bullets")
+  
+  // Frame/Cadre Style for Content Points — visual effect around content blocks
+  // 'none' | 'subtle' | 'bold' | 'rounded'
+  cadreStyle      String   @default("none") @map("cadre_style")
+  
+  // Text Content — no forced bullet format (#7). JSON array of
+  // { text: string, keyPoints: string[] }: each entry is one focused main
+  // idea with its own nested supporting points underneath. Unlimited count —
+  // the layout engine scales font/spacing to fit however many the content
+  // actually needs instead of capping at a fixed number.
+  title           String   @default("Untitled Slide")
+  // Key Insight — the single sentence students should remember, shown right
+  // under the title (matches slideRenderer.ts's `subtitle` field).
+  subtitle        String   @default("")
+  contentBlocks   String   @default("[]") @map("content_blocks")
+
+  // Independent drag offsets (% of slide) for title, key insight, and the
+  // content/bullets block — each one drops SEPARATELY, not as one glued
+  // unit, matching slideRenderer.ts's buildSlide() which already positions
+  // title/subtitle/content as three distinct elements via positions.title /
+  // positions.subtitle / positions.content. (0,0 = default layout position,
+  // unmoved.)
+  titleX          Float    @default(0) @map("title_x")
+  titleY          Float    @default(0) @map("title_y")
+  subtitleX       Float    @default(0) @map("subtitle_x")
+  subtitleY       Float    @default(0) @map("subtitle_y")
+  contentX        Float    @default(0) @map("content_x")
+  contentY        Float    @default(0) @map("content_y")
+
+  // User-adjustable font-size multiplier (1 = default size) for each text
+  // element, independent of the auto-fit shrink the canvas already does to
+  // avoid overflow — this is a deliberate user choice ("make the title
+  // bigger/smaller"), not a responsive fallback.
+  titleFontScale    Float  @default(1) @map("title_font_scale")
+  subtitleFontScale Float  @default(1) @map("subtitle_font_scale")
+  contentFontScale  Float  @default(1) @map("content_font_scale")
+  
+  // Avatar Placeholder Position & Size (% of slide, center-anchored, 9:16)
+  avatarX         Float    @default(75) @map("avatar_x")
+  avatarY         Float    @default(50) @map("avatar_y")
+  avatarWidth     Float    @default(20) @map("avatar_width")
+  
+  // Element Timeline Fields — Voice-sync timing for visual elements
+  titleStartTime    Float   @default(0) @map("title_start_time")
+  titleDuration     Float   @default(2) @map("title_duration")
+  subtitleStartTime Float   @default(1) @map("subtitle_start_time")
+  subtitleDuration  Float   @default(2.5) @map("subtitle_duration")
+  // JSON array of { elementId, startTime, duration } for content blocks
+  contentBlockTimings String  @default("[]") @map("content_block_timings")
+  
+  // Image Asset — freely resizable/repositionable independent of aspect
+  // ratio (#5); imageWidth/imageHeight are both user-controlled so images
+  // can be stretched, not just uniformly scaled.
+  imageUrl        String?  @map("image_url")
+  imageX          Float    @default(10) @map("image_x")
+  imageY          Float    @default(70) @map("image_y")
+  imageWidth      Float    @default(25) @map("image_width")
+  imageHeight     Float    @default(25) @map("image_height")
+  
+  // Status
+  status          String   @default("draft") // 'draft' | 'ready' | 'locked'
+
+  // True once the user has actually saved an edit from the canvas (any PATCH).
+  // While false, GET /scenes/{id}/composition keeps re-deriving title +
+  // contentBlocks fresh from the scene's script/storyboard data on every
+  // fetch — so slides always show what the pipeline generated (title, key
+  // points, everything) and the user only ever edits, never starts blank.
+  // Defaulting to false also means every composition row created by the
+  // earlier (pre-autogeneration) version of this feature self-heals the
+  // next time it's opened, instead of staying permanently blank.
+  contentEdited   Boolean  @default(false) @map("content_edited")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("slide_compositions")
 }

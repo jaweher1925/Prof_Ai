@@ -17,6 +17,7 @@ import {
   overlayAvatarOnVideo,
   localPathFromUploadUrl,
   extractAudioTrack,
+  extractAvatarPosition,
 } from '../../lib/ffmpegVideo'
 import { startAvatarClipJob } from '../../lib/heygenAvatar'
 
@@ -36,7 +37,8 @@ async function addAvatarOrQueue(
   slideVideoUrl: string,
   audioUrls: string[],
   moduleId: string,
-  useAvatar: boolean
+  useAvatar: boolean,
+  avatarPosition?: { x: number; y: number; width: number } | null
 ): Promise<{ pending: false; videoUrl: string } | { pending: true; heygenVideoId: string }> {
   try {
     if (!useAvatar) {
@@ -93,7 +95,7 @@ async function addAvatarOrQueue(
     })
 
     if (job.cached) {
-      const finalPath = await overlayAvatarOnVideo(basePath, job.avatarPath)
+      const finalPath = await overlayAvatarOnVideo(basePath, job.avatarPath, avatarPosition)
       const finalUrl = `/api/uploads/${parse(finalPath).base}`
       context.log(`[generateHeyGenAvatar] ✅ Avatar composited from cache: ${finalUrl}`)
       return { pending: false, videoUrl: finalUrl }
@@ -102,7 +104,7 @@ async function addAvatarOrQueue(
     // Sidecar so pollHeyGenVideo can finish the job later
     writeFileSync(
       join(UPLOAD_DIR, `heygen_pending_${job.videoId}.json`),
-      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now() })
+      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null })
     )
     context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
     return { pending: true, heygenVideoId: job.videoId }
@@ -121,9 +123,10 @@ async function finishOrQueue(
   moduleId: string,
   slideVideoUrl: string,
   audioUrls: string[],
-  useAvatar: boolean
+  useAvatar: boolean,
+  avatarPosition?: { x: number; y: number; width: number } | null
 ): Promise<HttpResponseInit> {
-  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, useAvatar)
+  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, useAvatar, avatarPosition)
 
   if (avatar.pending) {
     await prisma.scene.update({
@@ -218,6 +221,11 @@ async function generateHeyGenAvatarHandler(
           moduleTitle: scene.module?.title,
         })
 
+        // Avatar placeholder position/size from the Visual Designer (#3, #4)
+        // — read from the first segment's slideDesign, synced there by
+        // compositions.ts#syncCompositionToSegment on every canvas edit.
+        const avatarPosition = extractAvatarPosition(scene.segments[0]?.slideDesign)
+
         // Talking-avatar overlay (#40) — async when not cached
         return await finishOrQueue(
           context,
@@ -225,7 +233,8 @@ async function generateHeyGenAvatarHandler(
           scene.moduleId,
           videoUrl,
           segments.map(s => s.ttsAudioUrl),
-          useAvatar
+          useAvatar,
+          avatarPosition
         )
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
@@ -265,6 +274,9 @@ async function generateHeyGenAvatarHandler(
           moduleTitle: scene.module?.title,
         })
 
+        // Avatar placeholder position/size from the Visual Designer (#3, #4)
+        const avatarPosition = extractAvatarPosition(scene.slideDeckContent)
+
         // Talking-avatar overlay (#40) — async when not cached
         return await finishOrQueue(
           context,
@@ -272,7 +284,8 @@ async function generateHeyGenAvatarHandler(
           scene.moduleId,
           videoUrl,
           [scene.ttsAudioUrl || ''],
-          useAvatar
+          useAvatar,
+          avatarPosition
         )
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)

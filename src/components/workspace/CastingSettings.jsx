@@ -9,7 +9,7 @@ import { projectsService } from '@/services/projects'
 import { mediaService } from '@/services/media'
 import { scriptsService } from '@/services/scripts'
 import { agentsService } from '@/services/agents'
-import { Settings, User, Play, Square, ChevronDown, Loader2, Save, X, CheckCircle, Pencil, RefreshCw, AlertCircle } from 'lucide-react'
+import { Settings, User, Play, Square, ChevronDown, Loader2, Save, X, CheckCircle, Pencil, RefreshCw, AlertCircle, Mic2 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
 
@@ -204,16 +204,10 @@ function AvatarPicker({ value, onChange }) {
   )
 }
 
-// ─── Voice Picker ─────────────────────────────────────────────────────────────
-// genderHint (from the currently selected avatar) is used purely to default
-// the list ordering so the voice that actually matches the presenter's
-// apparent gender shows up first — this is what fixes "I choose a man avatar
-// and the voice ends up being a woman": the picker no longer defaults to
-// whatever's alphabetically/positionally first regardless of fit.
 function VoicePicker({ value, onChange, genderHint }) {
   const [open, setOpen] = useState(false)
   const [playingId, setPlayingId] = useState(null)
-  const [showAllGenders, setShowAllGenders] = useState(false)
+  const [selectedGender, setSelectedGender] = useState(null) // 'male' | 'female' | null
   const [refreshing, setRefreshing] = useState(false)
   const audioRef = useRef(null)
   const ref = useRef(null)
@@ -242,8 +236,10 @@ function VoicePicker({ value, onChange, genderHint }) {
     }
   }
 
-  const matching = genderHint ? allVoices.filter(v => normGender(v.labels?.gender) === genderHint) : allVoices
-  const filtered = (genderHint && !showAllGenders && matching.length > 0) ? matching : allVoices
+  // Filter by selected gender
+  const filtered = selectedGender 
+    ? allVoices.filter(v => normGender(v.labels?.gender) === selectedGender)
+    : allVoices
 
   const handlePreview = (e, voice) => {
     e.stopPropagation()
@@ -257,7 +253,6 @@ function VoicePicker({ value, onChange, genderHint }) {
   }
 
   const selected = allVoices.find(v => v.voice_id === value)
-  const mismatch = genderHint && selected && normGender(selected.labels?.gender) && normGender(selected.labels?.gender) !== genderHint
 
   return (
     <div className="relative" ref={ref}>
@@ -268,12 +263,6 @@ function VoicePicker({ value, onChange, genderHint }) {
         <span className="truncate">{selected?.name || (value ? `Voice: ${value.slice(0,12)}...` : 'Select voice')}</span>
         <ChevronDown className={`w-4 h-4 text-slate-400 dark:text-slate-500 transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`} />
       </button>
-
-      {mismatch && !open && (
-        <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-          This voice doesn't match the selected avatar's gender — pick one below to fix it.
-        </p>
-      )}
 
       {open && (
         <div className="absolute z-50 mt-1 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden">
@@ -293,19 +282,39 @@ function VoicePicker({ value, onChange, genderHint }) {
             : allVoices.length === 0
             ? <p className="text-xs text-slate-500 p-4 text-center">No voices found — check your voice API key in Integrations</p>
             : <>
-                {genderHint && matching.length > 0 && (
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50 dark:bg-slate-800/40">
-                    <span className="text-[11px] text-slate-500 dark:text-slate-500">
-                      {showAllGenders ? 'Showing all voices' : `Showing ${genderHint} voices to match avatar`}
-                    </span>
+                {/* Gender Filter Buttons */}
+                <div className="flex items-center gap-2 px-3 py-3 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50 dark:bg-slate-800/40">
+                  <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Filter by:</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setSelectedGender(selectedGender === 'male' ? null : 'male') }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      selectedGender === 'male'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                    }`}
+                  >
+                    Male
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setSelectedGender(selectedGender === 'female' ? null : 'female') }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      selectedGender === 'female'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600'
+                    }`}
+                  >
+                    Female
+                  </button>
+                  {selectedGender && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setShowAllGenders(v => !v) }}
-                      className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline"
+                      onClick={(e) => { e.stopPropagation(); setSelectedGender(null) }}
+                      className="ml-auto text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 underline"
                     >
-                      {showAllGenders ? 'Filter to match' : 'Show all'}
+                      Clear
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
+
                 <ul className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
                   {filtered.map((v, idx) => (
                     <li key={`${v.voice_id}-${idx}`}
@@ -468,11 +477,11 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
     <div className="p-6 max-w-md">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <Settings className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
+          <Mic2 className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
           <div>
-            <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Casting Settings</h2>
+            <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Choose Your Voice</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Choose avatar and voice for this project
+              Select a voice and start generating audio
             </p>
           </div>
         </div>
@@ -484,18 +493,10 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
       <div className="space-y-5">
         <div>
           <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2 tracking-wide font-medium">
-            PRESENTER AVATAR
-          </label>
-          <AvatarPicker value={avatarId} onChange={(id, name, gender) => { setAvatarId(id); setAvatarGender(gender) }} />
-          <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">Used in Stage 5 (Video generation)</p>
-        </div>
-
-        <div>
-          <label className="block text-xs text-slate-500 dark:text-slate-400 mb-2 tracking-wide font-medium">
             VOICE
           </label>
           <VoicePicker value={voiceId} onChange={(id) => setVoiceId(id)} genderHint={avatarGender} />
-          <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">Used in Stage 3 (TTS audio generation)</p>
+          <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">Your voice for narration</p>
         </div>
 
         <label className="flex items-start gap-2 text-xs text-slate-500 dark:text-slate-400 cursor-pointer">
@@ -521,7 +522,7 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
             ? <><Loader2 className="w-4 h-4 animate-spin" />Regenerating voice {regenProgress.done}/{regenProgress.total}…</>
             : saved
             ? <><CheckCircle className="w-4 h-4" />Saved!</>
-            : <><Save className="w-4 h-4" />{continueLabel || 'Save Casting Settings'}</>}
+            : <><Save className="w-4 h-4" />{continueLabel || 'Save & Generate Voice'}</>}
         </Button>
 
         {saveMutation.isError && (
@@ -534,8 +535,7 @@ export default function CastingSettings({ project, onUpdate, onClose, onContinue
 
       <div className="mt-6 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-white/[0.06]">
         <p className="text-xs text-slate-500 dark:text-slate-500 leading-relaxed">
-          <strong className="text-slate-600 dark:text-slate-400">Tip:</strong> Set these once before running Stage 3 (Voice)
-          and Stage 5 (Video). The avatar and voice are applied to all scenes automatically.
+          <strong className="text-slate-600 dark:text-slate-400">Tip:</strong> Choose your voice once and it will be applied to all scenes automatically.
         </p>
       </div>
     </div>

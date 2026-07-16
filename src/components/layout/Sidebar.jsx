@@ -34,7 +34,7 @@ export default function Sidebar() {
         title="Back to welcome page"
         className="px-3 lg:px-5 py-6 flex items-center gap-3 text-left hover:opacity-80 transition-opacity"
       >
-        <LogoBadge size="w-10 h-10" />
+        <LogoBadge size="w-10 h-10" tone="white" />
         {!isCompact && (
           <div className="hidden lg:block">
             <p className="text-sm font-bold text-white leading-none">ProfAI</p>
@@ -84,7 +84,7 @@ export default function Sidebar() {
       {!isCompact && (
         <div className="px-2 lg:px-3 py-4">
           <div className="flex items-center gap-3 px-2 lg:px-3 py-2.5 rounded-xl bg-white/5">
-            <LogoBadge size="w-7 h-7" />
+            <LogoBadge size="w-7 h-7" tone="white" />
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-white truncate">Professor</p>
               <p className="text-[10px] text-slate-500 truncate">Educator</p>

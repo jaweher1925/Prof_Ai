@@ -1,12 +1,15 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { sourceFilesService } from '@/services/sourceFiles'
+import { scriptsService } from '@/services/scripts'
+import { projectsService } from '@/services/projects'
 import { agentsService } from '@/services/agents'
 import { uploadFile } from '@/services/upload'
-import { Upload, Link, Trash2, FileText, Globe, Loader2, Sparkles, CheckCircle, AlertTriangle } from 'lucide-react'
+import { Upload, Link, Trash2, FileText, Globe, Loader2, Sparkles, CheckCircle, AlertTriangle, Library, Eye, X, ArrowRight } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Spinner from '@/components/ui/Spinner'
+import StageHeader from '@/components/workspace/StageHeader'
 
 const TYPE_ICON = { url: Globe }
 const DEFAULT_ICON = FileText
@@ -19,10 +22,17 @@ export default function SourcesPanel({ project, onStageChange }) {
   const [generateError, setGenerateError] = useState(null)
   const [generateDone, setGenerateDone] = useState(false)
   const [tab, setTab] = useState('file')
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // { id, fileName }
 
   const { data: sources = [], isLoading } = useQuery({
     queryKey: ['sourceFiles', project?.id],
     queryFn: () => sourceFilesService.listByProject(project.id),
+    enabled: !!project?.id,
+  })
+
+  const { data: scripts = [] } = useQuery({
+    queryKey: ['scripts', project?.id],
+    queryFn: () => scriptsService.listByProject(project.id),
     enabled: !!project?.id,
   })
 
@@ -32,10 +42,33 @@ export default function SourcesPanel({ project, onStageChange }) {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => sourceFilesService.remove(id),
+    mutationFn: async (id) => {
+      // Delete the source file
+      await sourceFilesService.remove(id)
+      
+      // If no more sources, cascade delete scripts and related data
+      const remainingSources = sources.filter(s => s.id !== id)
+      if (remainingSources.length === 0) {
+        // Delete all scripts for this project
+        const scripts = await scriptsService.listByProject(project.id)
+        for (const script of scripts) {
+          await scriptsService.remove(script.id)
+        }
+        
+        // Reset project status to draft and clear all voice/avatar settings
+        await projectsService.update(project.id, { 
+          status: 'draft',
+          defaultVoiceId: null,
+          defaultAvatarId: null,
+        })
+      }
+    },
     onSuccess: () => {
-      // Immediately refresh the file list after delete
+      // Refresh all related queries
       queryClient.invalidateQueries({ queryKey: ['sourceFiles', project.id] })
+      queryClient.invalidateQueries({ queryKey: ['scripts', project.id] })
+      queryClient.invalidateQueries({ queryKey: ['project', project.id] })
+      setDeleteConfirm(null)
     },
     onError: (err) => {
       console.error('Delete failed:', err)
@@ -84,14 +117,26 @@ export default function SourcesPanel({ project, onStageChange }) {
     setGenerateError(null)
     setGenerateDone(false)
     try {
+      // Step 1: Run Librarian to create modules
       await agentsService.runLibrarian(project.id)
-      // Refresh project state
-      await queryClient.invalidateQueries({ queryKey: ['project', project.id] })
-      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      
+      // Step 2: Immediately run ScriptGenerator to create scripts
+      await agentsService.runScriptGenerator(project.id, undefined)
+      
+      // Step 3: Refresh all queries to get the newly created scripts
+      await queryClient.invalidateQueries({ 
+        queryKey: ['project', project.id],
+        refetchType: 'all',
+      })
+      await queryClient.invalidateQueries({ 
+        queryKey: ['scripts', project.id],
+        refetchType: 'all',
+      })
+      
       setGenerateDone(true)
       // Auto-navigate to Script stage after 1.5 seconds
       setTimeout(() => {
-        onStageChange?.('script')
+        onStageChange?.('scripts')
       }, 1500)
     } catch (e) {
       setGenerateError(e.message || 'Generation failed. Please try again.')
@@ -102,23 +147,19 @@ export default function SourcesPanel({ project, onStageChange }) {
 
   if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
 
+  // Library is complete when sources are uploaded AND scripts are generated
+  const libraryComplete = sources.length > 0 && scripts.length > 0
+
   return (
     <div className="p-6 max-w-2xl">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Source Library</h2>
-          <p className="text-xs text-slate-500 mt-0.5">{sources.length} file{sources.length !== 1 ? 's' : ''} added</p>
-        </div>
-        {sources.length > 0 && (
-          <Button onClick={handleGenerate} disabled={generating}>
-            {generating
-              ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing…</>
-              : generateDone
-              ? <><CheckCircle className="w-4 h-4" />Done! Going to Script…</>
-              : <><Sparkles className="w-4 h-4" />Generate Journey</>}
-          </Button>
-        )}
-      </div>
+      <StageHeader
+        icon={Library}
+        title="1. Library"
+        subtitle="Upload sources • Generate Journey • Continue"
+        complete={libraryComplete}
+        onContinue={() => onStageChange?.('scripts')}
+        continueLabel="Continue to Scripts"
+      />
 
       {/* Error message */}
       {generateError && (
@@ -138,13 +179,22 @@ export default function SourcesPanel({ project, onStageChange }) {
 
       {/* Upload area */}
       <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 mb-5">
-        <div className="flex gap-2 mb-4">
-          {['file', 'url'].map((t) => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
-              {t === 'file' ? 'Upload File' : 'Add URL'}
-            </button>
-          ))}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex gap-2">
+            {['file', 'url'].map((t) => (
+              <button key={t} onClick={() => setTab(t)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
+                {t === 'file' ? 'Upload File' : 'Add URL'}
+              </button>
+            ))}
+          </div>
+          {sources.length > 0 && (
+            <Button onClick={handleGenerate} disabled={generating} size="sm" className="gap-2">
+              {generating
+                ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing…</>
+                : <><Sparkles className="w-4 h-4" />Generate Journey</>}
+            </Button>
+          )}
         </div>
 
         {tab === 'file' ? (
@@ -194,7 +244,7 @@ export default function SourcesPanel({ project, onStageChange }) {
                   <p className="text-xs text-slate-400 dark:text-slate-600 capitalize">{src.fileType}</p>
                 </div>
                 <button
-                  onClick={() => deleteMutation.mutate(src.id)}
+                  onClick={() => setDeleteConfirm({ id: src.id, fileName: src.fileName })}
                   disabled={isDeleting}
                   className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all disabled:cursor-not-allowed"
                 >
@@ -206,6 +256,78 @@ export default function SourcesPanel({ project, onStageChange }) {
             )
           })}
         </ul>
+      )}
+
+      {/* Step Progression Navigation */}
+      <div className="mt-4 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <span className="font-medium">1. Library</span>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="text-slate-400 dark:text-slate-500">2. Scripts</span>
+          </div>
+          <button
+            onClick={() => onStageChange?.('scripts')}
+            disabled={sources.length === 0 || generating}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-400 text-white text-sm font-medium rounded-xl transition-colors flex-shrink-0"
+          >
+            Continue
+            <span className="text-base">→</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 dark:bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-4">
+                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-slate-900 dark:text-white">Delete File?</h3>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                    Deleting <strong>{deleteConfirm.fileName}</strong> will remove all scripts and related work from this project.
+                  </p>
+                </div>
+              </div>
+              
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-6">
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  ⚠️ <strong>This action is irreversible.</strong> All work from Steps 2+ will be deleted.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="flex-1 px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-medium transition-colors hover:bg-slate-200 dark:hover:bg-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => deleteMutation.mutate(deleteConfirm.id)}
+                  disabled={deleteMutation.isPending}
+                  className="flex-1 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-red-400 text-white font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  {deleteMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Deleting…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      Delete
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

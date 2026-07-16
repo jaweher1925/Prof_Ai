@@ -46,6 +46,80 @@ export interface SlideContent {
   // pipeline uses this image directly instead of rebuilding the slide with
   // buildSlide() — guaranteeing the video matches the editor pixel-for-pixel.
   renderedSlideUrl?: string
+  // Avatar placeholder position/size synced from SlideComposition (#3, #4) —
+  // % of slide, center-anchored, 9:16 box. Read by ffmpegVideo.ts's
+  // overlayAvatarOnVideo() so the final composited avatar lands exactly
+  // where the user placed it on the Visual Designer canvas instead of the
+  // old hardcoded bottom-right position.
+  avatarX?: number
+  avatarY?: number
+  avatarWidth?: number
+  // Responsive image placement synced from SlideComposition (#5) — absolute
+  // top-left % position + independent width/height %, so an image can be
+  // freely stretched (not just uniformly scaled) and can be sized relative
+  // to either the content area or the avatar placeholder boundary. Takes
+  // priority over the legacy `positions.image` offset scheme below when set.
+  imageX?: number
+  imageY?: number
+  imageHeight?: number
+}
+
+// Visual Designer content blocks — the WYSIWYG editor's per-point shape —
+// look like { text, keyPoints, x, y, zIndex, cadreStyle, showDetails }.
+// That is NOT the { type, items } shape the render* functions above search
+// for (blocks.find(b => b.type === 'bullets')). Passing editor content
+// blocks straight through as `blocks` therefore matched nothing and the
+// generated slide silently dropped every point/detail, rendering title and
+// subtitle only — this is the single conversion point that keeps the
+// generated PNG showing the same content the user actually wrote.
+export interface EditorContentBlock {
+  text?: string
+  keyPoints?: string[]
+  [key: string]: any
+}
+
+export function toSlideBlocks(contentBlocks: EditorContentBlock[], layout?: string): SlideBlock[] {
+  if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return []
+
+  // Flatten every point + its nested key points into one bullets list
+  // (level 0 = main idea, level 1 = supporting detail) — the shape
+  // renderBullets() expects, and what renderSplit()/renderSummary() fall
+  // back to as well.
+  const items: SlideBullet[] = []
+  for (const block of contentBlocks) {
+    if (block?.text) items.push({ text: block.text, level: 0 })
+    if (Array.isArray(block?.keyPoints)) {
+      for (const kp of block.keyPoints) {
+        if (kp) items.push({ text: kp, level: 1 })
+      }
+    }
+  }
+
+  const blocks: SlideBlock[] = []
+  if (items.length > 0) blocks.push({ type: 'bullets', items })
+
+  // Best-effort mapping for layouts whose data the editor doesn't collect
+  // as dedicated fields (definition/quote only have generic text +
+  // keyPoints to work with) — reuse the first point so these layouts show
+  // something meaningful instead of coming up empty.
+  const first = contentBlocks[0]
+  if (layout === 'definition' && first?.text) {
+    blocks.push({
+      type: 'definition',
+      term: first.text,
+      definition: (first.keyPoints || [])[0] || '',
+      examples: (first.keyPoints || []).slice(1),
+    })
+  }
+  if (layout === 'quote' && first?.text) {
+    blocks.push({
+      type: 'quote',
+      quote: first.text,
+      attribution: (first.keyPoints || [])[0] || '',
+    })
+  }
+
+  return blocks
 }
 
 export const THEMES: Record<string, {
@@ -84,6 +158,51 @@ export const THEMES: Record<string, {
     title: '#F9FAFB', body: '#D1D5DB', muted: '#6B7280',
     glow: '#F59E0B',
   },
+  // ── Visual Designer template library (#1) — each of the 10 frontend
+  // template ids maps 1:1 to a theme here, so choosing a template actually
+  // changes how the rendered/exported video looks, not just the editor UI.
+  'modern': {
+    bg1: '#0B1220', bg2: '#111C33', bg3: '#152246',
+    accent: '#3B82F6', accentLight: '#3B82F620',
+    title: '#F8FAFC', body: '#CBD5E1', muted: '#64748B',
+    glow: '#3B82F6',
+  },
+  'minimal': {
+    bg1: '#FAFAFA', bg2: '#F3F4F6', bg3: '#E5E7EB',
+    accent: '#6B7280', accentLight: '#6B728020',
+    title: '#111827', body: '#374151', muted: '#9CA3AF',
+    glow: '#6B7280',
+  },
+  'vibrant': {
+    bg1: '#2A0A1A', bg2: '#3D0F28', bg3: '#4F1436',
+    accent: '#EC4899', accentLight: '#EC489920',
+    title: '#FFF5F7', body: '#FBCFE8', muted: '#F472B6',
+    glow: '#EC4899',
+  },
+  'forest': {
+    bg1: '#08170D', bg2: '#0D2416', bg3: '#123420',
+    accent: '#16A34A', accentLight: '#16A34A20',
+    title: '#F0FDF4', body: '#BBF7D0', muted: '#4ADE80',
+    glow: '#16A34A',
+  },
+  'sunset': {
+    bg1: '#1F1408', bg2: '#331F0C', bg3: '#4A2C10',
+    accent: '#F97316', accentLight: '#F9731620',
+    title: '#FFFBEB', body: '#FED7AA', muted: '#FB923C',
+    glow: '#F97316',
+  },
+  'elegant': {
+    bg1: '#0D0D0D', bg2: '#1A1A1A', bg3: '#262626',
+    accent: '#D97706', accentLight: '#D9770620',
+    title: '#F5F5F5', body: '#D4D4D4', muted: '#A3A3A3',
+    glow: '#D97706',
+  },
+  'startup': {
+    bg1: '#05070D', bg2: '#0D1117', bg3: '#161B22',
+    accent: '#58A6FF', accentLight: '#58A6FF20',
+    title: '#F0F6FC', body: '#C9D1D9', muted: '#8B949E',
+    glow: '#58A6FF',
+  },
 }
 
 function esc(str: string): string {
@@ -113,27 +232,106 @@ const ROADMAP_CIRCLE_RADIUS = 70
 const ROADMAP_START_Y = 450
 const ROADMAP_CIRCLE_SPACING = 360
 
-function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], startY: number): string {
+/**
+ * IMPROVED TYPOGRAPHY: No default/forced bullet points. Content is grouped
+ * into focused main ideas with nested supporting points underneath, to keep
+ * dense text from turning into a chaotic flat bullet list.
+ *
+ * Structure:
+ * - Main focus idea (level 0): Large, bold, accent color
+ * - Nested supporting points (level 1-2): Smaller, muted, indented
+ * - Auto-scaling: however many main ideas the content needs are shown; if
+ *   they'd overflow the slide, font size and spacing scale down instead of
+ *   silently truncating content (#6, #7 — no fixed slide caps).
+ */
+function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], startY: number, offsetX: number = 0, wrapChars: number = 60): string {
   const items = blocks.find(b => b.type === 'bullets')?.items || []
-  let svg = ''; let y = startY
-  for (const item of items.slice(0, 5)) {
-    const lvl2 = item.level === 2
-    const x = lvl2 ? 160 : 108
-    const fs = lvl2 ? 30 : 36
-    // FEATURE: Support custom text color from item.color (user can set via color picker in VD)
-    const color = item.color || (lvl2 ? t.muted : t.body)
-    const dotColor = lvl2 ? t.muted : t.accent
-    // FEATURE: Support bold (item.bold) and italic (item.italic) styling
-    const fontWeight = item.bold ? '700' : (lvl2 ? '400' : '500')
-    const fontStyle = item.italic ? 'italic' : 'normal'
-    const lines = wrap(esc(item.text), lvl2 ? 72 : 65)
-    svg += `<circle cx="${x}" cy="${y - 8}" r="${lvl2 ? 4 : 6}" fill="${dotColor}"/>`
-    for (let i = 0; i < lines.length; i++) {
-      svg += `<text x="${x + 22}" y="${y + i * 42}" font-family="Arial,sans-serif" font-size="${fs}" fill="${color}" font-weight="${fontWeight}" font-style="${fontStyle}">${lines[i]}</text>`
+  if (!items || items.length === 0) return ''
+  const baseX = 108 + offsetX
+  const boxX = 96 + offsetX
+  const dotX1 = 128 + offsetX
+  const dotX2 = 160 + offsetX
+  // Sub-point wrap widths scale proportionally with the main wrapChars so
+  // the whole block narrows consistently as the avatar placeholder grows.
+  const subWrapChars1 = Math.max(18, Math.round(wrapChars * (70 / 60)))
+  const subWrapChars2 = Math.max(16, Math.round(wrapChars * (75 / 60)))
+
+  // Group items: level-0 are main ideas, level-1/2 are supporting details
+  const mainIdeas = items.filter(i => !i.level || i.level === 0)
+  if (!mainIdeas.length) return ''
+
+  const AVAILABLE_H = 980 - startY
+
+  // Estimate how much vertical space this content would need at full size,
+  // then scale down font/line-height proportionally if it doesn't fit —
+  // rather than cutting ideas off after a hardcoded count.
+  const estimateLines = (text: string, maxChars: number) => wrap(esc(text), maxChars).length
+  let estimatedH = 0
+  for (const mainIdea of mainIdeas) {
+    estimatedH += estimateLines(mainIdea.text, wrapChars) > 1 ? 110 : 80
+    const supportingPoints = items
+      .slice(items.indexOf(mainIdea) + 1)
+      .filter(i => (i.level === 1 || i.level === 2) && items.indexOf(i) - items.indexOf(mainIdea) <= items.length)
+    for (const sp of supportingPoints) {
+      estimatedH += estimateLines(sp.text, sp.level === 2 ? subWrapChars2 : subWrapChars1) > 1 ? 95 : 60
     }
-    y += lines.length > 1 ? (lvl2 ? 100 : 115) : (lvl2 ? 72 : 88)
-    if (y > 990) break
+    estimatedH += 20
   }
+
+  const scale = estimatedH > AVAILABLE_H ? Math.max(0.55, AVAILABLE_H / estimatedH) : 1
+  const mainFontSize = Math.round(40 * scale)
+  const mainLineH = Math.round(48 * scale)
+  const subFontSize1 = Math.round(32 * scale)
+  const subFontSize2 = Math.round(28 * scale)
+  const subLineH = Math.round(40 * scale)
+  const gapMain = Math.max(8, Math.round(20 * scale))
+  const gapAfterMain = Math.max(50, Math.round(80 * scale))
+  const gapAfterMainMulti = Math.max(70, Math.round(110 * scale))
+  const gapAfterSub = Math.max(35, Math.round(60 * scale))
+  const gapAfterSubMulti = Math.max(55, Math.round(95 * scale))
+
+  let svg = ''
+  let y = startY
+
+  for (const mainIdea of mainIdeas) {
+    // MAIN IDEA - larger, bolder, accent color
+    const mainLines = wrap(esc(mainIdea.text), wrapChars)
+    svg += `<rect x="${boxX}" y="${y - 10}" width="1728" height="${mainLines.length > 1 ? Math.round(100 * scale) : Math.round(72 * scale)}" 
+      rx="8" fill="${t.accent}" opacity="0.08"/>`
+
+    for (let i = 0; i < mainLines.length; i++) {
+      svg += `<text x="${baseX}" y="${y + i * mainLineH}" font-family="Arial,sans-serif" font-size="${mainFontSize}" 
+        fill="${mainIdea.color || t.title}" font-weight="700" letter-spacing="-0.5">${mainLines[i]}</text>`
+    }
+
+    y += mainLines.length > 1 ? gapAfterMainMulti : gapAfterMain
+
+    // Nested supporting points (level 1-2) directly following this main idea
+    const supportingPoints = items
+      .slice(items.indexOf(mainIdea) + 1)
+      .filter(i => (i.level === 1 || i.level === 2) && items.indexOf(i) - items.indexOf(mainIdea) <= items.length)
+
+    for (const supportPoint of supportingPoints) {
+      const isLevel2 = supportPoint.level === 2
+      const indentX = isLevel2 ? dotX2 : dotX1
+      const indentDot = isLevel2 ? 3 : 5
+      const supportLines = wrap(esc(supportPoint.text), isLevel2 ? subWrapChars2 : subWrapChars1)
+
+      svg += `<circle cx="${indentX}" cy="${y - 8}" r="${indentDot}" fill="${supportPoint.color || t.muted}" opacity="0.6"/>`
+
+      for (let i = 0; i < supportLines.length; i++) {
+        svg += `<text x="${indentX + 20}" y="${y + i * subLineH}" font-family="Arial,sans-serif" font-size="${isLevel2 ? subFontSize2 : subFontSize1}"
+          fill="${supportPoint.color || (isLevel2 ? t.muted : t.body)}" font-weight="${supportPoint.bold ? '600' : '400'}"
+          font-style="${supportPoint.italic ? 'italic' : 'normal'}">${supportLines[i]}</text>`
+      }
+
+      y += supportLines.length > 1 ? gapAfterSubMulti : gapAfterSub
+    }
+
+    y += gapMain // spacing between main ideas
+    if (y > 980) break // safety net only — scaling above should prevent this
+  }
+
   return svg
 }
 
@@ -312,6 +510,8 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const titleOffsetY = (H * titlePos.y) / 100 || 0
   const subtitleOffsetX = (W * subtitlePos.x) / 100 || 0
   const subtitleOffsetY = (H * subtitlePos.y) / 100 || 0
+  const contentOffsetX = (W * contentPos.x) / 100 || 0
+  const contentOffsetY = (H * contentPos.y) / 100 || 0
   const imageOffsetX = (W * imagePos.x) / 100 || 0
   const imageOffsetY = (H * imagePos.y) / 100 || 0
 
@@ -319,7 +519,20 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const titleFontSize = (layout === 'title-hero' ? 84 : 64) * (titlePos.scale || 1)
   const titleText = esc((slide.title || '').slice(0, 90))
   const subtitleText = esc((slide.subtitle || '').slice(0, 90))
-  const titleLines = layout === 'title-hero' ? [titleText] : wrap(titleText, 42)
+
+  // Text position synced with the avatar placeholder (#layout fluidity):
+  // wherever the avatar sits, the title/content wrap width narrows so text
+  // never runs underneath it — same rule the Visual Designer canvas already
+  // applies live, now mirrored here so the exported/generated slide matches.
+  const avatarLeftEdgePct = typeof slide.avatarX === 'number' && typeof slide.avatarWidth === 'number'
+    ? slide.avatarX - slide.avatarWidth / 2
+    : 100
+  // 42 chars/line is tuned for the full-width (~72%) text column; scale
+  // proportionally down to as few as ~26 chars/line when the avatar
+  // placeholder eats further into the slide.
+  const availableWidthPct = Math.max(35, Math.min(72, avatarLeftEdgePct - 4))
+  const titleWrapChars = Math.max(22, Math.round(42 * (availableWidthPct / 72)))
+  const titleLines = layout === 'title-hero' ? [titleText] : wrap(titleText, titleWrapChars)
   
   // Calculate subtitle Y based on number of title lines to avoid overlap
   // If title is multi-line, push subtitle down further
@@ -358,7 +571,12 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
       contentSvg = renderRoadmap(blocks, t, (slide as any).segments)
       break
     default:
-      contentSvg = renderBullets(blocks, t, CONTENT_Y)
+      // Content block position now responds to the user's own drag offset
+      // (positions.content), same as title/subtitle — previously this was
+      // hardcoded to CONTENT_Y and ignored contentOffsetX/contentOffsetY.
+      // wrapChars narrows the same way titleWrapChars does, so bullets never
+      // run under the avatar placeholder either.
+      contentSvg = renderBullets(blocks, t, CONTENT_Y + contentOffsetY, contentOffsetX, titleWrapChars)
   }
 
   const total = Math.max(totalScenes, 1)
@@ -402,11 +620,16 @@ ${layout !== 'title-hero' ? (() => {
     `<text x="100" y="${TITLE_BASE_Y + i * TITLE_LINE_H}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
       fill="${t.title}" font-weight="700" letter-spacing="-1">${line}</text>`
   ).join('\n')
+  // Module tag pill starts clear of the logo circle (centered at 80,80,
+  // r=58 → right edge at x≈138) instead of x=100, which used to sit right
+  // under the logo and get visually clipped by it — "separate the logo
+  // from the module name" fix.
+  const pillX = 170
   return `
 <!-- Module tag pill -->
-<rect x="100" y="40" width="${pillW}" height="46" rx="23" fill="${t.accentLight}"/>
-<rect x="100" y="40" width="${pillW}" height="46" rx="23" fill="none" stroke="${t.accent}" stroke-width="1.5"/>
-<text x="${100 + pillW / 2}" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" fill="${t.accent}"
+<rect x="${pillX}" y="40" width="${pillW}" height="46" rx="23" fill="${t.accentLight}"/>
+<rect x="${pillX}" y="40" width="${pillW}" height="46" rx="23" fill="none" stroke="${t.accent}" stroke-width="1.5"/>
+<text x="${pillX + pillW / 2}" y="70" text-anchor="middle" font-family="Arial,sans-serif" font-size="20" fill="${t.accent}"
   font-weight="700" letter-spacing="2">${pillLabel}</text>
 
 <!-- Progress bar (replaces literal scene numbering) -->
@@ -433,17 +656,25 @@ ${contentSvg}
 
 <!-- FEATURE: Uploaded image with styling from Visual Designer -->
 ${slide.imageUrl ? (() => {
-  const imgW = Math.min(90, slide.imageWidth || 36)  // % of width, capped at 90%
-  const imgH = Math.round(imgW * 0.67)  // 3:2 aspect ratio
-  const imgX = ((100 - imgW) / 2) + imagePos.x  // Center horizontally, then apply offset
-  const imgY = (CONTENT_Y + 200) + imageOffsetY  // Below content, apply offset
-  
+  // Responsive image placement (#5): SlideComposition's absolute imageX/Y +
+  // independent imageWidth/imageHeight take priority — this lets a user
+  // freely stretch an image (non-uniform scale), not just resize it
+  // proportionally. Falls back to the legacy centered/offset scheme for
+  // slides that predate the WYSIWYG canvas.
+  const hasAbsolutePlacement = typeof slide.imageX === 'number' && typeof slide.imageY === 'number'
+  const imgW = Math.min(95, slide.imageWidth || 36)  // % of width, capped at 95%
+  const imgH = hasAbsolutePlacement && typeof slide.imageHeight === 'number'
+    ? Math.min(95, slide.imageHeight)                // independent height % — allows stretching
+    : Math.round(imgW * 0.67)                         // legacy: fixed 3:2 aspect ratio
+  const imgX = hasAbsolutePlacement ? (slide.imageX as number) : ((100 - imgW) / 2) + imagePos.x
+  const imgYPct = hasAbsolutePlacement ? (slide.imageY as number) : undefined
+
   // SVG clip path requires inline radius specification (no % in rx/ry for clip paths)
   // Convert percentages to absolute pixels for clip path
   const imgXPx = (W * imgX) / 100
-  const imgYPx = imgY
+  const imgYPx = hasAbsolutePlacement ? (H * (imgYPct as number)) / 100 : (CONTENT_Y + 200) + imageOffsetY
   const imgWPx = (W * imgW) / 100
-  const imgHPx = imgH
+  const imgHPx = hasAbsolutePlacement ? (H * imgH) / 100 : imgH
   
   const cornerRadius = slide.imageShape === 'circle' 
     ? Math.min(imgWPx, imgHPx) / 2 
@@ -478,20 +709,6 @@ ${slide.imageUrl ? (() => {
 <text x="100" y="${H - 40}" font-family="Arial,sans-serif" font-size="16" fill="${t.muted}"
   letter-spacing="2" font-weight="600" opacity="0.6">PROFAI STUDIO</text>
 
-<!-- GVSU Logo (top-left, if enabled) -->
-${slide.showLogo !== false ? `
-<g id="gvsu-logo">
-  <!-- Circular background -->
-  <circle cx="80" cy="80" r="55" fill="${t.accent}" opacity="0.15"/>
-  <!-- Logo mark: G shape -->
-  <g transform="translate(80, 80)">
-    <path d="M -20 -15 A 25 25 0 1 1 0 25 L 0 0 A 15 15 0 1 0 -10 -15 Z" 
-      fill="none" stroke="${t.accent}" stroke-width="4" opacity="0.8"/>
-    <text x="-5" y="8" font-family="Arial,sans-serif" font-size="24" font-weight="bold" 
-      fill="${t.accent}" opacity="0.8">G</text>
-  </g>
-</g>
-` : ''}
 
 <!-- Decorative circles -->
 <circle cx="1780" cy="180" r="280" fill="${t.accent}" opacity="0.04"/>

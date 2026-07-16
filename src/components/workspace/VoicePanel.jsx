@@ -8,18 +8,18 @@
  * - Per-module "Generate module" button with scene counter
  * - Individual scene edit + generate
  */
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { scriptsService } from '@/services/scripts'
 import { agentsService } from '@/services/agents'
 import {
   Mic2, Play, Square, Loader2, CheckCircle, Sparkles, Edit2, X,
-  ArrowRight, Image, SlidersHorizontal, ChevronDown, ChevronUp,
-  Volume2, RotateCcw, Wand2
+  ArrowRight, Volume2, RotateCcw, SlidersHorizontal, ChevronUp, ChevronDown
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Badge from '@/components/ui/Badge'
 import Spinner from '@/components/ui/Spinner'
+import StageHeader from '@/components/workspace/StageHeader'
 
 export default function VoicePanel({ project, onUpdate, onContinue, regenStatus }) {
   const queryClient = useQueryClient()
@@ -41,6 +41,12 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
   // you see only that module's scenes instead of scrolling through every
   // module's full scene list stacked one after another.
   const [expandedModules,    setExpandedModules]    = useState({})
+  // Per-module voice-generation progress, reported up by each SceneVoiceList
+  // so the module header shows "X/Y generated" / a green "done" badge even
+  // while collapsed — previously that state only existed inside the
+  // (collapsed-by-default) scene list, so there was no visible progress or
+  // completion indicator on the header itself.
+  const [moduleVoiceStatus,  setModuleVoiceStatus]  = useState({}) // moduleId -> { done, total }
 
   const { data: scripts = [], isLoading } = useQuery({
     queryKey: ['scripts', project?.id],
@@ -60,6 +66,29 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
       const msg = typeof e?.message === 'string' ? e.message
         : e?.message ? JSON.stringify(e.message)
         : 'Audio generation failed'
+      setErrors(prev => ({ ...prev, [sceneId]: msg }))
+    } finally {
+      setGenerating(prev => ({ ...prev, [sceneId]: false }))
+    }
+  }
+
+  const handleDeleteVoice = async (sceneId) => {
+    setGenerating(prev => ({ ...prev, [sceneId]: true }))
+    setErrors(prev => ({ ...prev, [sceneId]: null }))
+    try {
+      const res = await fetch(`/api/scenes/${sceneId}/delete-voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }))
+        throw new Error(err.error || 'Failed to delete voice')
+      }
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+      queryClient.invalidateQueries({ queryKey: ['scripts', project.id] })
+      onUpdate?.()
+    } catch (e) {
+      const msg = typeof e?.message === 'string' ? e.message : 'Delete failed'
       setErrors(prev => ({ ...prev, [sceneId]: msg }))
     } finally {
       setGenerating(prev => ({ ...prev, [sceneId]: false }))
@@ -117,33 +146,48 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
     </div>
   )
 
+  // Overall voice-generation completion across every module — mirrors the
+  // same "green header + Continue button" treatment used on Library/Scripts.
+  // Requires every module to have reported status AND have 100% of its
+  // scenes voiced (so it stays neutral until generation has actually run).
+  const allVoicesComplete = scripts.length > 0 && scripts.every(s => {
+    const status = moduleVoiceStatus[s.moduleId]
+    return status && status.total > 0 && status.done === status.total
+  })
+
   return (
-    <div className="p-6 max-w-3xl">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 mb-2">
-        <div className="flex items-center gap-3">
-          <Mic2 className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
-          <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Voice Generation</h2>
+    <div className="p-6 max-w-4xl">
+      <StageHeader
+        icon={Mic2}
+        title="3. Voice"
+        subtitle="Choose your voice talent and generate TTS audio for every scene."
+        complete={allVoicesComplete}
+        onContinue={() => onContinue?.('visual-design')}
+        continueLabel="Continue to Visual Design"
+      />
+
+      <div className="mb-8">
+        {/* Control Header */}
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Generate Audio for Each Scene</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Choose your voice in Casting Settings, then generate</p>
+          </div>
+          <button
+            onClick={() => { setGeneratingAll(true); setGenerateAllTrigger(t => t + 1) }}
+            disabled={generatingAll}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${
+              generatingAll
+                ? 'bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed'
+                : 'bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white shadow-lg'
+            }`}
+          >
+            {generatingAll
+              ? <><Loader2 className="w-4 h-4 animate-spin" />Generating all…</>
+              : <><Sparkles className="w-4 h-4" />Generate All Scenes</>}
+          </button>
         </div>
-        <button
-          onClick={() => { setGeneratingAll(true); setGenerateAllTrigger(t => t + 1) }}
-          disabled={generatingAll}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${
-            generatingAll
-              ? 'bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed'
-              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-          }`}
-        >
-          {generatingAll
-            ? <><Loader2 className="w-4 h-4 animate-spin" />Generating all…</>
-            : <><Sparkles className="w-4 h-4" />Generate All</>}
-        </button>
       </div>
-      <p className="text-sm text-slate-500 mb-6">
-        Generate audio for each scene. Click <strong className="text-slate-600 dark:text-slate-300">Edit</strong> to change
-        the text before generating. Choose your voice in{' '}
-        <strong className="text-slate-600 dark:text-slate-300">Casting Settings</strong> (gear icon, top right).
-      </p>
 
       {/* Background voice regeneration banner — fires when Casting Settings
           regenerates existing scenes' audio with a newly chosen voice in the
@@ -239,22 +283,32 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
       {/* Script modules */}
       {scripts.map((script, vi) => {
         const isExpanded = !!expandedModules[script.id]
+        const voiceStatus = moduleVoiceStatus[script.moduleId]
+        const voiceComplete = voiceStatus && voiceStatus.total > 0 && voiceStatus.done === voiceStatus.total
         return (
           <div key={script.id} className="mb-8">
             <button
               onClick={() => setExpandedModules(p => ({ ...p, [script.id]: !p[script.id] }))}
-              className="w-full flex items-center gap-2 mb-3 pb-2 border-b border-slate-200 dark:border-white/[0.06] text-left hover:opacity-80 transition-opacity"
+              className="w-full flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-slate-200 dark:border-white/[0.06] text-left hover:opacity-80 transition-opacity"
             >
               <div className="w-6 h-6 rounded-md bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
                 <span className="text-xs font-bold text-indigo-500 dark:text-indigo-400">{vi + 1}</span>
               </div>
-              <h3 className="text-sm font-medium text-slate-900 dark:text-white flex-1">{script.title}</h3>
+              <h3 className="text-sm font-medium text-slate-900 dark:text-white flex-1 min-w-0 truncate">{script.title}</h3>
+              {/* Voice generation progress/completion — visible even while
+                  the module is collapsed, since that's the default state. */}
+              {voiceComplete ? (
+                <Badge variant="green"><CheckCircle className="w-3 h-3 mr-1" />Voices done</Badge>
+              ) : voiceStatus && voiceStatus.total > 0 ? (
+                <Badge variant="default">{voiceStatus.done}/{voiceStatus.total} voices</Badge>
+              ) : null}
               <Badge variant={script.status === 'approved' ? 'green' : 'yellow'}>{script.status}</Badge>
-              {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+              {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-500 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-500 flex-shrink-0" />}
             </button>
             {/* Kept mounted (display:none when collapsed) rather than unmounted —
                 Generate All must still reach every module's scene list even
-                while it's visually collapsed. */}
+                while it's visually collapsed, and status must keep reporting
+                up to the header above. */}
             <div style={{ display: isExpanded ? 'block' : 'none' }}>
               <SceneVoiceList
                 moduleId={script.moduleId}
@@ -267,6 +321,14 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
                 onModuleDone={() => {
                   if (vi === scripts.length - 1) setGeneratingAll(false)
                 }}
+                onStatusChange={(done, total) => {
+                  setModuleVoiceStatus(prev => {
+                    const existing = prev[script.moduleId]
+                    if (existing && existing.done === done && existing.total === total) return prev
+                    return { ...prev, [script.moduleId]: { done, total } }
+                  })
+                }}
+                onDelete={handleDeleteVoice}
               />
             </div>
           </div>
@@ -276,24 +338,25 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
       {/* Continue or Back */}
       <div className="mt-4 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
         <div className="flex items-center justify-between gap-3">
-          <button
-            onClick={() => onContinue?.('script')}
-            className="flex items-center gap-2 px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium text-sm transition-colors"
-          >
-            ← Back to Scripts
-          </button>
-          <div className="flex-1" />
-          <div>
-            <p className="text-sm text-slate-500 dark:text-slate-400 text-right mb-2">Ready to configure avatar & voice?</p>
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
             <button
-              onClick={() => onContinue?.('avatar-studio')}
-              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors"
+              onClick={() => onContinue?.('script')}
+              className="flex items-center gap-2 px-3 py-1.5 text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium transition-colors"
             >
-              <Wand2 className="w-4 h-4" />
-              Continue to Avatar Studio
-              <ArrowRight className="w-4 h-4" />
+              ← Back to Scripts
             </button>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="font-medium">3. Voices</span>
+            <span className="text-slate-300 dark:text-slate-600">•</span>
+            <span className="text-slate-400 dark:text-slate-500">4. Visual Design</span>
           </div>
+          <button
+            onClick={() => onContinue?.('visual-design')}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors flex-shrink-0"
+          >
+            Continue
+            <ArrowRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
@@ -302,7 +365,7 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
 
 // ─── Per-module scene list ────────────────────────────────────────────────────
 
-function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, onPlay, generateAllTrigger, onModuleDone }) {
+function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, onPlay, generateAllTrigger, onModuleDone, onStatusChange, onDelete }) {
   const [editingId,    setEditingId]    = useState(null)
   const [editText,     setEditText]     = useState('')
   const [moduleGenAll, setModuleGenAll] = useState(false)
@@ -318,6 +381,15 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
     refetchInterval: (query) =>
       Array.isArray(query.state.data) && query.state.data.some(s => s.status === 'assets_generating') ? 3000 : false,
   })
+
+  // Report progress up to the module header (works even while this list is
+  // display:none-collapsed, since it stays mounted — see VoicePanel above).
+  useEffect(() => {
+    if (!scenes.length) return
+    const done = scenes.filter(s => !!s.ttsAudioUrl).length
+    onStatusChange?.(done, scenes.length)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenes])
 
   const runGenerateAll = useCallback(async (sceneList) => {
     const pending = sceneList.filter(s => !s.ttsAudioUrl)
@@ -434,6 +506,15 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
                         >
                           {isGen ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
                           Regenerate
+                        </button>
+                        <button
+                          onClick={() => onDelete?.(scene.id)}
+                          disabled={isGen}
+                          title="Delete voice audio and timing data"
+                          className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
+                        >
+                          <X className="w-3 h-3" />
+                          Delete
                         </button>
                       </div>
                     : <Button size="sm" variant="secondary" disabled={isGen} onClick={() => onGenerate(scene.id)}>

@@ -78,11 +78,11 @@ async function generateHyperFramesSlideHandler(
       slideContent.title = scene.visualPrompt?.split(/[.,]/)[0].trim() || 'Slide'
     }
     if (!slideContent.blocks?.length) {
+      // No fixed cap — see slideRenderer.ts renderBullets() auto-scaling.
       const sentences = (scene.scriptContent || '')
         .replace(/\n+/g, ' ')
         .split(/(?<=[.!?])\s+/)
         .filter(s => s.length > 20 && s.length < 200)
-        .slice(0, 4)
       slideContent.blocks = [{ type: 'bullets', items: sentences.map(t => ({ text: t, level: 1 })) }]
     }
 

@@ -127,12 +127,24 @@ async function generateTTSHandler(
 
       context.log(`Generating TTS for ${targets.length} segment(s) of scene ${body.scene_id} with voice ${voiceId}`)
 
-      const generated: { segment_id: string; tts_audio_url: string }[] = []
+      const generated: { segment_id: string; tts_audio_url: string; duration_seconds?: number }[] = []
       for (const seg of targets) {
         const text = (body.segment_id && body.override_text) || seg.text
         const audioUrl = await synthesize(text, voiceId, apiKey, voiceSettings)
-        await prisma.sceneSegment.update({ where: { id: seg.id }, data: { ttsAudioUrl: audioUrl } })
-        generated.push({ segment_id: seg.id, tts_audio_url: audioUrl })
+        
+        // Calculate approximate duration: ElevenLabs TTS generates roughly 240 words per minute
+        // So 4 words per second on average. Adjust segment text to estimate duration.
+        const wordCount = text.trim().split(/\s+/).length
+        const estimatedDuration = Math.max(1, Math.ceil(wordCount / 3)) // Conservative estimate
+        
+        await prisma.sceneSegment.update({ 
+          where: { id: seg.id }, 
+          data: { 
+            ttsAudioUrl: audioUrl,
+            durationSeconds: estimatedDuration,
+          } 
+        })
+        generated.push({ segment_id: seg.id, tts_audio_url: audioUrl, duration_seconds: estimatedDuration })
       }
 
       // Back-compat: keep scene.ttsAudioUrl pointing at the first segment's
@@ -141,11 +153,13 @@ async function generateTTSHandler(
       const allSegments = await prisma.sceneSegment.findMany({ where: { sceneId: body.scene_id }, orderBy: { orderIndex: 'asc' } })
       const firstAudio = allSegments.find(s => s.ttsAudioUrl)?.ttsAudioUrl
       const allHaveAudio = allSegments.every(s => !!s.ttsAudioUrl)
+      const sceneTotalDuration = allSegments.reduce((sum, s) => sum + (s.durationSeconds || 0), 0)
 
       await prisma.scene.update({
         where: { id: body.scene_id },
         data: {
           ttsAudioUrl: firstAudio ?? scene.ttsAudioUrl,
+          durationSeconds: sceneTotalDuration || undefined,
           status: allHaveAudio ? 'assets_ready' : 'assets_generating',
         },
       })
@@ -159,6 +173,7 @@ async function generateTTSHandler(
           scene_id: body.scene_id,
           segments: generated,
           tts_audio_url: firstAudio ?? null,
+          total_duration: sceneTotalDuration,
         },
       }
     }
@@ -172,17 +187,30 @@ async function generateTTSHandler(
     context.log(`Generating TTS for scene ${body.scene_id} with voice ${voiceId}`)
 
     const audioUrl = await synthesize(body.override_text || scene.scriptContent, voiceId, apiKey, voiceSettings)
+    
+    // Calculate approximate duration
+    const wordCount = (body.override_text || scene.scriptContent).trim().split(/\s+/).length
+    const estimatedDuration = Math.max(1, Math.ceil(wordCount / 3))
 
     await prisma.scene.update({
       where: { id: body.scene_id },
-      data: { ttsAudioUrl: audioUrl, status: 'assets_ready' },
+      data: { 
+        ttsAudioUrl: audioUrl, 
+        durationSeconds: estimatedDuration,
+        status: 'assets_ready' 
+      },
     })
 
-    context.log(`TTS generated for scene ${body.scene_id}: ${audioUrl}`)
+    context.log(`TTS generated for scene ${body.scene_id}: ${audioUrl} (${estimatedDuration}s)`)
 
     return {
       status: 200,
-      jsonBody: { success: true, scene_id: body.scene_id, tts_audio_url: audioUrl },
+      jsonBody: { 
+        success: true, 
+        scene_id: body.scene_id, 
+        tts_audio_url: audioUrl,
+        duration_seconds: estimatedDuration,
+      },
     }
   } catch (error: any) {
     context.error('generateTTS error:', error)

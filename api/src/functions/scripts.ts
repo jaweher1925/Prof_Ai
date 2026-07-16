@@ -25,16 +25,43 @@ app.http('updateScript', {
     if (!getUser(req)) return unauth()
     try {
       const body = (await req.json()) as any
-      const script = await prisma.script.update({
+      const script = await prisma.script.findUnique({ where: { id: req.params.id } })
+      if (!script) return { status: 404, jsonBody: { error: 'Script not found' } }
+
+      // Phase 1 HITL: Cannot edit sections if script is locked
+      if (script.locked && body.sections !== undefined) {
+        return { status: 403, jsonBody: { error: 'Script is locked. Cannot edit content.' } }
+      }
+
+      // Validate approval status transition
+      if (body.approvalStatus === 'locked') {
+        if (script.approvalStatus !== 'approved') {
+          return { status: 400, jsonBody: { error: 'Script must be approved before locking.' } }
+        }
+      }
+
+      // Build update data with lock tracking
+      const updateData: any = {
+        ...(body.status !== undefined && { status: body.status }),
+        ...(body.title !== undefined && { title: body.title }),
+        ...(body.sections !== undefined && { sections: body.sections }),
+        ...(body.learning_objectives !== undefined && { learningObjectives: body.learning_objectives }),
+        ...(body.approvalStatus !== undefined && {
+          approvalStatus: body.approvalStatus,
+          // If locking, set lock metadata
+          ...(body.approvalStatus === 'locked' && {
+            locked: true,
+            lockedAt: new Date(),
+            lockedBy: getUser(req),
+          }),
+        }),
+      }
+
+      const updatedScript = await prisma.script.update({
         where: { id: req.params.id },
-        data: {
-          ...(body.status !== undefined && { status: body.status }),
-          ...(body.title !== undefined && { title: body.title }),
-          ...(body.sections !== undefined && { sections: body.sections }),
-          ...(body.learning_objectives !== undefined && { learningObjectives: body.learning_objectives }),
-        },
+        data: updateData,
       })
-      return { status: 200, jsonBody: script }
+      return { status: 200, jsonBody: updatedScript }
     } catch (e) { ctx.error(e); return err500(e) }
   },
 })

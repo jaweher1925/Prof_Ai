@@ -5,4 +5,6 @@ export const scenesService = {
   get:    (id)        => apiClient.get(`/scenes/${id}`),
   update: (id, data)  => apiClient.patch(`/scenes/${id}`, data),
   approve: (id)       => apiClient.post(`/scenes/${id}/approve`),
+  updateElementTiming: (sceneId, timingData) => 
+    apiClient.patch(`/scenes/${sceneId}/element-timing`, timingData),
 }

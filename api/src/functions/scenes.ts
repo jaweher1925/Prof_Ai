@@ -14,13 +14,16 @@ app.http('getModuleScenes', {
       const moduleId = req.params.id
       if (!moduleId) return { status: 400, jsonBody: { error: 'moduleId is required' } }
       
-      // Get all scenes for this module first
+      // Get all scenes for this module with their composition
       const scenes = await prisma.scene.findMany({
         where: { moduleId },
         orderBy: { orderIndex: 'asc' },
+        include: { 
+          composition: true,  // Include slideComposition
+        },
       })
       
-      // For each scene, get its segments separately to avoid relation issues
+      // For each scene, get its segments
       const result = []
       for (const scene of scenes) {
         const segments = await prisma.sceneSegment.findMany({
@@ -30,7 +33,24 @@ app.http('getModuleScenes', {
           ctx.warn(`Failed to fetch segments for scene ${scene.id}: ${e.message}`)
           return []
         })
-        result.push({ ...scene, segments })
+        
+        // If segments have no duration but have audio, estimate from text length
+        const enrichedSegments = segments.map(seg => {
+          if ((!seg.durationSeconds || seg.durationSeconds === 0) && seg.text) {
+            // Estimate: ~3 words per second
+            const wordCount = seg.text.trim().split(/\s+/).length
+            const estimatedDuration = Math.max(1, Math.ceil(wordCount / 3))
+            return { ...seg, durationSeconds: estimatedDuration }
+          }
+          return seg
+        })
+        
+        // Map composition to slideComposition field name
+        result.push({ 
+          ...scene, 
+          slideComposition: scene.composition, 
+          segments: enrichedSegments
+        })
       }
       
       return { status: 200, jsonBody: result }
@@ -281,6 +301,116 @@ app.http('applyThemeToSegments', {
 
       ctx.log(`Applied theme ${body.theme} to ${updated.length} segments in scene ${sceneId}`)
       return { status: 200, jsonBody: { success: true, updatedCount: updated.length } }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// POST /api/scenes/{id}/delete-voice
+// Clears TTS audio and duration data from a scene and its segments
+// Allows re-generation with proper duration calculation
+app.http('deleteVoice', {
+  methods: ['POST'], route: 'scenes/{id}/delete-voice', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const sceneId = req.params.id
+      
+      // Get all segments for this scene
+      const segments = await prisma.sceneSegment.findMany({
+        where: { sceneId },
+      })
+
+      // Clear TTS data from all segments
+      await Promise.all(
+        segments.map(seg =>
+          prisma.sceneSegment.update({
+            where: { id: seg.id },
+            data: { ttsAudioUrl: null, durationSeconds: null },
+          })
+        )
+      )
+
+      // Clear TTS data from scene itself
+      await prisma.scene.update({
+        where: { id: sceneId },
+        data: { 
+          ttsAudioUrl: null,
+          durationSeconds: null,
+          status: 'draft',
+        },
+      })
+
+      ctx.log(`Deleted TTS audio for scene ${sceneId} (${segments.length} segments)`)
+      return { status: 200, jsonBody: { success: true, segmentsCleared: segments.length } }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// PATCH /api/scenes/{id}/element-timing
+// Updates the timing for visual elements (title, subtitle, content blocks)
+app.http('updateElementTiming', {
+  methods: ['PATCH'], route: 'scenes/{id}/element-timing', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    if (!getUser(req)) return unauth()
+    try {
+      const sceneId = req.params.id
+      const body = (await req.json()) as {
+        elementId?: string
+        startTime?: number
+        duration?: number
+      }
+
+      if (!body.elementId || body.startTime === undefined) {
+        return { status: 400, jsonBody: { error: 'elementId and startTime are required' } }
+      }
+
+      // Get the scene's slide composition
+      const composition = await prisma.slideComposition.findUnique({
+        where: { sceneId },
+      })
+
+      if (!composition) {
+        return { status: 404, jsonBody: { error: 'Slide composition not found' } }
+      }
+
+      // Update timing based on element ID
+      const updateData: any = {}
+
+      if (body.elementId === 'title') {
+        updateData.titleStartTime = body.startTime
+        if (body.duration !== undefined) updateData.titleDuration = body.duration
+      } else if (body.elementId === 'subtitle') {
+        updateData.subtitleStartTime = body.startTime
+        if (body.duration !== undefined) updateData.subtitleDuration = body.duration
+      } else if (body.elementId?.startsWith('content-')) {
+        // Update content block timing
+        const blockIndex = parseInt(body.elementId.split('-')[1], 10)
+        const timings = JSON.parse(composition.contentBlockTimings || '[]')
+        
+        // Find or create timing entry for this block
+        let blockTiming = timings.find((t: any) => t.elementId === body.elementId)
+        if (!blockTiming) {
+          blockTiming = {
+            elementId: body.elementId,
+            blockIndex,
+            startTime: body.startTime,
+            duration: body.duration || 2.5,
+          }
+          timings.push(blockTiming)
+        } else {
+          blockTiming.startTime = body.startTime
+          if (body.duration !== undefined) blockTiming.duration = body.duration
+        }
+
+        updateData.contentBlockTimings = JSON.stringify(timings)
+      }
+
+      const updated = await prisma.slideComposition.update({
+        where: { sceneId },
+        data: updateData,
+      })
+
+      return { status: 200, jsonBody: updated }
     } catch (e) { ctx.error(e); return err500(e) }
   },
 })

@@ -312,10 +312,11 @@ export async function renderHyperFrames(
   apiKey: string,
   opts: { fps?: number; width?: number; height?: number } = {}
 ): Promise<HyperFramesRenderResult> {
-  const fps    = opts.fps    || 30
+  const fps    = opts.fps    || 24  // Reduced from 30fps to 24fps for faster rendering
 
   // Convert dimensions to HeyGen v3 resolution format
-  const resolution = '1080p'  // Our slides are 1280x720, closest standard is 1080p
+  // Changed from 1080p to 720p for faster video generation (30-50% speedup)
+  const resolution = '720p'
   const aspectRatio = '16:9'
 
   // Step 1 — Create a minimal project structure

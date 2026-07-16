@@ -177,7 +177,7 @@ export default function Dashboard() {
             >
               <LogoBadge
                 size="w-20 h-20"
-                className="border border-slate-100 dark:border-white/10 shadow-sm"
+                className="p-4 rounded-full bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/10 shadow-sm"
               />
             </motion.div>
             <h2 className="text-2xl font-semibold text-slate-900 dark:text-white mb-3">Create your first course</h2>

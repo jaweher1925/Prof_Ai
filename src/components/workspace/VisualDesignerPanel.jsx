@@ -1,2249 +1,1886 @@
 /**
- * Visual Designer — Storyboard + Visual merged
+ * Visual Designer — WYSIWYG canvas with template gallery, direct avatar
+ * manipulation, responsive images, and flexible nested content (#1-#7).
  *
+ * Work is scoped MODULE BY MODULE: pick a module first, then choose/apply a
+ * template to that module's scenes and edit its slides. Each module keeps
+ * its own template choice — nothing is applied project-wide at once.
+ *
+ * Architecture:
+ * - Template Selection: 10 professional templates (ids match slideRenderer.ts's
+ *   THEMES table 1:1, so choosing one actually changes the rendered video).
+ * - Interactive WYSIWYG Canvas: dedicated avatar placeholder, drag/resize
+ *   directly on the slide — no sidebar-only editing.
+ * - Layout Fluidity: text content area auto-narrows to stay clear of wherever
+ *   the avatar placeholder currently sits.
+ * - Responsive images: independent width/height (can stretch), draggable.
+ * - No pagination limits: any number of scenes, any number of focused ideas
+ *   per slide, any number of nested key points per idea.
+ * - Typography: no default bullet symbols — content is a list of focused
+ *   ideas, each with its own nested key points underneath.
+ * - Content is seeded from the earlier pipeline steps (script/storyboard
+ *   generated title + bullets) instead of opening blank — see
+ *   api/src/functions/compositions.ts#buildDefaultCompositionSeed.
  */
-import React, { useState, useRef, useEffect, Component } from 'react'
+
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { scriptsService } from '@/services/scripts'
-import { agentsService } from '@/services/agents'
-import { mediaService } from '@/services/media'
+import { modulesService } from '@/services/modules'
+import { scenesService } from '@/services/scenes'
+import { uploadFile } from '@/services/upload'
+import apiClient from '@/api/apiClient'
 import {
-  Loader2, CheckCircle, Sparkles, RotateCcw, ArrowRight, Video,
-  Plus, Trash2, Wand2, Mic, Layers, Play, RotateCw, Move, Image,
-  BookOpen, Code, BarChart2, Cpu, Zap, Target, Globe,
-  Database, Award, Star, Shield, Eye, EyeOff, Settings, AlertCircle,
-  Square, Volume2
+  CheckCircle, Sparkles, ArrowRight, ArrowLeft, ChevronRight,
+  Plus, Trash2, GripHorizontal, Image as ImageIcon, Maximize2, Layers,
+  Upload, Wand2, Loader2, AlertCircle, X, Eye, EyeOff, Pencil, Mic, Settings, Palette, FileText,
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
+import StageHeader from '@/components/workspace/StageHeader'
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-// Text Motion — replaces the old "Background Motion" (zoom/pan) picker.
-// The background is now always static; instead this controls how the
-// narration-synced caption reveals on screen, which is the actually
-// attractive/legible effect: text appearing in step with the voiceover.
+// Text Motion — controls how the narration-synced caption reveals during
+// playback/export (drives Scene.textAnimationType → ffmpegVideo.ts's
+// caption burn-in). Restored from the original Visual Designer.
 const MOTION_STYLES = [
-  { id: 'word-by-word', label: 'Word by Word', icon: '✦', cls: '', desc: 'Captions reveal one word at a time as the voiceover speaks' },
-  { id: 'line-by-line', label: 'Line by Line',  icon: '☰', cls: '', desc: 'Each sentence fades in together as it’s spoken' },
-  { id: 'all-at-once',  label: 'All at Once',   icon: '■', cls: '', desc: 'Full caption shown immediately once narration starts' },
+  { id: 'word-by-word', label: 'Word by Word', icon: '✳', desc: 'Captions reveal one word at a time as the voiceover speaks' },
+  { id: 'line-by-line', label: 'Line by Line',  icon: '☰', desc: 'Each sentence fades in together as it\u2019s spoken' },
+  { id: 'all-at-once',  label: 'All at Once',   icon: '▣', desc: 'Full caption shown immediately once narration starts' },
 ]
 
-const LAYOUTS = [
-  { id: 'title-hero', label: 'Intro',    icon: '▣' },
-  { id: 'bullets',    label: 'Bullets',  icon: '≡' },
-  { id: 'two-column', label: '2-Column', icon: '⊟' },
-  { id: 'icon-grid',  label: 'Icon Grid',icon: '⊞' },
-  { id: 'key-stats',  label: 'Stats',    icon: '↑' },
-  { id: 'chart',      label: 'Chart',    icon: '▦' },
-  { id: 'definition', label: 'Define',   icon: '📖'},
-  { id: 'quote',      label: 'Quote',    icon: '"' },
-  { id: 'summary',    label: 'Summary',  icon: '✓' },
+// ═══════════════════════════════════════════════════════════════════════════
+// TEMPLATE LIBRARY — ids map 1:1 to api/src/lib/slideRenderer.ts THEMES
+// ═══════════════════════════════════════════════════════════════════════════
+
+const TEMPLATE_LIBRARY = [
+  { id: 'modern',    name: 'Modern',    colors: { bg: '#0B1220', accent: '#3B82F6', text: '#F8FAFC' } },
+  { id: 'minimal',   name: 'Minimal',   colors: { bg: '#FAFAFA', accent: '#6B7280', text: '#111827' } },
+  { id: 'corporate', name: 'Corporate', colors: { bg: '#111827', accent: '#F59E0B', text: '#F9FAFB' } },
+  { id: 'vibrant',   name: 'Vibrant',   colors: { bg: '#2A0A1A', accent: '#EC4899', text: '#FFF5F7' } },
+  { id: 'ocean',     name: 'Ocean',     colors: { bg: '#041A2E', accent: '#06B6D4', text: '#F0FDFF' } },
+  { id: 'forest',    name: 'Forest',    colors: { bg: '#08170D', accent: '#16A34A', text: '#F0FDF4' } },
+  { id: 'sunset',    name: 'Sunset',    colors: { bg: '#1F1408', accent: '#F97316', text: '#FFFBEB' } },
+  { id: 'elegant',   name: 'Elegant',   colors: { bg: '#0D0D0D', accent: '#D97706', text: '#F5F5F5' } },
+  { id: 'academic',  name: 'Academic',  colors: { bg: '#0A1A0A', accent: '#10B981', text: '#F0FDF4' } },
+  { id: 'startup',   name: 'Startup',   colors: { bg: '#05070D', accent: '#58A6FF', text: '#F0F6FC' } },
 ]
 
-const THEMES = [
-  { id: 'dark-navy',  label: 'Navy',     accent: '#3B82F6', bg: '#020C1B', bgGrad: '#05183A', text: '#E2E8F0', textSub: '#94A3B8', isDark: true  },
-  { id: 'ocean',      label: 'Ocean',    accent: '#06B6D4', bg: '#041A2E', bgGrad: '#062638', text: '#E2E8F0', textSub: '#7DD3FC', isDark: true  },
-  { id: 'academic',   label: 'Academic', accent: '#10B981', bg: '#061410', bgGrad: '#0C2218', text: '#E2E8F0', textSub: '#6EE7B7', isDark: true  },
-  { id: 'light',      label: 'Light',    accent: '#6366F1', bg: '#F8FAFC', bgGrad: '#EEF2FF', text: '#1E293B', textSub: '#475569', isDark: false },
-  { id: 'corporate',  label: 'Corp',     accent: '#F59E0B', bg: '#0D1117', bgGrad: '#161B22', text: '#E2E8F0', textSub: '#9CA3AF', isDark: true  },
-]
-
-// Default layer positions (% of slide width/height) per layout
-// `image` defaults to right side — user drags it wherever they want
-// Text layers stop at x+width ≈ 72%, leaving the bottom-right "presenter avatar"
-// zone (x:76.5–98.5%, y:60–98%) and the image column clear of overlapping text.
-const DEFAULT_POSITIONS = {
-  'bullets':    { logo:{x:82,y:4}, title:{x:7,y:10}, subtitle:{x:7,y:29}, content:{x:7,y:41}, image:{x:56,y:10} },
-  'title-hero': { logo:{x:82,y:4}, title:{x:10,y:20},subtitle:{x:10,y:46},content:{x:10,y:64},image:{x:56,y:12} },
-  'two-column': { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:20}, content:{x:7,y:32}, image:{x:57,y:6}  },
-  'icon-grid':  { logo:{x:82,y:4}, title:{x:7,y:5},  subtitle:{x:7,y:16}, content:{x:7,y:27}, image:{x:57,y:5}  },
-  'key-stats':  { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:20}, content:{x:7,y:34}, image:{x:57,y:6}  },
-  'chart':      { logo:{x:82,y:4}, title:{x:7,y:5},  subtitle:{x:7,y:16}, content:{x:7,y:27}, image:{x:57,y:5}  },
-  'definition': { logo:{x:82,y:4}, title:{x:7,y:8},  subtitle:{x:7,y:24}, content:{x:7,y:46}, image:{x:57,y:8}  },
-  'quote':      { logo:{x:82,y:4}, title:{x:12,y:8}, subtitle:{x:12,y:82},content:{x:12,y:22}, image:{x:57,y:8}  },
-  'summary':    { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:20}, content:{x:7,y:34}, image:{x:57,y:6}  },
-}
-
-// Width of each draggable layer (% of slide). Text layers are capped at 65%
-// (starting at x≈7-12%) so they never reach the avatar placeholder zone
-// (which starts at x≈76.5%) or run underneath the image column.
-const LAYER_WIDTHS = { logo:16, title:65, subtitle:65, content:65, image:35 }
-
-const TOPIC_ICONS = [BookOpen, Code, BarChart2, Cpu, Layers, Zap, Target, Globe, Database, Award, Star, Shield]
-const pickIcon    = (s='') => TOPIC_ICONS[[...s].reduce((a,c)=>a+c.charCodeAt(0),0) % TOPIC_ICONS.length]
-const pickIconAt  = (s='', offset=0) => TOPIC_ICONS[([...s].reduce((a,c)=>a+c.charCodeAt(0),0)+offset*7) % TOPIC_ICONS.length]
-
-// ─── Chart helpers ────────────────────────────────────────────────────────────
-
-const extractChartData = (bullets) => {
-  return bullets.slice(0,5).map((b,i)=>{
-    const m = b.text.match(/(\d+\.?\d*)/)
-    const hasNumber = !!m
-    const value = hasNumber ? Math.min(Math.max(parseFloat(m[1]),5),100) : 70  // equal visual height when no data
-    const valueLabel = hasNumber
-      ? (b.text.includes('%') ? `${Math.round(value)}%` : String(Math.round(value)))
-      : null  // no label shown if no real number in bullet
-    const label = b.text.replace(/^\d+\.?\d*%?\s*[-:–]?\s*/,'').slice(0,18) || `Item ${i+1}`
-    return { label, value, valueLabel, hasNumber }
-  })
-}
-
-const extractStats = (bullets) => {
-  return bullets.slice(0,4).map((b,i)=>{
-    const m = b.text.match(/(\d+\.?\d*%?×?x?)/)
-    const hasNumber = !!m
-    const stat = hasNumber ? m[1] : null  // null = show icon instead
-    const label = b.text.replace(/\d+\.?\d*%?×?x?\s*[-:–]?\s*/,'').slice(0,44) || b.text.slice(0,44)
-    return { stat, label, hasNumber }
-  })
-}
-
-// ─── CSS animations ───────────────────────────────────────────────────────────
-
-const SLIDE_CSS = `
-@keyframes pa-slideLeft { from{opacity:0;transform:translateX(-24px)} to{opacity:1;transform:translateX(0)} }
-@keyframes pa-fadeUp    { from{opacity:0;transform:translateY(14px)}  to{opacity:1;transform:translateY(0)} }
-@keyframes pa-fade      { from{opacity:0} to{opacity:1} }
-@keyframes pa-scaleIn   { from{opacity:0;transform:scale(0.87)} to{opacity:1;transform:scale(1)} }
-@keyframes pa-slowZoom  { 0%{transform:scale(1)}      100%{transform:scale(1.30)} }
-@keyframes pa-zoomOut   { 0%{transform:scale(1.30)}   100%{transform:scale(1)}    }
-@keyframes pa-panLeft   { 0%{transform:scale(1.15) translateX(7%)}  100%{transform:scale(1.15) translateX(-7%)} }
-@keyframes pa-panRight  { 0%{transform:scale(1.15) translateX(-7%)} 100%{transform:scale(1.15) translateX(7%)}  }
-@keyframes pa-kenBurns  { 0%{transform:scale(1) translate(2%,2%)} 100%{transform:scale(1.30) translate(-4%,-3%)} }
-@keyframes pa-barGrow   { from{transform:scaleY(0)} to{transform:scaleY(1)} }
-@keyframes pa-pageIn    { from{opacity:0;transform:translateY(10px) scale(0.992)} to{opacity:1;transform:translateY(0) scale(1)} }
-@keyframes pa-cueIn     { 0%{opacity:0;transform:translateY(8px)} 12%{opacity:1;transform:translateY(0)} 88%{opacity:1} 100%{opacity:0} }
-
-/* Each style gets its own, clearly distinct duration + easing on top of the
-   amplitude difference above, so "the same motion at different speeds" can't
-   happen to look identical either. Direction is "normal" (not alternate) so
-   zoom-IN keeps growing and zoom-OUT keeps shrinking for the whole preview —
-   alternate would make in/out and left/right indistinguishable after the
-   first half-cycle since they'd both just oscillate between the same values. */
-.pa-motion-slowzoom { animation:pa-slowZoom 9s  ease-in-out infinite alternate }
-.pa-motion-zoomout  { animation:pa-zoomOut  9s  ease-in-out infinite alternate }
-.pa-motion-panleft  { animation:pa-panLeft  10s linear      infinite alternate }
-.pa-motion-panright { animation:pa-panRight 10s linear      infinite alternate }
-.pa-motion-kenburns { animation:pa-kenBurns 13s ease-in-out infinite alternate }
-
-.pa-title  { animation:pa-slideLeft 0.65s cubic-bezier(.22,.68,0,1.2) both }
-.pa-sub    { animation:pa-fadeUp    0.55s 0.22s ease-out both }
-.pa-icon   { animation:pa-fade      0.80s 0.10s ease-out both }
-.pa-logo   { animation:pa-fade      0.60s 0.05s ease-out both }
-.pa-b0     { animation:pa-fadeUp    0.50s 0.38s ease-out both }
-.pa-b1     { animation:pa-fadeUp    0.50s 0.52s ease-out both }
-.pa-b2     { animation:pa-fadeUp    0.50s 0.66s ease-out both }
-.pa-b3     { animation:pa-fadeUp    0.50s 0.80s ease-out both }
-.pa-b4     { animation:pa-fadeUp    0.50s 0.94s ease-out both }
-.pa-card0  { animation:pa-scaleIn   0.45s 0.30s ease-out both }
-.pa-card1  { animation:pa-scaleIn   0.45s 0.45s ease-out both }
-.pa-card2  { animation:pa-scaleIn   0.45s 0.60s ease-out both }
-.pa-card3  { animation:pa-scaleIn   0.45s 0.75s ease-out both }
-.pa-card4  { animation:pa-scaleIn   0.45s 0.90s ease-out both }
-.pa-bar    { animation:pa-barGrow   0.60s ease-out both; transform-origin:bottom }
-
-/* Whole-editor page transition — plays once whenever the remounted scene
-   editor (keyed by scene.id, see SlideEditorBoundary) appears, so switching
-   between scenes feels like a page turn instead of an instant content swap. */
-.pa-page-enter { animation:pa-pageIn 0.32s cubic-bezier(.22,.68,0,1.05) both }
-
-/* Storyboard text-cue overlay — fades a key term in, holds it, fades it out.
-   Duration is set inline per-cue (animation-duration) to match its
-   duration_seconds from the storyboard data. */
-.pa-cue { animation:pa-cueIn linear both; }
-
-/* Draggable layer hover ring */
-.pa-drag-layer:hover > .pa-drag-ring { outline: 2px solid #60A5FA; outline-offset: 3px; border-radius: 4px; }
-.pa-drag-layer:hover > .pa-drag-label { display: flex; }
-`
-function injectCSS() {
-  if (!document.getElementById('pa-css')) {
-    const s = document.createElement('style')
-    s.id = 'pa-css'; s.textContent = SLIDE_CSS
-    document.head.appendChild(s)
-  }
-}
-
-// Font sizing is container-relative (cqw = % of the slide canvas width, via
-// container-type:inline-size on the canvas) instead of viewport-relative, so
-// text scales WITH the slide when the editor grows/shrinks — and the saved
-// video snapshot looks identical at any window size.
-// Calibration: with the old viewport-based sizing, text almost always sat at
-// its `max` px cap on the ~850px-wide canvas — so `max/850` IS the intended
-// proportion of the slide. max×0.118cqw reproduces that exact look at 850px
-// and scales it proportionally on bigger/smaller canvases.
-const FS = (min, _vw, max) => `clamp(${min}px,${(max * 0.118).toFixed(2)}cqw,${Math.round(max * 2.2)}px)`
-
-// ─── Main Panel ───────────────────────────────────────────────────────────────
-
-// ─── Error boundary — catches any render crash in the slide editor ────────────
-
-class SlideEditorBoundary extends Component {
-  state = { error: null }
-  static getDerivedStateFromError(err) { return { error: err } }
-  componentDidCatch(err, info) { console.error('[VisualDesigner]', err, info) }
-  render() {
-    if (this.state.error) {
-      return (
-        <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-          <div className="w-12 h-12 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-4">
-            <span className="text-red-500 dark:text-red-400 text-xl">!</span>
-          </div>
-          <p className="text-slate-900 dark:text-white font-medium mb-1">Slide editor error</p>
-          <p className="text-slate-500 text-xs mb-4 max-w-xs">{this.state.error?.message || 'Unknown error'}</p>
-          <button
-            onClick={() => this.setState({ error: null })}
-            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT — module picker first, then per-module editor
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
-  const queryClient   = useQueryClient()
-  const [selected,    setSelected]   = useState(null)
-  const [generating,  setGenerating] = useState({})
-  // Per-module theme already resolved (chosen via the gate popup, or skipped
-  // because the module already has customized content) — moduleId -> themeId.
-  const [moduleThemes, setModuleThemes] = useState({})
+  const [activeModuleId, setActiveModuleId] = useState(null)
+  const [completedModules, setCompletedModules] = useState(new Set())
 
-  useEffect(() => { injectCSS() }, [])
-
-  const { data: scripts = [], isLoading } = useQuery({
-    queryKey: ['scripts', project?.id],
-    queryFn:  () => scriptsService.listByProject(project.id),
-    enabled:  !!project?.id,
+  const { data: modules = [], isLoading: modulesLoading } = useQuery({
+    queryKey: ['modules', project?.id],
+    queryFn: () => modulesService.listByProject(project.id),
+    enabled: !!project?.id,
   })
 
-  // Auto-select the first scene of the first module on entry — this is what
-  // makes clicking "Continue to Visual Designer" immediately surface the
-  // theme picker below, instead of requiring the user to click a scene first.
-  const firstModuleId = scripts[0]?.moduleId
-  const { data: firstModuleScenes = [] } = useQuery({
-    queryKey: ['scenes', firstModuleId],
-    queryFn:  () => firstModuleId
-      ? fetch('/api/modules/' + firstModuleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      : Promise.resolve([]),
-    enabled:  !!firstModuleId,
-  })
+  // Check which modules are actually complete by counting generated scenes
   useEffect(() => {
-    if (!selected && firstModuleScenes.length && scripts[0]) {
-      setSelected({ scene: firstModuleScenes[0], script: scripts[0], totalScenes: firstModuleScenes.length })
+    const checkCompletedModules = async () => {
+      if (!modules.length) return
+      const completed = new Set()
+      
+      for (const mod of modules) {
+        try {
+          const scenes = await scenesService.listByModule(mod.id)
+          const totalScenes = scenes.length
+          const generatedScenes = scenes.filter(s => !!s.visualAssetUrl).length
+          
+          // Module is complete if all scenes have been generated and there's at least 1 scene
+          if (totalScenes > 0 && generatedScenes === totalScenes) {
+            completed.add(mod.id)
+          }
+        } catch (err) {
+          console.error(`Failed to check module ${mod.id}:`, err)
+        }
+      }
+      setCompletedModules(completed)
     }
-  }, [firstModuleScenes, selected, scripts])
 
-  // Does the currently selected scene's module still need the theme gate?
-  // Skipped if the module already has customized content (parsed.theme is set
-  // in the main scene's slideDeckContent means a real person already chose a
-  // theme) — only genuinely fresh modules get prompted, and only once per
-  // module per session. Once chosen, the theme persists for the entire module.
-  const selectedModuleId = selected?.script?.moduleId
-  const selectedParsed = selected ? (() => { try { return JSON.parse(selected.scene.slideDeckContent || '{}') } catch { return {} } })() : {}
-  const needsThemeGate = !!selected && !!selectedModuleId
-    && !selectedParsed.theme // Theme not yet chosen for this module
-    && moduleThemes[selectedModuleId] === undefined
+    checkCompletedModules()
+  }, [modules])
 
-  const resolveModuleTheme = async (themeId) => {
-    if (!selectedModuleId || !selected?.scene?.id) return
-    setModuleThemes(p => ({ ...p, [selectedModuleId]: themeId }))
-    try {
-      // Apply the theme to all segments in the scene
-      await fetch(`/api/scenes/${selected.scene.id}/apply-theme-to-segments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme: themeId }),
-      })
-      // Refresh scene data to show updated designs
-      queryClient.invalidateQueries({ queryKey: ['scenes'] })
-    } catch (e) { console.error('Failed to apply theme:', e) }
-  }
+  useEffect(() => {
+    // Listen for module design completion but don't auto-advance
+    // (ProjectWorkspace handles the stage transition now)
+    const handleModuleComplete = (e) => {
+      if (e.detail?.moduleId) {
+        setCompletedModules(prev => new Set([...prev, e.detail.moduleId]))
+      }
+    }
+    window.addEventListener('moduleDesignComplete', handleModuleComplete)
+    return () => window.removeEventListener('moduleDesignComplete', handleModuleComplete)
+  }, [])
 
-  const handleGenerate = async (sceneId) => {
-    setGenerating(p => ({ ...p, [sceneId]: true }))
-    try {
-      await agentsService.runGenerateAsset(sceneId)
-      queryClient.invalidateQueries({ queryKey: ['scenes'] })
-      onUpdate?.()
-    } catch (e) { console.error('Generate asset error:', e) }
-    finally { setGenerating(p => ({ ...p, [sceneId]: false })) }
-  }
+  const { data: scripts = [], isLoading: scriptsLoading } = useQuery({
+    queryKey: ['scripts', project?.id],
+    queryFn: () => scriptsService.listByProject(project.id),
+    enabled: !!project?.id,
+  })
+
+  const isLoading = scriptsLoading || modulesLoading
 
   if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
-  if (!scripts.length) return (
-    <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-      <Layers className="w-10 h-10 text-slate-700 mb-3" />
-      <p className="text-slate-500 dark:text-slate-400">Complete the Script stage first.</p>
-    </div>
-  )
+  if (!scripts.length) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-12 text-center">
+        <p className="text-slate-500 dark:text-slate-400">No scripts yet. Complete the Script stage first.</p>
+      </div>
+    )
+  }
+
+  const activeModuleIndex = modules.findIndex(m => m.id === activeModuleId)
+  const activeModule = activeModuleIndex >= 0 ? modules[activeModuleIndex] : null
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/[0.06] flex-shrink-0">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-400" /> Visual Designer
-          </h2>
-         
+    <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-950">
+      <div className="px-6 pt-6">
+        <StageHeader
+          icon={Sparkles}
+          title="4. Visual Design"
+          subtitle={
+            activeModule
+              ? `Module ${activeModuleIndex + 1}: ${activeModule.title}`
+              : `${modules.length} module${modules.length === 1 ? '' : 's'} · design each module's slides separately`
+          }
+        />
+      </div>
+
+      {/* Sub-header: breadcrumb + continue action — wraps on narrow screens
+          instead of forcing horizontal overflow */}
+      <div className="px-6 py-3 border-b border-slate-200 dark:border-white/10 flex flex-wrap items-center justify-between gap-2 flex-shrink-0">
+        <div className="text-sm text-slate-600 dark:text-slate-400 flex items-center gap-1.5 min-w-0">
+          {activeModule ? (
+            <>
+              <button onClick={() => setActiveModuleId(null)} className="text-indigo-600 dark:text-indigo-400 hover:underline flex-shrink-0">
+                All modules
+              </button>
+              <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="font-medium text-slate-900 dark:text-white truncate">Module {activeModuleIndex + 1}: {activeModule.title}</span>
+            </>
+          ) : (
+            <span>Pick a module to start designing</span>
+          )}
         </div>
-        <button onClick={() => onContinue?.('video')}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors">
-          <Sparkles className="w-4 h-4" /> Continue to Video Generation <ArrowRight className="w-4 h-4" />
+        <button
+          onClick={() => onContinue?.('video-editing')}
+          disabled={completedModules.size === 0}
+          className={`flex items-center gap-2 px-4 py-2 font-medium rounded-xl transition-colors flex-shrink-0 ${
+            completedModules.size === 0
+              ? 'bg-slate-300 dark:bg-slate-700 text-slate-500 dark:text-slate-400 cursor-not-allowed'
+              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+          }`}
+          title={completedModules.size === 0 ? 'Complete at least one module first' : 'Proceed to Video Editing'}
+        >
+          Continue to Video
+          <ArrowRight className="w-4 h-4" />
         </button>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left: scene list - Clean inline layout */}
-        <div className="w-72 flex-shrink-0 border-r border-slate-200 dark:border-gray-700 overflow-y-auto bg-slate-50 dark:bg-slate-950">
-          {scripts.map((script, vi) => (
-            <SceneGroupList key={script.id} script={script} videoIndex={vi}
-              selectedId={selected?.scene?.id} generating={generating}
-              onSelect={(scene, totalScenes) => setSelected({ scene, script, totalScenes })}
-              onDeleted={(sceneId) => setSelected(prev => prev?.scene?.id === sceneId ? null : prev)} />
-          ))}
-        </div>
-
-        {/* Right: editor */}
-        <div className="flex-1 overflow-y-auto bg-slate-100 dark:bg-slate-950">
-          {needsThemeGate ? (
-            <ModuleThemeGate moduleTitle={selected.script.title}
-              onChoose={(themeId) => resolveModuleTheme(themeId)} />
-          ) : selected ? (
-            <SlideEditorBoundary key={selected.scene.id}>
-            <SceneEditor scene={selected.scene}
-                moduleId={selected.script.moduleId}
-                moduleTitle={selected.script.title} totalScenes={selected.totalScenes || 1}
-                defaultTheme={moduleThemes[selectedModuleId] || 'light'}
-                voiceId={project?.defaultVoiceId}
-                avatarId={project?.defaultAvatarId}
-                isGenerating={!!generating[selected.scene.id]} onGenerate={handleGenerate} />
-            </SlideEditorBoundary>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-              <div className="w-16 h-16 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/[0.06] flex items-center justify-center mb-4">
-                <Layers className="w-7 h-7 text-slate-700" />
-              </div>
-              <p className="text-slate-900 dark:text-white font-medium mb-1">Select a scene</p>
-              <p className="text-slate-500 text-sm">Click any scene on the left to design its slide</p>
-            </div>
-          )}
-        </div>
+      <div className="flex-1 overflow-hidden">
+        {activeModule
+          ? <ModuleDesigner module={activeModule} moduleIndex={activeModuleIndex} onBack={() => setActiveModuleId(null)} />
+          : <ModulePicker modules={modules} onSelect={setActiveModuleId} completedModules={completedModules} />}
       </div>
     </div>
   )
 }
 
-// ─── Per-module theme gate ────────────────────────────────────────────────────
-// Shown once per module, before any of its (fresh, never-customized) scenes
-// can be edited — either right after "Continue to Visual Designer" (for the
-// first module) or the first time a different module's scene is opened.
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE PICKER — choose which module to design (module-by-module, not all at once)
+// ═══════════════════════════════════════════════════════════════════════════
 
-function ModuleThemeGate({ moduleTitle, onChoose }) {
+function ModulePicker({ modules, onSelect, completedModules = new Set() }) {
+  if (!modules.length) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-12 text-center">
+        <p className="text-slate-500 dark:text-slate-400">No modules yet.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-      <div className="w-full max-w-md">
-        <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 mx-auto">
-          <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />
+    <div className="h-full overflow-y-auto p-4 lg:p-6">
+      <div className="max-w-2xl mx-auto grid gap-2">
+        {modules.map((mod, idx) => {
+          const isComplete = completedModules.has(mod.id)
+          return (
+            <button
+              key={mod.id}
+              onClick={() => onSelect(mod.id)}
+              className={`w-full flex items-center gap-3 p-2.5 rounded-lg border-2 transition-all text-left ${
+                isComplete
+                  ? 'border-emerald-400 dark:border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 hover:border-emerald-500 dark:hover:border-emerald-400'
+                  : 'border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 hover:border-indigo-400 dark:hover:border-indigo-500'
+              } hover:shadow-sm`}
+            >
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                isComplete
+                  ? 'bg-emerald-100 dark:bg-emerald-500/20'
+                  : 'bg-indigo-100 dark:bg-indigo-500/20'
+              }`}>
+                {isComplete ? (
+                  <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                ) : (
+                  <Layers className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                  {idx + 1}. {mod.title}
+                </p>
+                <p className={`text-xs ${isComplete ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {mod._count?.scenes ?? '—'} scene{mod._count?.scenes === 1 ? '' : 's'}
+                  {isComplete && ' • ✓ Complete'}
+                </p>
+              </div>
+              <ChevronRight className={`w-4 h-4 flex-shrink-0 ${
+                isComplete ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'
+              }`} />
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODULE DESIGNER — template gallery + canvas editor, scoped to ONE module
+// ═══════════════════════════════════════════════════════════════════════════
+
+function ModuleDesigner({ module, moduleIndex, onBack }) {
+  const queryClient = useQueryClient()
+  const [selectedTemplate, setSelectedTemplate] = useState('modern')
+  const [selectedSceneId, setSelectedSceneId] = useState(null)
+  const [showTemplateGallery, setShowTemplateGallery] = useState(true)
+  const [applying, setApplying] = useState(false)
+  // Bulk "Generate All Slides" — renders every scene's complete slide graphic
+  // (title + key insight + content points, whatever is currently in its
+  // composition) in one go, instead of clicking Generate on each one.
+  const [generatingAll, setGeneratingAll] = useState(false)
+  const [generateAllProgress, setGenerateAllProgress] = useState(null) // { done, total }
+
+  const { data: scenes = [], isLoading } = useQuery({
+    queryKey: ['scenes', module.id],
+    queryFn: () => scenesService.listByModule(module.id),
+    enabled: !!module.id,
+  })
+
+  const sortedScenes = [...scenes].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
+  const generatedCount = sortedScenes.filter(s => !!s.visualAssetUrl).length
+
+  useEffect(() => {
+    if (sortedScenes.length && !selectedSceneId) {
+      setSelectedSceneId(sortedScenes[0].id)
+    }
+  }, [sortedScenes, selectedSceneId])
+
+  // Auto-advance to video when all slides are generated for this single module
+  useEffect(() => {
+    const isComplete = sortedScenes.length > 0 && generatedCount === sortedScenes.length && generatedCount > 0
+    if (isComplete && !generatingAll) {
+      const timer = setTimeout(() => {
+        // Trigger auto-advance to video stage
+        const event = new CustomEvent('moduleDesignComplete', { 
+          detail: { moduleId: module.id, isReadyForVideo: true } 
+        })
+        window.dispatchEvent(event)
+      }, 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [generatedCount, sortedScenes.length, generatingAll, module.id])
+
+  const selectedScene = sortedScenes.find(s => s.id === selectedSceneId)
+
+  const applyTemplateToModule = useCallback(async () => {
+    setApplying(true)
+    try {
+      await apiClient.post(`/modules/${module.id}/apply-template`, { templateId: selectedTemplate })
+      // Broad ['scenes'] key (not just this module) so ProjectWorkspace's own
+      // ['scenes', projectId] query also refreshes — that's what decides
+      // whether the Video Editing stage is unlocked in the sidebar.
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+      setShowTemplateGallery(false)
+    } catch (err) {
+      console.error('Template application failed:', err)
+    } finally {
+      setApplying(false)
+    }
+  }, [module.id, selectedTemplate, queryClient])
+
+  const handleGenerateAllSlides = useCallback(async () => {
+    if (!sortedScenes.length) return
+    setGeneratingAll(true)
+    setGenerateAllProgress({ done: 0, total: sortedScenes.length })
+    for (let i = 0; i < sortedScenes.length; i++) {
+      try {
+        await apiClient.post('/generateSceneAsset', { scene_id: sortedScenes[i].id })
+      } catch (err) {
+        console.error(`Slide generation failed for scene ${sortedScenes[i].id}:`, err)
+      }
+      setGenerateAllProgress({ done: i + 1, total: sortedScenes.length })
+    }
+    // Broad ['scenes'] key so ProjectWorkspace's own ['scenes', projectId]
+    // query also refreshes — a narrower per-module key here left the
+    // sidebar's Video Editing stage showing "Locked" even after a module
+    // finished, since the stage-lock check reads from that separate cache.
+    await queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    setGeneratingAll(false)
+    
+    // Auto-advance to video stage when all slides are generated
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('allSlidesGenerated', { detail: { moduleId: module.id } }))
+    }, 500)
+  }, [sortedScenes, module.id, queryClient])
+
+  if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="px-6 py-2.5 border-b border-slate-200 dark:border-white/10 flex items-center gap-3 flex-shrink-0 bg-white dark:bg-slate-900">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors flex-shrink-0"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <span className="text-xs text-slate-300 dark:text-slate-700 hidden sm:inline">·</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400 hidden sm:inline truncate">
+          {generatedCount}/{sortedScenes.length} slide{sortedScenes.length === 1 ? '' : 's'} generated
+          {generatedCount === sortedScenes.length && sortedScenes.length > 0 && (
+            <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-medium text-[10px]">
+              <CheckCircle className="w-3 h-3" /> Complete!
+            </span>
+          )}
+        </span>
+        {!showTemplateGallery && sortedScenes.length > 0 && (
+          <button
+            onClick={handleGenerateAllSlides}
+            disabled={generatingAll}
+            className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0 ${
+              generatingAll
+                ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed'
+                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+            }`}
+          >
+            {generatingAll
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span className="hidden md:inline">Generating {generateAllProgress?.done}/{generateAllProgress?.total}…</span></>
+              : <><Sparkles className="w-3.5 h-3.5" /><span className="hidden md:inline">Generate All Slides</span></>}
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {showTemplateGallery ? (
+          <TemplateGallery
+            templates={TEMPLATE_LIBRARY}
+            selected={selectedTemplate}
+            onSelect={setSelectedTemplate}
+            onApply={applyTemplateToModule}
+            applying={applying}
+            sceneCount={sortedScenes.length}
+            moduleTitle={module.title}
+          />
+        ) : (
+          <>
+            <SceneList
+              scenes={sortedScenes}
+              selectedId={selectedSceneId}
+              onSelect={setSelectedSceneId}
+              onChangeTemplate={() => setShowTemplateGallery(true)}
+            />
+
+            {selectedScene && (
+              <CanvasEditor
+                key={selectedScene.id}
+                scene={selectedScene}
+                sceneIndex={sortedScenes.findIndex(s => s.id === selectedScene.id)}
+                totalScenes={sortedScenes.length}
+                moduleIndex={moduleIndex}
+                moduleTitle={module.title}
+                template={TEMPLATE_LIBRARY.find(t => t.id === selectedTemplate) || TEMPLATE_LIBRARY[0]}
+              />
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEMPLATE GALLERY
+// ═══════════════════════════════════════════════════════════════════════════
+
+function TemplateGallery({ templates, selected, onSelect, onApply, applying, sceneCount, moduleTitle }) {
+  return (
+    <div className="w-full flex flex-col items-center justify-center p-12 bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-950 overflow-y-auto">
+      <div className="max-w-4xl">
+        <div className="text-center mb-12">
+          <h3 className="text-3xl font-bold text-slate-900 dark:text-white mb-2">Choose a Design Template</h3>
+          <p className="text-slate-600 dark:text-slate-400">
+            Select a template to apply to {sceneCount} slide{sceneCount === 1 ? '' : 's'} in <strong>{moduleTitle}</strong>
+          </p>
         </div>
-        <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this module</p>
-        <p className="text-slate-500 text-sm mb-5">
-          "{moduleTitle}" — applies to every scene in this module
-        </p>
-        <div className="space-y-1.5">
-          {THEMES.map(th => (
-            <button key={th.id} onClick={() => onChoose(th.id)}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded border border-slate-200 dark:border-white/[0.10] hover:border-indigo-400/40 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all text-left"
-              style={{ background: th.isDark ? 'transparent' : 'rgba(248,250,252,0.05)' }}>
-              <div className="w-3 h-3 rounded-full flex-shrink-0 border border-slate-300 dark:border-white/20" style={{ background: th.accent }} />
-              <span className="text-sm font-medium text-slate-900 dark:text-white">{th.label}</span>
+
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-12">
+          {templates.map(template => (
+            <button
+              key={template.id}
+              onClick={() => onSelect(template.id)}
+              className={`group relative p-4 rounded-xl border-2 transition-all ${
+                selected === template.id
+                  ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950'
+                  : 'border-slate-200 dark:border-white/10 hover:border-indigo-300 dark:hover:border-indigo-500'
+              }`}
+            >
+              <div
+                className="w-full h-24 rounded-lg mb-3 border border-slate-200 dark:border-white/10 flex items-end p-2"
+                style={{ backgroundColor: template.colors.bg }}
+              >
+                <div className="h-1.5 w-2/3 rounded" style={{ backgroundColor: template.colors.accent }} />
+              </div>
+              <p className="text-sm font-medium text-slate-900 dark:text-white text-center">{template.name}</p>
+              {selected === template.id && (
+                <div className="absolute top-2 right-2 bg-indigo-500 rounded-full p-1">
+                  <CheckCircle className="w-4 h-4 text-white" />
+                </div>
+              )}
             </button>
           ))}
         </div>
+
+        <div className="flex gap-3 justify-center">
+          <Button onClick={onApply} disabled={applying} className="bg-indigo-600 hover:bg-indigo-500 text-white" size="lg">
+            <Sparkles className="w-4 h-4 mr-2" />
+            {applying ? 'Applying…' : `Apply "${templates.find(t => t.id === selected)?.name}" to This Module's Slides`}
+          </Button>
+        </div>
       </div>
     </div>
   )
 }
 
-// ─── Left: scene group list ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// SCENE LIST (LEFT SIDEBAR) — no cap on number of scenes shown (#6)
+// ═══════════════════════════════════════════════════════════════════════════
 
-function SceneGroupList({ script, videoIndex, selectedId, generating, onSelect, onDeleted }) {
-  const queryClient = useQueryClient()
-  const [adding, setAdding] = useState(false)
-  const { data: scenes = [], isLoading } = useQuery({
-    queryKey: ['scenes', script.moduleId],
-    queryFn:  () => script.moduleId
-      ? fetch('/api/modules/' + script.moduleId + '/scenes').then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      : Promise.resolve([]),
-    enabled:  !!script.moduleId,
-    // Only poll while scene assets are being generated — not forever.
-    refetchInterval: (query) =>
-      query.state.data?.some?.(s => s.status === 'assets_generating' || s.status === 'rendering') ? 5000 : false,
-  })
-
-  const handleAddScene = async () => {
-    if (!script.moduleId || adding) return
-    setAdding(true)
-    try {
-      const res = await fetch('/api/modules/' + script.moduleId + '/scenes', { method: 'POST' })
-      if (res.ok) {
-        const scene = await res.json()
-        await queryClient.invalidateQueries({ queryKey: ['scenes', script.moduleId] })
-        onSelect(scene, scenes.length + 1)
-      }
-    } catch {}
-    finally { setAdding(false) }
-  }
-
-  const handleDeleteScene = async (e, sceneId) => {
-    e.stopPropagation()
-    if (!window.confirm('Delete this scene? This cannot be undone.')) return
-    try {
-      const res = await fetch('/api/scenes/' + sceneId, { method: 'DELETE' })
-      if (res.ok) {
-        await queryClient.invalidateQueries({ queryKey: ['scenes', script.moduleId] })
-        onDeleted?.(sceneId)
-      }
-    } catch {}
-  }
-
+function SceneList({ scenes, selectedId, onSelect, onChangeTemplate }) {
   return (
-    <div>
-      <div className="px-3 py-2 sticky top-0 bg-slate-50 dark:bg-slate-950 backdrop-blur-sm border-b border-slate-200 dark:border-gray-700 z-10">
-        <p className="text-[10px] font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
-        <p className="text-xs text-slate-900 dark:text-white font-medium truncate mt-0.5">{script.title}</p>
+    <div className="w-48 lg:w-64 flex-shrink-0 border-r border-slate-200 dark:border-white/10 overflow-y-auto bg-white dark:bg-slate-900">
+      <div className="p-4 border-b border-slate-200 dark:border-white/10 sticky top-0 bg-slate-50 dark:bg-slate-800 z-10">
+        <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Scene List</p>
+        <button
+          onClick={onChangeTemplate}
+          className="w-full px-3 py-2 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors border border-indigo-200 dark:border-indigo-800"
+        >
+          Change Template
+        </button>
       </div>
-      {isLoading
-        ? <div className="py-3 flex justify-center"><Spinner size="sm" /></div>
-        : scenes.map((scene, i) => {
-            const isSel  = selectedId === scene.id
-            const hasAst = !!scene.visualAssetUrl
-            const isGen  = !!generating[scene.id]
-            const parsed = (() => { try { return JSON.parse(scene.slideDeckContent || '{}') } catch { return {} } })()
-            const th     = THEMES.find(t => t.id === (parsed.theme || 'light')) || THEMES.find(t => t.id === 'light') || THEMES[0]
-            const slideTitle = parsed.title || 'Untitled slide'
-            const layoutId   = parsed.layout || 'bullets'
-            return (
-              <button key={scene.id} onClick={() => onSelect(scene, scenes.length)}
-                className={`group w-full text-left border-b border-slate-100 dark:border-gray-800 transition-all ${
-                  isSel ? 'bg-indigo-500/15 border-l-2 border-l-indigo-500' : 'hover:bg-slate-100 dark:hover:bg-white/[0.02]'
-                }`}>
-                <div className="flex items-center gap-2 px-3 py-2">
-                  {/* Compact inline layout - 3D styled icon */}
-                  <div className="w-8 h-8 rounded flex-shrink-0 flex items-center justify-center relative" 
-                    style={{ 
-                      background: `${th.accent}20`,
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.1)',
-                      transform: 'perspective(600px) rotateX(5deg) rotateY(-5deg)',
-                      transformStyle: 'preserve-3d',
-                    }}>
-                    <span style={{ 
-                      color: th.accent, 
-                      fontSize: 11, 
-                      fontWeight: 700,
-                      textShadow: '0 2px 4px rgba(0,0,0,0.3)',
-                      transform: 'translateZ(8px)',
-                    }}>
-                      {LAYOUTS.find(l=>l.id===layoutId)?.icon||'≡'}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-slate-900 dark:text-white truncate">{slideTitle}</p>
-                    <p className="text-[10px] text-slate-500 truncate">
-                      {hasAst ? '✓ Ready' : isGen ? 'Generating...' : 'Draft'}
-                    </p>
-                  </div>
-                  {isGen && <Loader2 className="w-3 h-3 text-indigo-500 dark:text-indigo-400 animate-spin flex-shrink-0" />}
-                  {hasAst && !isGen && <CheckCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />}
-                  <div onClick={(e) => handleDeleteScene(e, scene.id)} title="Delete scene"
-                    className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all flex-shrink-0 cursor-pointer">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </div>
+
+      <div className="p-2 space-y-1">
+        {scenes.map((scene, idx) => {
+          const isSelected = selectedId === scene.id
+          return (
+            <div key={scene.id}>
+              <button
+                onClick={() => onSelect(scene.id)}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                  isSelected
+                    ? 'bg-indigo-500/20 border-l-2 border-l-indigo-500 text-indigo-700 dark:text-indigo-300'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold w-5 h-5 flex items-center justify-center rounded bg-slate-200 dark:bg-slate-700 flex-shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="truncate flex-1">Scene {idx + 1}</span>
+                  {/* Generated indicator — a slide graphic already exists for this scene */}
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${scene.visualAssetUrl ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}
+                    title={scene.visualAssetUrl ? 'Slide generated' : 'Not generated yet'}
+                  />
                 </div>
               </button>
-            )
-          })
-      }
-      <button onClick={handleAddScene} disabled={adding}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 border-b border-slate-100 dark:border-white/[0.03] transition-colors disabled:opacity-50">
-        {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-        Add scene
-      </button>
+              {/* Thumbnail of the generated slide, shown under the active scene */}
+              {isSelected && scene.visualAssetUrl && (
+                <div className="mx-2 mt-1.5 mb-1 rounded-md overflow-hidden border border-indigo-300 dark:border-indigo-500/40">
+                  <img src={scene.visualAssetUrl} alt="" className="w-full block" />
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
 
-// ─── Right: scene editor ──────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// CANVAS EDITOR (MAIN EDITING AREA)
+// ═══════════════════════════════════════════════════════════════════════════
 
-function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, isGenerating, onGenerate }) {
-  // Fetch the avatar list once (cached project-wide via react-query, so this
-  // is instant after the first load — see also CastingSettings/AvatarStudioPanel
-  // which share the same query key) purely to find the selected avatar's
-  // preview thumbnail, so the chosen presenter actually shows up in this
-  // live slide preview instead of a generic placeholder icon.
-  const { data: avatarsRes } = useQuery({
-    queryKey: ['heygen-avatars'],
-    queryFn: () => mediaService.listAvatars(),
-    enabled: !!avatarId,
-    staleTime: 10 * 60 * 1000,
-  })
-  const selectedAvatar = avatarsRes?.avatars?.find(a => a.avatar_id === avatarId)
-  const avatarImageUrl = selectedAvatar?.preview_image_url || null
-  const parsed = (() => { try { return JSON.parse(scene.slideDeckContent || '{}') } catch { return {} } })()
-  // Storyboard-generated key-term overlays (optional — only present for scenes
-  // that went through the storyboard agent). Drives the timed text-cue reveal
-  // in both this live preview and the rendered video (see ffmpegVideo.ts).
-  const textCues = (() => { try { return JSON.parse(scene.textCues || '[]') } catch { return [] } })()
+// Layout options — ids map 1:1 to api/src/lib/slideRenderer.ts's buildSlide()
+// layout switch cases, so picking one here actually changes the exported
+// slide, not just the editor. Not every slide defaults to the same layout —
+// see compositions.ts#defaultLayoutForScene (e.g. a module's intro/welcome
+// scene defaults to 'title-hero', title centered in the middle).
+const LAYOUT_OPTIONS = [
+  { id: 'title-hero', label: 'Title Intro',  desc: 'Title centered in the middle — good for intros' },
+  { id: 'bullets',    label: 'Bullets',      desc: 'Title + focused ideas as a list' },
+  { id: 'split',      label: 'Two Column',   desc: 'Concept on the left, examples on the right' },
+  { id: 'definition', label: 'Definition',   desc: 'Term + definition + examples' },
+  { id: 'quote',      label: 'Quote',        desc: 'Large centered quotation' },
+  { id: 'summary',    label: 'Summary',      desc: 'Checklist-style recap' },
+]
 
-  // Pre-fill bullets from AI-generated slide blocks — never fall back to voice script
-  const initBullets = (() => {
-    const items = parsed.blocks?.[0]?.items
-    if (items?.length) return items
-    // No slide content yet — start empty so user fills in slide-specific content
-    return [{ text: '', level: 1 }]
-  })()
+// Cadre (frame/border) effect options for content points
+const CADRE_STYLES = [
+  { id: 'none',      label: 'None',      desc: 'No frame — clean text' },
+  { id: 'subtle',    label: 'Subtle',    desc: 'Light border with accent color' },
+  { id: 'bold',      label: 'Bold',      desc: 'Thick border and background' },
+  { id: 'rounded',   label: 'Rounded',   desc: 'Rounded corners with soft shadow' },
+]
 
-  const [layout,    setLayout]    = useState(parsed.layout || 'bullets')
-  // For fresh scenes (no saved positions = never customized) fall back to the
-  // module's theme chosen via the per-module theme gate, not a hardcoded value.
-  const [theme,     setTheme]     = useState(parsed.positions ? (parsed.theme || defaultTheme) : defaultTheme)
-  const [title,     setTitle]     = useState(parsed.title     || '')
-  // Guard against older/legacy slide data that accidentally used the voiceover
-  // script as the slide subtitle (the presenter's narration, not on-slide copy) —
-  // if the saved subtitle is basically the same text as the scene's voice script,
-  // drop it instead of showing the narration directly under the title.
-  const initialSubtitle = (() => {
-    const raw = parsed.subtitle || ''
-    const vs  = (scene.scriptContent || '').trim().toLowerCase()
-    const rawNorm = raw.trim().toLowerCase()
-    if (raw && vs && rawNorm.length > 30 && (vs.startsWith(rawNorm.slice(0, 40)) || rawNorm.startsWith(vs.slice(0, 40)))) {
-      return ''
-    }
-    return raw
-  })()
-  const [subtitle,  setSubtitle]  = useState(initialSubtitle)
-  const [bullets,   setBullets]   = useState(initBullets)
-  const [motion,    setMotion]    = useState(() => MOTION_STYLES.find(m=>m.id===(scene.textAnimationType||'word-by-word')) || MOTION_STYLES[0])
-  const [positions,   setPositions]   = useState(() => {
-    // Always merge saved positions with layout defaults so every key exists,
-    // and merge per-field (not whole-object) so older saved data without a
-    // `scale` field still gets the default scale of 1.
-    const layoutKey = parsed.layout || 'bullets'
-    const defaults  = DEFAULT_POSITIONS[layoutKey] || DEFAULT_POSITIONS.bullets
-    const saved     = parsed.positions || {}
-    return Object.keys(defaults).reduce((acc, k) => ({
-      ...acc,
-      [k]: { scale: 1, ...defaults[k], ...(saved[k] || {}) },
-    }), {})
-  })
-  const [showLogo,    setShowLogo]    = useState(parsed.showLogo !== false)
-  // Image layer
-  const [imageUrl,    setImageUrl]    = useState(parsed.imageUrl    || '')
-  const [imageWidth,  setImageWidth]  = useState(parsed.imageWidth  || 36)
-  const [imageShape,  setImageShape]  = useState(parsed.imageShape  || 'rounded')
-  const [previewKey,  setPreviewKey]  = useState(0)
-  const [saving,      setSaving]      = useState(false)
-  const [aiLoading,   setAiLoading]   = useState(false)
-  const [aiAction,    setAiAction]    = useState(null)
-  const [showImgPanel,setShowImgPanel]= useState(!!parsed.imageUrl)
-  // AI image generation (Gemini) — prompt → /api/generate-image → imageUrl
-  const [genPrompt,   setGenPrompt]   = useState('')
-  const [genLoading,  setGenLoading]  = useState(false)
-  const [genError,    setGenError]    = useState(null)
+const DEFAULT_SLIDE = {
+  title: 'Untitled Slide',
+  subtitle: '',
+  contentBlocks: [],
+  layout: 'bullets',
+  cadreStyle: 'none',    // Frame/border effect for content points
+  // Fixed positioning for all slides - same distance for all
+  titleX: 0,
+  titleY: 0,
+  subtitleX: 0,
+  subtitleY: 7,
+  // Font-size multipliers - DISABLED, use fixed sizes
+  titleFontScale: 1,
+  subtitleFontScale: 1,
+  contentFontScale: 1,
+  // Avatar positioned in far right corner with minimal size
+  avatarX: 97,           // Far right corner (almost at edge)
+  avatarY: 8,            // Near top
+  avatarWidth: 5,        // Very small - just border visible
+  imageUrl: null,
+  imageX: 10,
+  imageY: 70,
+  imageWidth: 20,
+  imageHeight: 20,
+  textAnimationType: 'word-by-word',
+}
 
-  // Live narration playback (#attractive VD): play the scene's voiceover
-  // right on the preview canvas and reveal the script one word at a time,
-  // synced to audio progress, instead of dumping the whole caption at once.
-  const narrationAudioRef = useRef(null)
-  const [narrationPlaying,  setNarrationPlaying]  = useState(false)
-  const [narrationProgress, setNarrationProgress] = useState(0) // 0..1
-  const scriptWords = (scene.scriptContent || '').trim() ? scene.scriptContent.trim().split(/\s+/) : []
-  // Text Motion mode controls how far ahead of the raw audio progress the
-  // reveal jumps: word-by-word reveals exactly proportional to progress,
-  // line-by-line snaps forward in sentence-sized chunks, all-at-once shows
-  // the full caption the instant narration starts.
-  const rawRevealCount = narrationPlaying || narrationProgress > 0
-    ? Math.min(scriptWords.length, Math.max(1, Math.ceil(narrationProgress * scriptWords.length)))
-    : 0
-  const revealedWordCount = (() => {
-    if (rawRevealCount === 0) return 0
-    if (motion.id === 'all-at-once') return scriptWords.length
-    if (motion.id === 'line-by-line') {
-      // Snap forward to the end of the current ~8-word "line" chunk.
-      const chunk = 8
-      return Math.min(scriptWords.length, Math.ceil(rawRevealCount / chunk) * chunk)
-    }
-    return rawRevealCount // word-by-word
-  })()
-  const captionPreview = scriptWords.slice(0, revealedWordCount).join(' ')
+function CanvasEditor({ scene, template, sceneIndex = 0, totalScenes = 1, moduleIndex = 0, moduleTitle = '' }) {
+  const queryClient = useQueryClient()
+  const [slideData, setSlideData] = useState(DEFAULT_SLIDE)
+  const [loaded, setLoaded] = useState(false)
 
-  const toggleNarration = () => {
-    const audio = narrationAudioRef.current
-    if (!audio || !scene.ttsAudioUrl) return
-    if (narrationPlaying) {
-      audio.pause()
-      setNarrationPlaying(false)
-    } else {
-      audio.currentTime = 0
-      setNarrationProgress(0)
-      audio.play()
-      setNarrationPlaying(true)
-    }
-  }
+  const [dragTarget, setDragTarget] = useState(null)   // 'avatar' | 'image' | 'title' | 'subtitle' | { type: 'content-block', index: N } | null
+  const [resizeTarget, setResizeTarget] = useState(null) // 'avatar' | 'image-corner' | null
+  const [saving, setSaving] = useState(false)
+  const [showRightPanel, setShowRightPanel] = useState(false) // Collapsed by default to maximize canvas
+  const [selectedBlockIdx, setSelectedBlockIdx] = useState(null) // Track which content block is selected for editing
+  const canvasRef = useRef(null)
+  const saveTimeoutRef = useRef(null)
+  // Title, key insight, and each content block are each dragged as a % OFFSET
+  // from their own default layout position, not an absolute coordinate —
+  // one origin ref per draggable text element so each tracks its own
+  // mouse-down origin + starting offset independently (#drop everything
+  // separately, not together).
+  const titleDragOriginRef = useRef(null)
+  const subtitleDragOriginRef = useRef(null)
+  const contentBlockDragOriginsRef = useRef({}) // Map of blockIndex -> drag origin
+  // Avatar/image use the SAME delta-based origin-tracking pattern — without
+  // this, the box would jump/teleport so its center snaps under the cursor
+  // the instant you click (bad drag feel), instead of moving smoothly from
+  // wherever you actually grabbed it.
+  const avatarDragOriginRef = useRef(null)
+  const imageDragOriginRef = useRef(null)
+  const avatarResizeOriginRef = useRef(null)
+  const imageResizeOriginRef = useRef(null)
 
+  // Smart alignment guides (Gamma/Canva-style): while dragging, show a
+  // dashed line + snap when an element's center crosses the canvas's
+  // horizontal/vertical center, or when a text box returns to its default
+  // (un-offset) resting position.
+  const [snapGuide, setSnapGuide] = useState({ v: false, h: false })
+
+  // Which text element's narration script viewer is currently open — lets
+  // the user check the spoken script without confusing it with the slide's
+  // (deliberately different, more concise) on-screen copy.
+  const [showScript, setShowScript] = useState(false)
+
+  // Preview mode (Gamma-style "see it before you generate"): toggles the
+  // canvas between the editable form (inputs/textareas) and a read-only
+  // rendered look at exactly what the slide will contain — same data, no
+  // separate preview pipeline, so what's previewed always matches what
+  // Generate will produce.
+  const [previewMode, setPreviewMode] = useState(false)
+
+  // "Generate" — renders whatever is currently on the canvas (title, key
+  // insight, focused ideas + nested key points, template theme, avatar/image
+  // placement) into the complete slide graphic used by the render pipeline
+  // (slideRenderer.ts's buildSlide()), same data source the editor already
+  // shows — the user edits first, then Generate produces the finished slide.
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState(null)
+  const [generatedUrl, setGeneratedUrl] = useState(scene.visualAssetUrl || null)
+
+  // Everything (title, key insight, focused ideas, nested key points) comes
+  // pre-filled from the script/storyboard pipeline — the user only ever
+  // EDITS it, never starts from a blank slide. `originalContentRef`
+  // snapshots what was loaded/seeded so autoSave can tell whether the user
+  // actually changed the text vs. just dragging the avatar/image — only real
+  // text edits should mark this slide as user-owned (contentEdited) and stop
+  // the backend from re-syncing it with newer script/storyboard output.
+  const originalContentRef = useRef(null)
+  const interactedRef = useRef(false)
+
+  // Load existing (or freshly seeded) composition on scene switch — the API
+  // pre-fills title/subtitle/bullets from earlier pipeline steps on every
+  // open, until the user has personally edited that slide's text.
   useEffect(() => {
-    const audio = narrationAudioRef.current
-    if (!audio) return
-    const onTime = () => setNarrationProgress(audio.currentTime / (audio.duration || 1))
-    const onEnded = () => { setNarrationPlaying(false); setNarrationProgress(0) }
-    audio.addEventListener('timeupdate', onTime)
-    audio.addEventListener('ended', onEnded)
-    return () => {
-      audio.removeEventListener('timeupdate', onTime)
-      audio.removeEventListener('ended', onEnded)
-    }
-  }, [scene.ttsAudioUrl])
-
-  // Segment mini-timeline (#32) — a scene rendered from segments (welcome
-  // scene's hook/content/content/interaction/recap, or one "question" segment
-  // per quiz question — see schema.prisma's SceneSegment doc comment) shows
-  // each segment as its own editable chip instead of one flat script box.
-  const [segments,        setSegments]        = useState(scene.segments || [])
-  const [activeSegmentId, setActiveSegmentId]  = useState(null)
-  const [segmentDrafts,   setSegmentDrafts]    = useState({}) // id -> draft text while editing
-  const [segmentBusy,     setSegmentBusy]      = useState({}) // id -> 'saving' | 'voicing'
-  const [segmentError,    setSegmentError]     = useState({}) // id -> error message
-
-  const originalBulletsRef = useRef(initBullets)
-  const fileInputRef        = useRef(null)
-
-  // Always-fresh ref so async callbacks see latest state
-  const stateRef = useRef({})
-  useEffect(() => {
-    stateRef.current = { title, subtitle, layout, theme, bullets, positions, showLogo, motionId: motion.id, imageUrl, imageWidth, imageShape }
-  })
-
-  const themeObj = THEMES.find(t => t.id === theme) || THEMES[0]
-
-  // WYSIWYG snapshot (#39) — capture the EXACT slide the user sees in the
-  // editor as a 1920×1080 PNG and upload it. The video renderer uses this
-  // image directly, so the video is pixel-identical to the editor. Editing
-  // chrome (drag rings/labels, avatar placeholder, timed cue overlay) is
-  // filtered out of the capture.
-  const captureSlideSnapshot = async () => {
-    try {
-      const node = document.querySelector('[data-slide-canvas]')
-      if (!node) return null
-      const { toPng } = await import('html-to-image')
-      const dataUrl = await toPng(node, {
-        // html-to-image multiplies canvasWidth × pixelRatio — keep ratio at 1
-        // so the output is EXACTLY 1920×1080 (odd dimensions break libx264)
-        canvasWidth: 1920,
-        canvasHeight: 1080,
-        pixelRatio: 1,
-        // Skip webfont embedding — the slide uses system fonts, and font
-        // collection is by far the slowest part of the capture
-        skipFonts: true,
-        // Square off the editor's rounded corners so the video has no
-        // transparent corner notches
-        style: { borderRadius: '0', border: 'none' },
-        filter: (el) => {
-          const cls = el.classList
-          if (!cls) return true
-          return !(
-            cls.contains('pa-avatar-zone') ||
-            cls.contains('pa-cue-layer')   ||
-            cls.contains('pa-drag-label')  ||
-            cls.contains('pa-drag-ring')
-          )
-        },
-      })
-      const blob = await (await fetch(dataUrl)).blob()
-      const formData = new FormData()
-      formData.append('file', new File([blob], 'slide-snapshot.png', { type: 'image/png' }))
-      const res = await fetch('/api/upload', { method: 'POST', body: formData })
-      if (!res.ok) return null
-      const data = await res.json()
-      return data.file_url || data.url || null
-    } catch (err) {
-      console.warn('[VisualDesigner] Slide snapshot failed, video will use fallback renderer:', err)
-      return null
-    }
-  }
-
-  const saveContent = async () => {
-    const s = stateRef.current
-    setSaving(true)
-    // Snapshot what's on screen RIGHT NOW — this is what the video will show
-    const renderedSlideUrl = await captureSlideSnapshot()
-    const designJson = JSON.stringify({
-      title: s.title, subtitle: s.subtitle, layout: s.layout, theme: s.theme,
-      blocks: [{ type: 'bullets', items: s.bullets }],
-      positions: s.positions, showLogo: s.showLogo,
-      imageUrl: s.imageUrl, imageWidth: s.imageWidth, imageShape: s.imageShape,
-      motionId: s.motionId,
-      ...(renderedSlideUrl ? { renderedSlideUrl } : {}),
-    })
-    try {
-      if (activeSegmentId) {
-        // Per-segment design (#38) — saved on the segment itself, NOT on the
-        // shared scene.slideDeckContent, so this segment's slide stays its
-        // own ("keep it in her own vd not with other vd").
-        await agentsService.updateSceneSegment(activeSegmentId, { slide_design: designJson })
-        // Keep the LOCAL segments list in sync with what was just saved —
-        // otherwise clicking back to this segment reloads the stale design
-        // from mount time and the user's edits appear lost (and the next
-        // auto-save overwrites the real design with the stale one).
-        setSegments(prev => prev.map(seg =>
-          seg.id === activeSegmentId ? { ...seg, slideDesign: designJson } : seg
-        ))
-        await fetch('/api/scenes/' + scene.id, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text_animation_type: s.motionId }),
-        })
-      } else {
-        await fetch('/api/scenes/' + scene.id, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ slide_deck_content: designJson, text_animation_type: s.motionId }),
-        })
+    let cancelled = false
+    setLoaded(false)
+    interactedRef.current = false
+    apiClient.get(`/scenes/${scene.id}/composition`).then(data => {
+      if (cancelled) return
+      // Initialize contentBlocks with position data and frame style - each block gets its own properties.
+      // Default y (when a block genuinely has none) is anchored below wherever
+      // the title/key-insight actually sit for THIS slide — a flat 18 used to
+      // match the subtitle box's own top position and land points right on
+      // top of it instead of below it.
+      const fetchedHasSubtitle = !!(data.subtitle && data.subtitle.trim())
+      const fetchedIsHero = (data.layout ?? DEFAULT_SLIDE.layout) === 'title-hero'
+      const fetchedContentStartY = fetchedIsHero
+        ? (fetchedHasSubtitle ? 64 : 52)
+        : (fetchedHasSubtitle ? 38 : 32)
+      const contentBlocks = Array.isArray(data.contentBlocks) ? data.contentBlocks.map((block, idx) => ({
+        text: block.text ?? '',
+        keyPoints: Array.isArray(block.keyPoints) ? block.keyPoints : [],
+        x: block.x ?? 0,                    // Individual x offset
+        y: block.y ?? (fetchedContentStartY + idx * 8), // Cascade y position for each block
+        zIndex: block.zIndex ?? idx,        // Stack order
+        cadreStyle: block.cadreStyle ?? 'none',  // Per-block frame style
+        showDetails: block.showDetails !== false,  // Show details/key points (default: true)
+      })) : []
+      
+      const next = {
+        title: data.title ?? DEFAULT_SLIDE.title,
+        subtitle: data.subtitle ?? DEFAULT_SLIDE.subtitle,
+        contentBlocks,
+        layout: data.layout ?? DEFAULT_SLIDE.layout,
+        cadreStyle: data.cadreStyle ?? DEFAULT_SLIDE.cadreStyle,
+        titleX: data.titleX ?? DEFAULT_SLIDE.titleX,
+        titleY: data.titleY ?? DEFAULT_SLIDE.titleY,
+        subtitleX: data.subtitleX ?? DEFAULT_SLIDE.subtitleX,
+        subtitleY: data.subtitleY ?? DEFAULT_SLIDE.subtitleY,
+        titleFontScale: data.titleFontScale ?? DEFAULT_SLIDE.titleFontScale,
+        subtitleFontScale: data.subtitleFontScale ?? DEFAULT_SLIDE.subtitleFontScale,
+        contentFontScale: data.contentFontScale ?? DEFAULT_SLIDE.contentFontScale,
+        avatarX: data.avatarX ?? DEFAULT_SLIDE.avatarX,
+        avatarY: data.avatarY ?? DEFAULT_SLIDE.avatarY,
+        avatarWidth: data.avatarWidth ?? DEFAULT_SLIDE.avatarWidth,
+        imageUrl: data.imageUrl ?? null,
+        imageX: data.imageX ?? DEFAULT_SLIDE.imageX,
+        imageY: data.imageY ?? DEFAULT_SLIDE.imageY,
+        imageWidth: data.imageWidth ?? DEFAULT_SLIDE.imageWidth,
+        imageHeight: data.imageHeight ?? DEFAULT_SLIDE.imageHeight,
+        textAnimationType: scene.textAnimationType || DEFAULT_SLIDE.textAnimationType,
       }
-    } catch {}
-    finally { setSaving(false) }
+      originalContentRef.current = JSON.stringify({ title: next.title, subtitle: next.subtitle, contentBlocks: next.contentBlocks })
+      setSlideData(next)
+      setLoaded(true)
+    }).catch(() => setLoaded(true))
+    return () => { cancelled = true }
+  }, [scene.id, scene.textAnimationType])
+
+  // Debounced auto-save — only fires from actual user interaction, and only
+  // includes title/subtitle/contentBlocks in the request when the text
+  // genuinely differs from what was loaded (so dragging positions never marks
+  // this slide's generated content as user-edited when only moving elements).
+  const autoSave = useCallback(async (data) => {
+    setSaving(true)
+    try {
+      const contentChanged = JSON.stringify({ title: data.title, subtitle: data.subtitle, contentBlocks: data.contentBlocks }) !== originalContentRef.current
+      await apiClient.patch(`/scenes/${scene.id}/composition`, {
+        ...(contentChanged && { title: data.title, subtitle: data.subtitle, contentBlocks: data.contentBlocks }),
+        layout: data.layout,
+        cadreStyle: data.cadreStyle,
+        titleX: data.titleX,
+        titleY: data.titleY,
+        subtitleX: data.subtitleX,
+        subtitleY: data.subtitleY,
+        avatarX: data.avatarX,
+        avatarY: data.avatarY,
+        avatarWidth: data.avatarWidth,
+        imageUrl: data.imageUrl,
+        imageX: data.imageX,
+        imageY: data.imageY,
+        imageWidth: data.imageWidth,
+        imageHeight: data.imageHeight,
+        titleFontScale: data.titleFontScale,
+        subtitleFontScale: data.subtitleFontScale,
+        contentFontScale: data.contentFontScale,
+        textAnimationType: data.textAnimationType,
+      })
+      if (contentChanged) {
+        originalContentRef.current = JSON.stringify({ title: data.title, subtitle: data.subtitle, contentBlocks: data.contentBlocks })
+      }
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (err) {
+      console.error('Save failed:', err)
+    } finally {
+      setSaving(false)
+    }
+  }, [scene.id, queryClient])
+
+  useEffect(() => {
+    if (!loaded || !interactedRef.current) return
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
+    saveTimeoutRef.current = setTimeout(() => autoSave(slideData), 800)
+    return () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slideData, loaded])
+
+  // Keep refs pointed at the latest data/save-fn so the unmount flush below
+  // (a `[]`-deps effect, whose cleanup closure is otherwise frozen at mount
+  // time) always sees the most recent edit instead of a stale one.
+  const latestSlideDataRef = useRef(slideData)
+  useEffect(() => { latestSlideDataRef.current = slideData }, [slideData])
+  const latestAutoSaveRef = useRef(autoSave)
+  useEffect(() => { latestAutoSaveRef.current = autoSave }, [autoSave])
+
+  // FLUSH on unmount (#bug: switching straight from Visual Designer to Video
+  // Editing right after an edit used to silently drop it). The debounce
+  // effect above cancels the pending save's setTimeout on every cleanup —
+  // including the final cleanup when this component unmounts because the
+  // user navigated to a different stage tab. That cancellation had no
+  // replacement timer to take over, so an edit made <800ms before navigating
+  // away was never persisted: the canvas showed it, but the backend (and
+  // therefore the exported video, which reads straight from the backend's
+  // SceneSegment.slideDesign) still had the old content/position. Firing the
+  // save immediately here instead of just clearing it closes that gap.
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        latestAutoSaveRef.current(latestSlideDataRef.current)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Every user-driven change (drag, resize, text edit, image swap) goes
+  // through this instead of setSlideData directly, so autoSave only ever
+  // fires from real interaction — never from the initial load/seed.
+  const updateSlide = useCallback((updater) => {
+    interactedRef.current = true
+    setSlideData(updater)
+  }, [])
+
+  // Generate the complete slide graphic from whatever's currently on the
+  // canvas. Flushes any pending auto-save first so the render reflects the
+  // very latest edit (e.g. a title tweak made half a second ago that hasn't
+  // hit the debounce yet), then asks the backend to build the finished slide
+  // image from that composition data.
+  const handleGenerateSlide = useCallback(async () => {
+    setGenerating(true)
+    setGenerateError(null)
+    try {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+        saveTimeoutRef.current = null
+        await autoSave(slideData)
+      }
+      const data = await apiClient.post('/generateSceneAsset', { scene_id: scene.id })
+      setGeneratedUrl(data.visual_asset_url)
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (err) {
+      setGenerateError(err.message || 'Slide generation failed')
+    } finally {
+      setGenerating(false)
+    }
+  }, [scene.id, slideData, autoSave, queryClient])
+
+  // Snap threshold, in %, for center-alignment guides while dragging.
+  const SNAP_PCT = 1.5
+  const snapTo = (value, target) => (Math.abs(value - target) < SNAP_PCT ? target : value)
+
+  // ── Drag / resize (direct manipulation, #2/#3) ────────────────────────────
+  // All draggable elements (avatar, image, title, subtitle, individual content blocks)
+  // use the SAME delta-based pattern: on mouse-down we record where the cursor was
+  // AND where the element already was, then every mouse-move only applies
+  // the *change* since mouse-down — the element moves smoothly from under
+  // the cursor instead of teleporting so its center snaps to the pointer.
+  const handleMouseMove = useCallback((e) => {
+    if (!canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100
+    let nextSnapV = false, nextSnapH = false
+
+    if (dragTarget === 'avatar' && avatarDragOriginRef.current) {
+      const { mouseXPct, mouseYPct, startX, startY } = avatarDragOriginRef.current
+      let nx = Math.max(5, Math.min(95, startX + (xPct - mouseXPct)))
+      let ny = Math.max(5, Math.min(95, startY + (yPct - mouseYPct)))
+      const snappedX = snapTo(nx, 50)
+      if (snappedX !== nx) { nx = snappedX; nextSnapV = true }
+      updateSlide(prev => ({ ...prev, avatarX: nx, avatarY: ny }))
+    }
+    if (dragTarget === 'image' && imageDragOriginRef.current) {
+      const { mouseXPct, mouseYPct, startX, startY } = imageDragOriginRef.current
+      const nx = Math.max(0, Math.min(95, startX + (xPct - mouseXPct)))
+      const ny = Math.max(0, Math.min(95, startY + (yPct - mouseYPct)))
+      updateSlide(prev => ({ ...prev, imageX: nx, imageY: ny }))
+    }
+    if (dragTarget === 'title' && titleDragOriginRef.current) {
+      const { mouseXPct, mouseYPct, startX, startY } = titleDragOriginRef.current
+      let nx = Math.max(-40, Math.min(40, startX + (xPct - mouseXPct)))
+      const ny = Math.max(-40, Math.min(40, startY + (yPct - mouseYPct)))
+      const snappedX = snapTo(nx, 0)
+      if (snappedX !== nx) { nx = snappedX; nextSnapV = true }
+      updateSlide(prev => ({ ...prev, titleX: nx, titleY: ny }))
+    }
+    if (dragTarget === 'subtitle' && subtitleDragOriginRef.current) {
+      const { mouseXPct, mouseYPct, startX, startY } = subtitleDragOriginRef.current
+      let nx = Math.max(-40, Math.min(40, startX + (xPct - mouseXPct)))
+      const ny = Math.max(-40, Math.min(40, startY + (yPct - mouseYPct)))
+      const snappedX = snapTo(nx, 0)
+      if (snappedX !== nx) { nx = snappedX; nextSnapV = true }
+      updateSlide(prev => ({ ...prev, subtitleX: nx, subtitleY: ny }))
+    }
+    // Handle individual content block dragging
+    if (dragTarget && typeof dragTarget === 'object' && dragTarget.type === 'content-block') {
+      const blockIdx = dragTarget.index
+      const origin = contentBlockDragOriginsRef.current[blockIdx]
+      if (origin) {
+        const { mouseXPct, mouseYPct, startX, startY } = origin
+        // Content blocks can move freely across full slide - no tight constraints like title/subtitle
+        let nx = Math.max(-10, Math.min(90, startX + (xPct - mouseXPct)))  // Allow x: -10 to 90
+        let ny = Math.max(5, Math.min(95, startY + (yPct - mouseYPct)))    // Allow y: 5 to 95 (FULL vertical range)
+        const snappedX = snapTo(nx, 0)
+        if (snappedX !== nx) { nx = snappedX; nextSnapV = true }
+        updateSlide(prev => ({
+          ...prev,
+          contentBlocks: prev.contentBlocks.map((b, i) =>
+            i === blockIdx ? { ...b, x: nx, y: ny } : b
+          ),
+        }))
+      }
+    }
+    if (resizeTarget === 'avatar' && avatarResizeOriginRef.current) {
+      const { mouseXPct, startWidth } = avatarResizeOriginRef.current
+      const deltaPct = (xPct - mouseXPct) * 2 // resizing from center, so both edges move
+      updateSlide(prev => ({ ...prev, avatarWidth: Math.max(15, Math.min(50, startWidth + deltaPct)) }))
+    }
+    if (resizeTarget === 'image-corner' && imageResizeOriginRef.current) {
+      const { mouseXPct, mouseYPct, startWidth, startHeight } = imageResizeOriginRef.current
+      updateSlide(prev => ({
+        ...prev,
+        imageWidth: Math.max(5, Math.min(95, startWidth + (xPct - mouseXPct))),
+        imageHeight: Math.max(5, Math.min(95, startHeight + (yPct - mouseYPct))),
+      }))
+    }
+
+    if (dragTarget) setSnapGuide({ v: nextSnapV, h: nextSnapH })
+  }, [dragTarget, resizeTarget, updateSlide])
+
+  const handleMouseUp = useCallback(() => {
+    setDragTarget(null)
+    setResizeTarget(null)
+    setSnapGuide({ v: false, h: false })
+  }, [])
+
+  useEffect(() => {
+    if (dragTarget || resizeTarget) {
+      window.addEventListener('mousemove', handleMouseMove)
+      window.addEventListener('mouseup', handleMouseUp)
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove)
+        window.removeEventListener('mouseup', handleMouseUp)
+      }
+    }
+  }, [dragTarget, resizeTarget, handleMouseMove, handleMouseUp])
+
+  // ── Content block editing (focused ideas + nested key points, #7) ────────
+  // Everything here starts pre-filled from the script/storyboard — these
+  // handlers only let the user EDIT/reorder/remove what's already there (or
+  // add extra ideas if they genuinely want to), they never require the user
+  // to write a slide from scratch.
+  const addContentBlock = () => {
+    updateSlide(prev => ({
+      ...prev,
+      contentBlocks: [...prev.contentBlocks, {
+        text: '',
+        keyPoints: [],
+        x: 0,                              // Default x offset
+        // Cascade from contentStartY (below title/key-insight, layout-aware)
+        // instead of a flat 18 — that flat value used to land new points
+        // right under/on top of the subtitle text.
+        y: LAYOUT_CONFIG.contentStartY + prev.contentBlocks.length * blockSpacing,
+        zIndex: prev.contentBlocks.length,  // Stack on top
+        cadreStyle: 'none',                // Default frame style for new blocks
+        showDetails: true,                 // Show details by default
+      }]
+    }))
+  }
+  const updateBlockText = (idx, text) => {
+    updateSlide(prev => ({
+      ...prev,
+      contentBlocks: prev.contentBlocks.map((b, i) => i === idx ? { ...b, text } : b),
+    }))
+  }
+  const removeBlock = (idx) => {
+    updateSlide(prev => ({ ...prev, contentBlocks: prev.contentBlocks.filter((_, i) => i !== idx) }))
+  }
+  const addKeyPoint = (blockIdx) => {
+    updateSlide(prev => ({
+      ...prev,
+      contentBlocks: prev.contentBlocks.map((b, i) =>
+        i === blockIdx ? { ...b, keyPoints: [...b.keyPoints, ''] } : b
+      ),
+    }))
+  }
+  const updateKeyPoint = (blockIdx, kpIdx, text) => {
+    updateSlide(prev => ({
+      ...prev,
+      contentBlocks: prev.contentBlocks.map((b, i) =>
+        i === blockIdx
+          ? { ...b, keyPoints: b.keyPoints.map((kp, j) => j === kpIdx ? text : kp) }
+          : b
+      ),
+    }))
+  }
+  const removeKeyPoint = (blockIdx, kpIdx) => {
+    updateSlide(prev => ({
+      ...prev,
+      contentBlocks: prev.contentBlocks.map((b, i) =>
+        i === blockIdx ? { ...b, keyPoints: b.keyPoints.filter((_, j) => j !== kpIdx) } : b
+      ),
+    }))
   }
 
-  const handleLayoutChange = (newLayout) => {
-    setLayout(newLayout)
-    // Preserve image position + any custom scale the user set, otherwise use default  
-    const def = DEFAULT_POSITIONS[newLayout] || DEFAULT_POSITIONS.bullets
-    setPositions(prev => Object.keys(def).reduce((acc, k) => ({
-      ...acc,
-      [k]: k === 'image'
-        ? (prev.image || def.image)
-        : { ...def[k], scale: prev[k]?.scale || 1 },
-    }), {}))
-  }
+  // ── Image: upload, or generate with AI, or paste a URL directly ─────────
+  const fileInputRef = useRef(null)
+  const [genPrompt, setGenPrompt] = useState('')
+  const [genLoading, setGenLoading] = useState(false)
+  const [genError, setGenError] = useState(null)
+  const [uploading, setUploading] = useState(false)
 
-  // File → upload to server and get /api/uploads/... URL
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setImageUrl('')  // Clear while uploading
+    setUploading(true)
     try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await fetch('/api/upload', { method: 'POST', body: formData })
-      if (res.ok) {
-        const data = await res.json()
-        // BUGFIX: /api/upload returns { file_url }, not { url } — this was why
-        // uploaded images never stuck to the design
-        setImageUrl(data.file_url || data.url || '')
-        setTimeout(saveContent, 50)
-      }
+      const data = await uploadFile(file)
+      updateSlide(prev => ({ ...prev, imageUrl: data.file_url }))
     } catch (err) {
       console.error('Image upload failed:', err)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
     }
-    e.target.value = ''  // allow re-upload of same file
   }
 
-  // Prompt → Gemini image generation → same flow as an uploaded image
   const handleGenerateImage = async () => {
     const prompt = genPrompt.trim()
     if (!prompt || genLoading) return
     setGenLoading(true); setGenError(null)
     try {
-      const res = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'Image generation failed')
-      setImageUrl(data.file_url)
+      const data = await apiClient.post('/generate-image', { prompt })
+      updateSlide(prev => ({ ...prev, imageUrl: data.file_url }))
       setGenPrompt('')
-      setTimeout(saveContent, 50)
     } catch (err) {
-      console.error('Image generation failed:', err)
       setGenError(err.message || 'Image generation failed')
-    } finally { setGenLoading(false) }
-  }
-
-  const handlePositionChange = (key, newPos) => {
-    setPositions(prev => ({ ...prev, [key]: { ...prev[key], ...newPos } }))
-  }
-
-  // Remove a layer straight from the slide canvas (the small × that appears
-  // on hover) instead of only being able to hide/clear it from the side panel.
-  const handleDeleteLayer = (key) => {
-    switch (key) {
-      case 'logo':     setShowLogo(false); break
-      case 'image':    setImageUrl(''); break
-      case 'title':    setTitle(''); break
-      case 'subtitle': setSubtitle(''); break
-      case 'content':  setBullets([{ text: '', level: 1 }]); break
-      default: return
+    } finally {
+      setGenLoading(false)
     }
-    setTimeout(saveContent, 0)
   }
 
-  const handleGenerate = async () => { await saveContent(); onGenerate(scene.id) }
+  // Layout fluidity (#4): the text column narrows automatically to stay
+  // clear of wherever the avatar placeholder currently sits — text position
+  // is synchronized with the avatar's position, live, same as the exported
+  // slide (slideRenderer.ts mirrors this with avatarLeftEdgePct too).
+  const avatarLeftEdgePct = slideData.avatarX - slideData.avatarWidth / 2
+  // With avatar in far right corner, content can use full width minus small margin
+  const contentMaxWidthPct = Math.max(40, Math.min(90, avatarLeftEdgePct - 2))
 
-  // Rebuild the ENTIRE slide content (title + key insight + content points)
-  // from the voice script, so what students read matches what they hear.
-  // For segmented scenes uses the active segment's script text.
-  const handleRebuildFromScript = async () => {
-    setAiLoading(true); setAiAction('rebuild')
-    try {
-      const scriptText = activeSegmentId
-        ? (segmentDrafts[activeSegmentId] ?? segments.find(s => s.id === activeSegmentId)?.text ?? '')
-        : (scene.scriptContent || '')
-      const res = await fetch('/api/scenes/' + scene.id + '/rebuild-slide', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script_text: scriptText }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'Rebuild failed')
-      setTitle(data.title || '')
-      setSubtitle(data.subtitle || '')
-      if (data.bullets?.length) {
-        const bulletsClean = data.bullets.map(b => ({ text: b.text || '', level: b.level === 2 ? 2 : 1 }))
-        setBullets(bulletsClean)
-        originalBulletsRef.current = bulletsClean
+  // 'title-hero' centers the title/key-insight/content blocks in the middle
+  // of the slide (per request: intro slides shouldn't look identical to
+  // regular content slides). Other layouts keep the left-aligned column.
+  const isHeroLayout = slideData.layout === 'title-hero'
+
+  // Title, key insight, and each content block get their OWN independent
+  // position style — dragging one never moves the others (#drop everything
+  // separately, not together).
+  const titleBoxStyle = isHeroLayout
+    ? { left: `${50 + slideData.titleX}%`, top: `${38 + slideData.titleY}%`, width: `${contentMaxWidthPct}%`, transform: 'translate(-50%, -50%)' }
+    : { left: `${slideData.titleX}%`, top: `${8 + slideData.titleY}%`, width: `${contentMaxWidthPct}%` }
+  const subtitleBoxStyle = isHeroLayout
+    ? { left: `${50 + slideData.subtitleX}%`, top: `${48 + slideData.subtitleY}%`, width: `${contentMaxWidthPct}%`, transform: 'translate(-50%, -50%)' }
+    : { left: `${slideData.subtitleX}%`, top: `${18 + slideData.subtitleY}%`, width: `${contentMaxWidthPct}%` }
+
+  // ─ Layout Positioning & Spacing ────────────────────────────────────────
+  // Organized helpers for clean slide layout calculations
+
+  // Content area boundaries - full slide height.
+  // contentStartY used to be a flat 22 regardless of what's above it — but
+  // the subtitle box itself starts at 18 (and the hero layout's subtitle sits
+  // at 48, centered), so a content point could render right on top of the
+  // title/key-insight text instead of clearly below it, especially once
+  // wrapped to two lines. Push the starting point down based on what's
+  // actually above the content column so points always land clear of it.
+  // These are intentionally generous by default (extra margin beyond the
+  // minimum needed to clear a wrapped title/subtitle) so there's always a
+  // comfortable, consistent gap out of the box, not just "barely clear."
+  const hasSubtitle = !!slideData.subtitle?.trim()
+  const contentStartY = isHeroLayout
+    ? (hasSubtitle ? 64 : 52)   // below the centered title/key-insight block
+    : (hasSubtitle ? 38 : 32)   // below the (possibly two-line) title/subtitle
+  const LAYOUT_CONFIG = {
+    contentStartY,
+    contentEndY: 98,      // Extend to near bottom
+    minBlockSpacing: 6,   // Minimum space between blocks
+    maxDragOffsetY: 10,   // How far beyond bounds user can drag
+  }
+  
+  // Calculate spacing between content blocks
+  const calculateBlockSpacing = (numBlocks) => {
+    const availableHeight = LAYOUT_CONFIG.contentEndY - LAYOUT_CONFIG.contentStartY
+    if (numBlocks === 0) return LAYOUT_CONFIG.minBlockSpacing
+    return Math.max(LAYOUT_CONFIG.minBlockSpacing, availableHeight / Math.max(numBlocks, 3))
+  }
+  
+  const blockSpacing = calculateBlockSpacing(slideData.contentBlocks.length)
+  
+  // Get final position for a content block, accounting for user drag or default
+  const getBlockPosition = (block, blockIdx) => {
+    // Use user-dragged position if available, otherwise use stacked default
+    const defaultY = LAYOUT_CONFIG.contentStartY + (blockIdx * blockSpacing)
+    const blockY = block.y !== undefined ? block.y : defaultY
+    
+    // Clamp to allowed range with generous margins
+    const clampedY = Math.max(
+      LAYOUT_CONFIG.contentStartY - LAYOUT_CONFIG.maxDragOffsetY,
+      Math.min(blockY, LAYOUT_CONFIG.contentEndY + LAYOUT_CONFIG.maxDragOffsetY)
+    )
+    
+    return { x: block.x, y: clampedY }
+  }
+
+  // Where the "Add content point" button should sit — right after the last
+  // block's actual (clamped) position instead of a fixed bottom offset, so
+  // it never lands on top of a block's text when there are several points
+  // or a block has grown taller than the default spacing assumed.
+  const lastBlockY = slideData.contentBlocks.length > 0
+    ? Math.max(...slideData.contentBlocks.map((b, i) => getBlockPosition(b, i).y))
+    : LAYOUT_CONFIG.contentStartY - blockSpacing
+  const addButtonTopPct = Math.min(94, lastBlockY + blockSpacing)
+
+  // Build complete style object for a content block
+  const getContentBlockStyle = (block, blockIdx, isDragging = false) => {
+    const pos = getBlockPosition(block, blockIdx)
+    const baseStyle = {
+      position: 'absolute',
+      minHeight: '6%',
+      width: `${contentMaxWidthPct}%`,
+      zIndex: isDragging ? 1000 : block.zIndex ?? blockIdx,  // Raise on drag to prevent overlap
+    }
+    
+    if (isHeroLayout) {
+      return {
+        ...baseStyle,
+        left: `${50 + pos.x}%`,
+        top: `${pos.y}%`,
+        transform: 'translate(-50%, 0)',
       }
-      setTimeout(saveContent, 50)
-    } catch (e) {
-      console.error('Rebuild from script failed:', e)
-      alert(e.message || 'Rebuild from script failed')
-    } finally {
-      setAiLoading(false); setAiAction(null)
+    }
+    
+    return {
+      ...baseStyle,
+      left: `${pos.x}%`,
+      top: `${pos.y}%`,
     }
   }
 
-  const handleAiRewrite = async (action, prompt) => {
-    setAiLoading(true); setAiAction(action)
-    try {
-      const bulletText = bullets.map(b => (b.level===2?'  - ':'- ')+b.text).join('\n')
-      const res = await fetch('/api/scenes/' + scene.id + '/ai-rewrite', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, prompt, content: bulletText||'No content', title }),
-      })
-      if (res.ok) { const d = await res.json(); if (d.bullets) setBullets(d.bullets) }
-    } catch {}
-    finally { setAiLoading(false); setAiAction(null) }
-  }
-
-  // ── Per-segment slide design (#38) ────────────────────────────────────────
-  // "keep it in her own vd not with other vd": each segment (hook, content,
-  // content, interaction, recap) gets its OWN independent slide design
-  // instead of sharing the whole scene's one slideDeckContent. A segment's
-  // design is read from its own slideDesign JSON field; if it hasn't been
-  // designed yet, seed from its existing AI-generated slideTitle/elements so
-  // nothing the script generator already produced gets lost.
-  const getSegmentDesign = (seg) => {
-    if (!seg) return {}
-    try {
-      const d = JSON.parse(seg.slideDesign || '{}')
-      if (d.title || d.subtitle || d.blocks?.length) return d
-    } catch {}
-    let elements = []
-    try { elements = JSON.parse(seg.elements || '[]') } catch {}
-    const items = elements.filter(el => el.type === 'bullet' && el.text).map(el => ({ text: el.text, level: 1 }))
-    return { title: seg.slideTitle || '', blocks: items.length ? [{ type: 'bullets', items }] : undefined }
-  }
-
-  const loadDesignIntoState = (design) => {
-    const layoutKey = design.layout || 'bullets'
-    setLayout(layoutKey)
-    setTheme(design.positions ? (design.theme || defaultTheme) : defaultTheme)
-    setTitle(design.title || '')
-    setSubtitle(design.subtitle || '')
-    const items = design.blocks?.[0]?.items
-    setBullets(items?.length ? items : [{ text: '', level: 1 }])
-    const defaults = DEFAULT_POSITIONS[layoutKey] || DEFAULT_POSITIONS.bullets
-    const saved = design.positions || {}
-    setPositions(Object.keys(defaults).reduce((acc, k) => ({
-      ...acc,
-      [k]: { scale: 1, ...defaults[k], ...(saved[k] || {}) },
-    }), {}))
-    setShowLogo(design.showLogo !== false)
-    setImageUrl(design.imageUrl || '')
-    setImageWidth(design.imageWidth || 36)
-    setImageShape(design.imageShape || 'rounded')
-    // Restore motion type from saved design
-    if (design.motionId) {
-      const motionObj = MOTION_STYLES.find(m => m.id === design.motionId)
-      if (motionObj) setMotion(motionObj)
-    }
-  }
-
-  // Auto-select the first segment on mount for segmented scenes.
-  //
-  // Why: renderSceneSegmentsVideo/buildSegmentSlideSvg (ffmpegVideo.ts) ONLY
-  // ever reads segment.slideDesign per segment — it never reads
-  // scene.slideDeckContent. But the canvas above defaults to editing
-  // scene.slideDeckContent whenever no segment chip is selected. That meant
-  // a user opening a segmented scene (e.g. the welcome scene's hook/content/
-  // content/interaction/recap) and designing the FIRST thing they see,
-  // without explicitly clicking a segment chip first, was saving into a
-  // field the render pipeline silently ignores — exactly the "generated
-  // video doesn't match what I designed" bug, worst on the first segment
-  // since that's what's on screen by default. Defaulting to segment 1 means
-  // the canvas always edits something that actually ends up in the video.
-  useEffect(() => {
-    if (segments.length > 0 && !activeSegmentId) {
-      const first = segments[0]
-      setActiveSegmentId(first.id)
-      loadDesignIntoState(getSegmentDesign(first))
-      setSegmentDrafts(prev => prev[first.id] !== undefined ? prev : { ...prev, [first.id]: first.text || '' })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene.id])
-
-  // ── Segment mini-timeline handlers (#32) ──────────────────────────────────
-  const toggleSegment = async (id) => {
-    // Persist whatever's currently on the design canvas (scene-level or the
-    // previously-active segment's own slide) before switching targets, then
-    // load the new target's own saved design into the canvas.
-    await saveContent()
-    if (activeSegmentId === id) {
-      // Re-clicking the active chip used to "deselect" back to editing
-      // scene.slideDeckContent — a field the segmented render path never
-      // reads, so this silently threw away where the user's edits would go.
-      // For segmented scenes there's no such thing as "no segment selected";
-      // just leave the current segment active.
-      return
-    } else {
-      setActiveSegmentId(id)
-      loadDesignIntoState(getSegmentDesign(segments.find(s => s.id === id)))
-    }
-    setSegmentDrafts(prev => prev[id] !== undefined ? prev : {
-      ...prev,
-      [id]: segments.find(s => s.id === id)?.text || '',
-    })
-  }
-
-  const handleSaveSegmentText = async (id) => {
-    const text = segmentDrafts[id]
-    if (text === undefined) return
-    setSegmentBusy(prev => ({ ...prev, [id]: 'saving' }))
-    setSegmentError(prev => ({ ...prev, [id]: null }))
-    try {
-      await agentsService.updateSceneSegment(id, { text })
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, text, ttsAudioUrl: null } : s))
-    } catch (e) {
-      setSegmentError(prev => ({ ...prev, [id]: e?.message || 'Failed to save segment' }))
-    } finally {
-      setSegmentBusy(prev => { const next = { ...prev }; delete next[id]; return next })
-    }
-  }
-
-  const handleRegenerateSegmentVoice = async (id) => {
-    setSegmentBusy(prev => ({ ...prev, [id]: 'voicing' }))
-    setSegmentError(prev => ({ ...prev, [id]: null }))
-    try {
-      await handleSaveSegmentText(id)
-      const res = await agentsService.runGenerateTTS(scene.id, voiceId, undefined, undefined, id)
-      const url = res?.data?.segments?.[0]?.tts_audio_url
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, ttsAudioUrl: url || s.ttsAudioUrl } : s))
-    } catch (e) {
-      setSegmentError(prev => ({ ...prev, [id]: e?.message || 'Voice regeneration failed' }))
-    } finally {
-      setSegmentBusy(prev => { const next = { ...prev }; delete next[id]; return next })
-    }
+  if (!loaded) {
+    return <div className="flex-1 flex items-center justify-center"><Spinner /></div>
   }
 
   return (
-    <div className="p-6 w-full max-w-[1500px] mx-auto pa-page-enter">
-      <div className="grid grid-cols-1 gap-6">
-        {/* PREVIEW - Full width on top */}
-        <div>
-          {/* ── LIVE DRAGGABLE PREVIEW ───────────────────────────────────────── */}
-          <div className="mb-3 relative">
-            <EditableSlide
-              key={previewKey}
-              title={title} subtitle={subtitle} bullets={bullets}
-              layout={layout} theme={themeObj} motionCls={motion.cls}
-              positions={positions} showLogo={showLogo}
-              imageUrl={imageUrl} imageWidth={imageWidth} imageShape={imageShape}
-              moduleTitle={moduleTitle} sceneIndex={scene.orderIndex ?? 0} totalScenes={totalScenes}
-              onPositionChange={handlePositionChange}
-              onDragEnd={saveContent}
-              textCues={textCues}
-              avatarImageUrl={avatarImageUrl}
-              onDeleteLayer={handleDeleteLayer}
-              segments={parsed.segments}
-            />
-            {/* Overlay buttons */}
-            <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
-              {scene.ttsAudioUrl && (
-                <button onClick={toggleNarration} title={narrationPlaying ? 'Stop narration' : 'Play narration with synced captions'}
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-                    narrationPlaying ? 'bg-red-500/80 hover:bg-red-500' : 'bg-black/60 hover:bg-black/80'}`}>
-                  {narrationPlaying ? <Square className="w-3 h-3 text-slate-900 dark:text-white" /> : <Volume2 className="w-3.5 h-3.5 text-slate-900 dark:text-white" />}
-                </button>
-              )}
-              <button onClick={() => setPreviewKey(k=>k+1)} title="Replay animations"
-                className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-                <Play className="w-3.5 h-3.5 text-slate-900 dark:text-white" />
-              </button>
-              <button onClick={() => { setPositions(DEFAULT_POSITIONS[layout]||DEFAULT_POSITIONS.bullets); saveContent() }}
-                title="Reset element positions to layout defaults"
-                className="w-7 h-7 rounded-lg bg-black/60 hover:bg-black/80 flex items-center justify-center transition-colors">
-                <Move className="w-3.5 h-3.5 text-slate-900 dark:text-white" />
-              </button>
-            </div>
-            {saving && (
-              <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-500 dark:text-slate-400">
-                <Loader2 className="w-3 h-3 animate-spin" /> Saving…
-              </div>
-            )}
-
-            {/* Synced narration caption — words appear one at a time as the
-                voiceover plays, instead of dumping the whole script at once. */}
-            {narrationPlaying && scriptWords.length > 0 && (
-              <div className="absolute left-1/2 bottom-[6%] -translate-x-1/2 max-w-[88%] pointer-events-none z-20">
-                <p className="px-4 py-2 rounded-lg text-sm font-medium text-center leading-relaxed bg-black/65 text-white backdrop-blur-sm">
-                  {scriptWords.slice(0, revealedWordCount).map((w, i) => (
-                    <span key={i} className={i === revealedWordCount - 1 ? 'text-amber-700 dark:text-amber-300' : 'text-slate-900 dark:text-white'}>
-                      {w}{' '}
-                    </span>
-                  ))}
-                </p>
-              </div>
-            )}
-
-            {scene.ttsAudioUrl && (
-              <audio ref={narrationAudioRef} src={scene.ttsAudioUrl} preload="metadata" className="hidden" />
-            )}
-          </div>
-
-          {/* Drag hint */}
-          <p className="text-[10px] text-slate-400 dark:text-slate-600 text-center mb-5 flex items-center justify-center gap-1">
-            <Move className="w-3 h-3" /> Hover any element on the slide and drag to reposition it
+    <div className="flex-1 flex flex-col lg:flex-row overflow-hidden bg-slate-100 dark:bg-slate-900">
+      {/* Canvas card — full width on mobile; shares the row with the options
+          sidebar on large screens instead of stacking underneath it */}
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+      {/* Gamma-style context bar: module/scene location + slide title + preview toggle */}
+      <div className="px-3 sm:px-6 py-2.5 border-b border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 flex items-center justify-between gap-2 sm:gap-3 flex-shrink-0 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-medium text-slate-400 dark:text-slate-500 uppercase tracking-wider truncate">
+            Module {moduleIndex + 1}{moduleTitle ? `: ${moduleTitle}` : ''} · Scene {sceneIndex + 1} of {totalScenes}
+          </p>
+          <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+            {slideData.title || 'Untitled Slide'}
           </p>
         </div>
-
-        {/* CONTROLS - Full width below preview */}
-        <div className="space-y-4">
-
-      {/* ── LOGO TOGGLE ────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-3 p-3 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-5 flex-shrink-0">
-            <GVSULogoSVG isDark={themeObj.isDark} />
-          </div>
-          <div>
-            <p className="text-xs font-semibold text-slate-900 dark:text-white">GVSU Logo</p>
-            <p className="text-[10px] text-slate-500">Drag on slide to reposition</p>
-          </div>
-        </div>
+        {scene.scriptContent && (
+          <button
+            onClick={() => setShowScript(true)}
+            title="View the spoken narration for this scene — the slide's title/key insight/points are deliberately NOT the same text"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:border-indigo-400 transition-colors flex-shrink-0"
+          >
+            <Mic className="w-3.5 h-3.5" /><span className="hidden sm:inline">Voice Script</span>
+          </button>
+        )}
         <button
-          onClick={() => { setShowLogo(v => !v); setTimeout(saveContent, 0) }}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-            showLogo
-              ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-700 dark:text-indigo-300'
-              : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500'
+          onClick={() => setPreviewMode(v => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex-shrink-0 ${
+            previewMode
+              ? 'bg-indigo-600 border-transparent text-white'
+              : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:border-indigo-400'
           }`}
         >
-          {showLogo ? <><Eye className="w-3 h-3" />Visible</> : <><EyeOff className="w-3 h-3" />Hidden</>}
+          {previewMode ? <><Pencil className="w-3.5 h-3.5" />Edit</> : <><Eye className="w-3.5 h-3.5" />Preview</>}
         </button>
-      </div>
-
-      {/* ── IMAGE / FIGURE ─────────────────────────────────────────────────── */}
-      <div className="mb-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
-        {/* Header */}
+        {/* Desktop-only toggle for the options sidebar — the full-width bar
+            below the canvas is reserved for narrow screens */}
         <button
-          onClick={() => setShowImgPanel(v => !v)}
-          className="w-full flex items-center justify-between px-3 py-3 hover:bg-slate-50 dark:hover:bg-white/[0.02] transition-colors"
+          onClick={() => setShowRightPanel(v => !v)}
+          className={`hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex-shrink-0 ${
+            showRightPanel
+              ? 'bg-indigo-600 border-transparent text-white'
+              : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:border-indigo-400'
+          }`}
+          title={showRightPanel ? 'Hide edit options' : 'Show edit options'}
         >
-          <div className="flex items-center gap-2">
-            <Image className="w-4 h-4 text-violet-500 dark:text-violet-400" />
-            <p className="text-xs font-semibold text-slate-900 dark:text-white">Image / Figure</p>
-            {imageUrl && <span className="text-[9px] text-emerald-600 dark:text-emerald-400 bg-emerald-400/10 border border-emerald-400/20 px-1.5 py-0.5 rounded-full">Added · drag to move</span>}
-          </div>
-          <span className="text-slate-500 text-xs">{showImgPanel ? '▲' : '▼'}</span>
+          <Settings className="w-3.5 h-3.5" />
+          {showRightPanel ? 'Hide Options' : 'Edit Options'}
         </button>
-
-        {showImgPanel && (
-          <div className="px-3 pb-3 space-y-3 border-t border-slate-100 dark:border-white/[0.04]">
-            {/* Upload or URL */}
-            <div className="pt-3 flex gap-2">
-              <input
-                type="text"
-                value={imageUrl.startsWith('data:') ? '' : imageUrl}
-                onChange={e => setImageUrl(e.target.value)}
-                onBlur={saveContent}
-                placeholder="Paste image URL…"
-                className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:border-violet-500/40 hover:text-violet-300 transition-colors"
-              >
-                Upload
-              </button>
-              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
-            </div>
-
-            {/* Generate with AI (Gemini) */}
-            <div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={genPrompt}
-                  onChange={e => { setGenPrompt(e.target.value); if (genError) setGenError(null) }}
-                  onKeyDown={e => { if (e.key === 'Enter') handleGenerateImage() }}
-                  disabled={genLoading}
-                  placeholder="Or describe an image to generate… e.g. diagram of a plant cell"
-                  className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors disabled:opacity-60"
-                />
-                <button
-                  onClick={handleGenerateImage}
-                  disabled={genLoading || !genPrompt.trim()}
-                  className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {genLoading
-                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Generating…</>
-                    : <><Sparkles className="w-3.5 h-3.5" />Generate</>}
-                </button>
-              </div>
-              {genError && (
-                <div className="flex items-start gap-1.5 mt-1.5">
-                  <AlertCircle className="w-3 h-3 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-[10px] text-red-600 dark:text-red-300">{genError}</p>
-                </div>
-              )}
-              {genLoading && (
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5">
-                  Creating your image with Gemini — usually takes 5–15 seconds…
-                </p>
-              )}
-            </div>
-
-            {/* Preview strip */}
-            {imageUrl && (
-              <div className="flex items-center gap-3">
-                <div className="w-20 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800">
-                  <img src={imageUrl} alt="" className="w-full h-full object-cover"
-                    onError={e => { e.target.src = ''; e.target.style.opacity = '0.3' }} />
-                </div>
-                <div className="flex-1 space-y-2">
-                  {/* Width slider */}
-                  <div>
-                    <div className="flex justify-between mb-1">
-                      <span className="text-[10px] text-slate-500">Width on slide</span>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400">{imageWidth}%</span>
-                    </div>
-                    <input type="range" min="15" max="70" value={imageWidth}
-                      onChange={e => setImageWidth(Number(e.target.value))}
-                      onMouseUp={saveContent}
-                      className="w-full h-1 accent-violet-500 cursor-pointer" />
-                  </div>
-                  {/* Shape */}
-                  <div className="flex gap-1.5">
-                    {[['rectangle','Sharp'],['rounded','Rounded'],['circle','Circle']].map(([v,l]) => (
-                      <button key={v} onClick={() => { setImageShape(v); saveContent() }}
-                        className={`px-2 py-1 rounded-md text-[10px] font-medium border transition-all ${
-                          imageShape===v
-                            ? 'bg-violet-600/20 border-violet-500/40 text-violet-300'
-                            : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 hover:border-slate-300 dark:hover:border-white/20'
-                        }`}>{l}</button>
-                    ))}
-                    <button onClick={() => { setImageUrl(''); saveContent() }}
-                      className="ml-auto px-2 py-1 rounded-md text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400 border border-transparent hover:border-red-500/20 transition-all">
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
-      {/* ── TEXT MOTION ───────────────────────────────────────────────────────
-          Replaces the old static-background "Background Motion" zoom/pan
-          picker. The background no longer animates — instead this controls
-          how the narration-synced caption reveals, which is the attractive
-          effect: text appearing in step with the voiceover, not all at once. */}
-      <div className="mb-5">
-        <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Text Motion</p>
-     
-        <div className="grid grid-cols-3 gap-1.5">
-          {MOTION_STYLES.map(m => (
-            <button key={m.id} 
-              onClick={() => { 
-                setMotion(m)
-                saveContent()
-                setPreviewKey(k=>k+1) 
-              }}
-              title={m.desc}
-              className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
-                motion.id===m.id
-                  ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-700 dark:text-indigo-300 shadow-md shadow-indigo-500/20'
-                  : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20 hover:text-slate-900 dark:hover:text-white hover:bg-slate-800/80'
-              }`}>
-              <div className="text-lg">{m.icon}</div>
-              <span className="text-[10px] leading-tight text-center">{m.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="border-t border-slate-200 dark:border-white/[0.06] mb-5" />
-
-      {/* ── CONTENT ────────────────────────────────────────────────────────── */}
-      <div className="space-y-5">
-
-        {/* Rebuild everything from the narration so slide ↔ voice always match */}
-        <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-indigo-500/5 border border-indigo-500/15">
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            Slide doesn't match the narration? Regenerate title, key insight and points from the voice script.
-          </p>
-          <button onClick={handleRebuildFromScript} disabled={aiLoading}
-            className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg border transition-colors ${
-              aiLoading && aiAction === 'rebuild'
-                ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400'
-                : 'bg-indigo-600 hover:bg-indigo-500 border-transparent text-white'
-            }`}>
-            {aiLoading && aiAction === 'rebuild'
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Rebuilding…</>
-              : <><Sparkles className="w-3.5 h-3.5" />Rebuild from script</>}
-          </button>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-slate-900 dark:text-white mb-1.5">
-            Slide Title <span className="font-normal text-slate-500">(optional - leave blank for untitled intro)</span>
-          </label>
-          <input value={title} onChange={e=>setTitle(e.target.value)} onBlur={saveContent}
-            placeholder="Key concept students will learn"
-            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold text-slate-900 dark:text-white mb-1.5">
-            Key Insight <span className="font-normal text-slate-500"></span>
-          </label>
-          <input value={subtitle} onChange={e=>setSubtitle(e.target.value)} onBlur={saveContent}
-            placeholder="The main idea students should remember"
-            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors" />
-        </div>
-
-        {/* Bullets */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-semibold text-slate-900 dark:text-white">
-              Content Points <span className="font-normal text-slate-500"></span>
-            </label>
-            <div className="flex items-center gap-1.5">
-              {[
-                { id:'shorten',  label:'Shorter', prompt:'Make each bullet more concise. Keep the full educational meaning — each bullet must remain a complete, meaningful idea of 10-18 words. Do NOT reduce to just 2-3 words.' },
-                { id:'simplify', label:'Simpler',  prompt:'Rewrite each bullet using simpler vocabulary that a student can understand. Keep the same meaning and similar length. Avoid jargon.' },
-                { id:'expand',   label:'Expand',   prompt:'Enrich each bullet with a concrete example or additional detail. Each bullet should be 15-25 words and help students understand better.' },
-              ].map(a => (
-                <button key={a.id} onClick={() => handleAiRewrite(a.id, a.prompt)} disabled={aiLoading}
-                  className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border transition-colors ${
-                    aiLoading && aiAction===a.id
-                      ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400'
-                      : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:border-indigo-500/30 hover:text-indigo-600 dark:hover:text-indigo-400'
-                  }`}>
-                  {aiLoading && aiAction===a.id ? <Loader2 className="w-3 h-3 animate-spin"/> : <Wand2 className="w-3 h-3"/>}
-                  {a.label}
-                </button>
-              ))}
-              <button onClick={() => { setBullets(originalBulletsRef.current); setTimeout(saveContent,0) }}
-                disabled={aiLoading} title="Reset to original AI-generated content"
-                className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-500 hover:text-amber-400 hover:border-amber-500/30 transition-colors">
-                <RotateCw className="w-3 h-3" /> Reset
+      {/* Voice Script viewer — shows the spoken narration, kept visually
+          separate from the slide's own (deliberately more concise/
+          professional) title/key insight/content copy so the user never
+          confuses the two. */}
+      {showScript && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-6" onClick={() => setShowScript(false)}>
+          <div
+            className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl max-w-lg w-full max-h-[70vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3.5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <Mic className="w-4 h-4 text-indigo-500" />
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">Voice Script (Narration)</p>
+              </div>
+              <button onClick={() => setShowScript(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors">
+                <X className="w-4 h-4" />
               </button>
             </div>
-          </div>
-
-          <div className="space-y-2">
-            {bullets.map((b,i) => (
-              <div key={i} className="flex items-center gap-2 group">
-                <button onClick={() => setBullets(bs=>bs.map((x,idx)=>idx===i?{...x,level:x.level===1?2:1}:x))}
-                  className={`w-5 h-5 rounded text-xs font-bold flex items-center justify-center flex-shrink-0 transition-colors ${
-                    b.level===2?'bg-slate-700 text-slate-500 dark:text-slate-400':'bg-indigo-500/20 text-indigo-500 dark:text-indigo-400'}`}>
-                  {b.level===2?'◦':'•'}
-                </button>
-                <input value={b.text}
-                  onChange={e=>setBullets(bs=>bs.map((x,idx)=>idx===i?{...x,text:e.target.value}:x))}
-                  onBlur={saveContent}
-                  placeholder={b.level===1?'Key fact or concept':'Supporting detail or example'}
-                  className={`flex-1 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-white/[0.06] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500/40 transition-colors ${b.level===2?'text-slate-500 dark:text-slate-400 ml-3':'text-slate-900 dark:text-white'}`}
-                />
-                <button onClick={()=>{ setBullets(bs=>bs.filter((_,idx)=>idx!==i)); setTimeout(saveContent,0) }}
-                  className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all flex-shrink-0">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-4 mt-2">
-            <button onClick={()=>setBullets(b=>[...b,{text:'',level:1}])}
-              className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
-              <Plus className="w-3 h-3"/>Add point
-            </button>
-            <button onClick={()=>setBullets(b=>[...b,{text:'',level:2}])}
-              className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-600 hover:text-slate-600 dark:hover:text-slate-400 transition-colors">
-              <Plus className="w-3 h-3"/>Add sub-point
-            </button>
-          </div>
-          {(layout==='chart'||layout==='key-stats') && (
-            <p className="mt-2 text-[10px] text-amber-400/70 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-1.5">
-              💡 {layout==='chart'
-                ? 'Include a number in each point (e.g. "72% pass rate") — bar heights auto-derive from these values.'
-                : 'Start each point with the key stat (e.g. "3× faster") — shown large on the card.'}
-            </p>
-          )}
-          {layout==='icon-grid' && (
-            <p className="mt-2 text-[10px] text-sky-400/70 bg-sky-500/10 border border-sky-500/20 rounded-lg px-3 py-1.5">
-              💡 Each point becomes an icon card. Best with 3-6 short, distinct concepts.
-            </p>
-          )}
-        </div>
-
-        {/* Layout + Theme - Inline horizontal layout */}
-        <div className="space-y-2 pt-1">
-          <div>
-            <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Layout</p>
-            <div className="flex gap-1 overflow-x-auto pb-1">
-              {LAYOUTS.map(l => (
-                <button key={l.id} onClick={()=>handleLayoutChange(l.id)}
-                  title={l.label}
-                  className={`flex-shrink-0 w-8 h-8 rounded-lg border transition-all flex items-center justify-center ${
-                    layout===l.id
-                      ?'border-indigo-500 bg-indigo-500/20 text-indigo-700 dark:text-white shadow-lg shadow-indigo-500/20'
-                      :'border-slate-200 dark:border-white/[0.10] bg-slate-100 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/25 hover:bg-slate-200 dark:hover:bg-slate-800/80 hover:text-slate-800 dark:hover:text-slate-200'
-                  }`}
-                  style={{
-                    transform: layout===l.id ? 'translateZ(4px) perspective(600px)' : 'none',
-                    textShadow: layout===l.id ? '0 2px 4px rgba(0,0,0,0.3)' : 'none',
-                  }}>
-                  <div className="text-sm font-bold">{l.icon}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1.5">Theme</p>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {THEMES.map(th => (
-                <button key={th.id} onClick={async () => {
-                  setTheme(th.id)
-                  await saveContent()
-                  // If this scene has segments, apply theme to all of them
-                  if (segments && segments.length > 0) {
-                    try {
-                      const themeRes = await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ theme: th.id }),
-                      })
-                      if (themeRes.ok) {
-                        // Reload this specific scene to get updated segment designs
-                        const moduleScenesRes = await fetch(`/api/modules/${moduleId}/scenes`)
-                        if (moduleScenesRes.ok) {
-                          const allScenes = await moduleScenesRes.json()
-                          const updatedScene = allScenes.find(s => s.id === scene.id)
-                          if (updatedScene?.segments) {
-                            setSegments(updatedScene.segments)
-                            // Reload the current active segment with new design
-                            if (activeSegmentId) {
-                              const activeSegment = updatedScene.segments.find(s => s.id === activeSegmentId)
-                              if (activeSegment) {
-                                loadDesignIntoState(getSegmentDesign(activeSegment))
-                                // Refresh preview to show new theme
-                                setPreviewKey(k => k + 1)
-                              }
-                            } else {
-                              // No active segment, just refresh preview
-                              setPreviewKey(k => k + 1)
-                            }
-                          }
-                        }
-                      }
-                    } catch (e) { console.error('Failed to apply theme to segments:', e) }
-                  }
-                }}
-                  title={th.label}
-                  className={`flex-shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-lg border transition-all ${
-                    theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-lg shadow-indigo-500/15':'border-slate-200 dark:border-white/[0.10] bg-slate-100 dark:bg-slate-800/50 hover:border-slate-300 dark:hover:border-white/25 hover:bg-slate-200 dark:hover:bg-slate-800/80'}`}>
-                  <div className="w-4 h-4 rounded-full border border-slate-300 dark:border-white/30" style={{ backgroundColor: th.accent }}/>
-                  <span className={`text-xs font-medium whitespace-nowrap ${theme===th.id?'text-slate-900 dark:text-white':'text-slate-600 dark:text-slate-300'}`}>{th.label}</span>
-                  {theme===th.id && <span className="ml-0.5 text-slate-900 dark:text-white">✓</span>}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Segments mini-timeline (#32) — only scenes built from SceneSegment
-            rows show this (welcome scene's hook/content/.../recap, quiz
-            scene's one segment per question). Segment-less scenes keep using
-            the flat voice-script box above unchanged. */}
-        {segments.length > 0 && (
-          <div>
-            <p className="flex items-center gap-1.5 text-xs text-slate-500 mb-2">
-              <Layers className="w-3 h-3" /> Segments ({segments.length})
-            </p>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 mb-2">
-              {segments.map((seg, i) => (
-                <button key={seg.id} onClick={() => toggleSegment(seg.id)}
-                  title={seg.slideTitle ? `${seg.segmentType} — ${seg.slideTitle}` : seg.segmentType}
-                  className={`flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-all ${
-                    activeSegmentId === seg.id
-                      ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'
-                      : 'border-slate-200 dark:border-white/[0.06] bg-white dark:bg-slate-900/40 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/15'
-                  }`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${seg.ttsAudioUrl ? 'bg-emerald-400' : 'bg-slate-600'}`} />
-                  {/* Show WHAT the segment is about, not just its generic type —
-                      the welcome scene has two "content" segments (first and
-                      second main point) that were indistinguishable before. */}
-                  <span className="max-w-[130px] truncate">
-                    {i + 1}. {seg.slideTitle || seg.segmentType}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {segments.filter(s => s.id === activeSegmentId).map(seg => (
-              <div key={seg.id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/30 border border-slate-100 dark:border-white/[0.04]">
-              
-                {seg.slideTitle && (
-                  <p className="text-[10px] text-blue-600/80 dark:text-blue-400/80 uppercase tracking-widest mb-1.5 font-semibold">
-                    {seg.slideTitle}
-                  </p>
-                )}
-                <textarea
-                  value={segmentDrafts[seg.id] ?? seg.text}
-                  onChange={e => setSegmentDrafts(prev => ({ ...prev, [seg.id]: e.target.value }))}
-                  onBlur={() => handleSaveSegmentText(seg.id)}
-                  rows={4}
-                  placeholder="What the presenter says during this segment…"
-                  className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-2.5 text-xs text-slate-900 dark:text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
-                />
-                <div className="flex items-center gap-2 mt-2">
-                  <button onClick={() => handleRegenerateSegmentVoice(seg.id)} disabled={!!segmentBusy[seg.id]}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                      segmentBusy[seg.id]
-                        ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-500 dark:text-indigo-400 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-500 border-transparent text-white'
-                    }`}>
-                    {segmentBusy[seg.id] === 'voicing'
-                      ? <><Loader2 className="w-3 h-3 animate-spin" />Regenerating…</>
-                      : segmentBusy[seg.id] === 'saving'
-                      ? <><Loader2 className="w-3 h-3 animate-spin" />Saving…</>
-                      : <><RotateCcw className="w-3 h-3" />Regenerate Voice</>}
-                  </button>
-                  {!segmentBusy[seg.id] && seg.ttsAudioUrl && (
-                    <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400"><CheckCircle className="w-3 h-3" />Has voice</span>
-                  )}
-                  {segmentError[seg.id] && (
-                    <span className="flex items-center gap-1 text-[10px] text-red-500 dark:text-red-400"><AlertCircle className="w-3 h-3" />{segmentError[seg.id]}</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Generate */}
-        <div className="pt-1">
-          <Button onClick={handleGenerate} disabled={isGenerating} className="w-full" size="lg">
-            {isGenerating
-              ? <><Loader2 className="w-4 h-4 animate-spin"/>Generating slide image…</>
-              : scene.visualAssetUrl
-              ? <><RotateCcw className="w-4 h-4"/>Regenerate Slide Image</>
-              : <><Sparkles className="w-4 h-4"/>Generate Slide Image</>}
-          </Button>
-        </div>
-      </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Editable slide canvas (drag-to-reposition) ───────────────────────────────
-
-function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, onDeleteLayer, segments = [] }) {
-  const containerRef  = useRef(null)
-  const [activeDrag, setActiveDrag] = useState(null)
-  const [activeResize, setActiveResize] = useState(null)
-
-  const startDrag = (e, key) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!positions[key] || !containerRef.current) return  // safety guard
-    const rect = containerRef.current.getBoundingClientRect()
-    const drag = {
-      key,
-      startMX: e.clientX, startMY: e.clientY,
-      startPX: positions[key].x ?? 0, startPY: positions[key].y ?? 0,
-      rectW: rect.width || 1, rectH: rect.height || 1,
-    }
-    setActiveDrag(key)
-
-    const onMove = (ev) => {
-      const dx = ((ev.clientX - drag.startMX) / drag.rectW) * 100
-      const dy = ((ev.clientY - drag.startMY) / drag.rectH) * 100
-      onPositionChange(key, {
-        x: Math.max(0, Math.min(88, drag.startPX + dx)),
-        y: Math.max(0, Math.min(85, drag.startPY + dy)),
-      })
-    }
-    const onUp = () => {
-      setActiveDrag(null)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      onDragEnd?.()
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  // Resize a text layer in place — drag the corner handle to scale the text
-  // up/down without moving it (separate from startDrag, which moves it).
-  const startResize = (e, key) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!positions[key] || !containerRef.current) return
-    const rect = containerRef.current.getBoundingClientRect()
-    const startScale = positions[key].scale ?? 1
-    const startMX = e.clientX, startMY = e.clientY
-    setActiveResize(key)
-
-    const onMove = (ev) => {
-      const dx = (ev.clientX - startMX) / (rect.width || 1)
-      const dy = (ev.clientY - startMY) / (rect.height || 1)
-      const delta = (dx + dy) / 2 * 2.2 // diagonal drag distance → scale delta
-      const next = Math.max(0.5, Math.min(2.2, startScale + delta))
-      onPositionChange(key, { scale: next })
-    }
-    const onUp = () => {
-      setActiveResize(null)
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      onDragEnd?.()
-    }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      data-slide-canvas
-      className="relative w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-white/[0.08] shadow-2xl select-none"
-      style={{ aspectRatio:'16/9', containerType:'inline-size', background:`linear-gradient(135deg,${theme.bg} 0%,${theme.bgGrad} 100%)` }}
-    >
-      {/* Geometric background (animated) */}
-      <div className={`absolute inset-0 ${motionCls}`} style={{ willChange:'transform', transformOrigin:'center center' }}>
-        <SlideBackground theme={theme} />
-      </div>
-
-      {/* ── Fixed header chrome — mirrors the rendered-video SVG exactly:        ──
-          module tag pill (replaces old literal "Scene N" text) + a continuous
-          progress bar instead of discrete scene numbering. Not draggable —
-          this is auto-positioned chrome in the real render, not a content layer. */}
-      <SlideHeaderChrome moduleTitle={moduleTitle} layout={layout} theme={theme}
-        sceneIndex={sceneIndex} totalScenes={totalScenes} />
-
-      {/* ── Timed text-cue overlay — key terms from the storyboard data,        ──
-          each one fading in/out in turn while it's "on screen", mirroring the
-          same timed reveal the render pipeline now bakes into the video. */}
-      {textCues.length > 0 && (
-        <div className="pa-cue-layer absolute left-1/2 bottom-[4%] -translate-x-1/2 flex flex-col items-center pointer-events-none z-10">
-          {(() => {
-            let t = 0.6
-            return textCues.slice(0, 5).map((cue, i) => {
-              const dur = Math.max(0.8, cue.duration_seconds || 1.5)
-              const delay = t
-              t += dur + 0.3
-              return (
-                <span key={i} className="pa-cue absolute px-3 py-1.5 rounded-lg text-sm font-semibold whitespace-nowrap"
-                  style={{
-                    animationDelay: `${delay}s`, animationDuration: `${dur}s`,
-                    background: theme.isDark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.85)',
-                    color: theme.accent, border: `1px solid ${theme.accent}55`,
-                  }}>
-                  {cue.text}
-                </span>
-              )
-            })
-          })()}
-        </div>
-      )}
-
-      {/* ── Draggable: LOGO ─────────────────────────────────────── */}
-      {showLogo && (
-        <DraggableLayer layerKey="logo" pos={positions.logo} width={LAYER_WIDTHS.logo}
-          isActive={activeDrag==='logo'} label="GVSU Logo" onMouseDown={startDrag}
-          onDelete={onDeleteLayer}>
-          <div className="pa-logo">
-            <GVSULogoSVG isDark={theme.isDark} />
-          </div>
-        </DraggableLayer>
-      )}
-
-      {/* ── Draggable: IMAGE / FIGURE ────────────────────────────── */}
-      {imageUrl && positions.image && (
-        <DraggableLayer layerKey="image" pos={positions.image} width={imageWidth}
-          isActive={activeDrag==='image'} label="Image" onMouseDown={startDrag}
-          onDelete={onDeleteLayer}>
-          <SlideImage url={imageUrl} shape={imageShape} />
-        </DraggableLayer>
-      )}
-
-      {/* ── Draggable + Resizable: TITLE ────────────────────────── */}
-      <DraggableLayer layerKey="title" pos={positions.title} width={LAYER_WIDTHS.title}
-        isActive={activeDrag==='title'} isResizing={activeResize==='title'} label="Title"
-        onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-        <TitleLayer title={title} layout={layout} theme={theme} />
-      </DraggableLayer>
-
-      {/* ── Draggable + Resizable: SUBTITLE (Key Insight) ────────── */}
-      {subtitle && (
-        <DraggableLayer layerKey="subtitle" pos={positions.subtitle} width={LAYER_WIDTHS.subtitle}
-          isActive={activeDrag==='subtitle'} isResizing={activeResize==='subtitle'} label="Key Insight"
-          onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-          <SubtitleLayer subtitle={subtitle} layout={layout} theme={theme} />
-        </DraggableLayer>
-      )}
-
-      {/* ── Draggable + Resizable: CONTENT BLOCK ─────────────────── */}
-      <DraggableLayer layerKey="content" pos={positions.content} width={LAYER_WIDTHS.content}
-        isActive={activeDrag==='content'} isResizing={activeResize==='content'} label="Content"
-        onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-        <ContentLayer layout={layout} bullets={bullets} subtitle={subtitle} theme={theme} segments={segments} />
-      </DraggableLayer>
-
-      {/* Presenter avatar — shows the actually-selected avatar's thumbnail
-          (set in Avatar Studio / Casting Settings) in the bottom-right corner,
-          so this preview matches who will really appear in the rendered video.
-          Falls back to a generic placeholder until an avatar is chosen. */}
-      <div
-        className="pa-avatar-zone absolute pointer-events-none overflow-hidden"
-        style={{
-          bottom: '2%', right: '1.5%',
-          width: '22%', height: '38%',
-          border: avatarImageUrl ? '1.5px solid rgba(255,255,255,0.35)' : '1.5px dashed rgba(255,255,255,0.25)',
-          borderRadius: '10px',
-          background: avatarImageUrl ? '#0f172a' : 'rgba(0,0,0,0.18)',
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center',
-          gap: '4%',
-          zIndex: 5,
-        }}
-      >
-        {avatarImageUrl ? (
-          <img src={avatarImageUrl} alt="Presenter avatar" className="w-full h-full object-cover" />
-        ) : (
-          <>
-            <svg viewBox="0 0 24 24" style={{ width:'18%', opacity:0.35, fill:'none', stroke:'white', strokeWidth:1.5 }}>
-              <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-            </svg>
-            <span style={{ color:'rgba(255,255,255,0.35)', fontSize:'clamp(5px,1.06cqw,14px)', fontWeight:600, textAlign:'center', lineHeight:1.3 }}>
-              PRESENTER<br/>AVATAR
-            </span>
-          </>
-        )}
-      </div>
-
-      {/* Bottom accent */}
-      <div className="absolute bottom-0 left-0 right-0 pointer-events-none"
-        style={{ height:'0.4%', background:`linear-gradient(to right,${theme.accent},${theme.accent}00 70%)` }} />
-    </div>
-  )
-}
-
-// ─── Fixed header chrome (module pill + progress bar) ────────────────────────
-// Mirrors generateSceneAsset.ts's buildSlide() header exactly so the editor
-// preview matches the actual rendered video instead of just approximating it.
-
-function SlideHeaderChrome({ moduleTitle, layout, theme, sceneIndex, totalScenes }) {
-  const isHero = layout === 'title-hero'
-  const pct = Math.min(1, (sceneIndex + 1) / Math.max(totalScenes, 1))
-  const label = (moduleTitle || '').toUpperCase().slice(0, 40)
-
-  const progressBar = (
-    <div className="absolute pointer-events-none" style={{ top: '1.5%', right: '4%', width: '16%' }}>
-      <div style={{ height: 4, borderRadius: 2, background: theme.accent, opacity: 0.22 }} />
-      <div style={{
-        position: 'absolute', top: 0, left: 0, height: 4, borderRadius: 2,
-        width: `${pct * 100}%`, background: theme.accent,
-        transition: 'width 0.3s ease',
-      }} />
-    </div>
-  )
-
-  if (!label) return progressBar
-
-  return (
-    <>
-      <div
-        className="absolute pointer-events-none flex items-center justify-center"
-        style={{
-          top: '1.5%', left: isHero ? '50%' : '5%',
-          transform: isHero ? 'translateX(-50%)' : 'none',
-          padding: '0.6% 1.6%',
-          borderRadius: 999,
-          background: isHero ? 'transparent' : `${theme.accent}1A`,
-          border: isHero ? 'none' : `1px solid ${theme.accent}55`,
-        }}
-      >
-        <span style={{
-          color: theme.accent, fontSize: FS(7, 0.95, 13), fontWeight: 700,
-          letterSpacing: '0.12em', whiteSpace: 'nowrap',
-        }}>
-          {label}
-        </span>
-      </div>
-      {progressBar}
-    </>
-  )
-}
-
-// ─── Draggable layer wrapper ──────────────────────────────────────────────────
-
-function DraggableLayer({ layerKey, pos, width, isActive, isResizing, label, onMouseDown, onResizeMouseDown, onDelete, children }) {
-  const scale = pos.scale ?? 1
-  const showHandle = !!onResizeMouseDown
-  return (
-    <div
-      className="pa-drag-layer absolute"
-      onMouseDown={(e) => onMouseDown(e, layerKey)}
-      style={{
-        left: `${pos.x}%`,
-        top:  `${pos.y}%`,
-        width: `${width}%`,
-        cursor: isActive ? 'grabbing' : 'grab',
-        userSelect: 'none',
-        zIndex: (isActive || isResizing) ? 200 : 10,
-      }}
-    >
-      {/* Tooltip label */}
-      <div className="pa-drag-label absolute -top-6 left-0 hidden items-center gap-1 bg-blue-500 text-white px-2 py-0.5 rounded text-[8px] font-bold whitespace-nowrap z-50 pointer-events-none shadow-lg">
-        <Move style={{ width:8, height:8 }} /> {label} · drag corner to resize
-      </div>
-      {/* Selection ring */}
-      <div className={`pa-drag-ring absolute inset-0 pointer-events-none rounded transition-all ${
-        (isActive || isResizing) ? 'outline outline-2 outline-offset-[3px] outline-blue-400 bg-blue-400/5' : ''
-      }`} />
-      {/* Scaled content — transform-origin top-left so position (x,y) stays the drag anchor */}
-      <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
-        {children}
-      </div>
-      {/* Delete button — top-right corner, removes this layer from the slide */}
-      {onDelete && (
-        <button
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); onDelete(layerKey) }}
-          title={`Remove ${label}`}
-          className="pa-drag-label absolute hidden items-center justify-center rounded-full bg-red-500 hover:bg-red-400 shadow-lg"
-          style={{
-            width: 14, height: 14,
-            right: -7, top: -7,
-            cursor: 'pointer',
-            display: isActive ? 'flex' : undefined,
-          }}
-        >
-          <svg viewBox="0 0 24 24" style={{ width: 8, height: 8 }} fill="none" stroke="white" strokeWidth="3">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-      )}
-      {/* Resize handle — bottom-right corner, drag to scale text in place */}
-      {showHandle && (
-        <div
-          onMouseDown={(e) => onResizeMouseDown(e, layerKey)}
-          title="Drag to resize text"
-          className="pa-drag-label absolute hidden items-center justify-center rounded-full bg-blue-500 hover:bg-blue-400 shadow-lg"
-          style={{
-            width: 14, height: 14,
-            right: -7, bottom: -7,
-            cursor: 'nwse-resize',
-            display: isActive || isResizing ? 'flex' : undefined,
-          }}
-        >
-          <svg viewBox="0 0 24 24" style={{ width: 8, height: 8 }} fill="none" stroke="white" strokeWidth="3">
-            <path d="M21 15 15 21M21 8 8 21" />
-          </svg>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Geometric background SVG ─────────────────────────────────────────────────
-
-function SlideBackground({ theme }) {
-  // Shapes are spread across the *whole* frame (not just corners) so zoom/pan/
-  // ken-burns motion is clearly visible no matter which part of the slide
-  // your eye is on — sparse corner-only decoration made every motion style
-  // look almost identical since most of the frame never changed.
-  return (
-    <svg className="absolute inset-0 w-full h-full" viewBox="0 0 1280 720"
-      preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="1200" cy="-60" r="380" fill={theme.accent} fillOpacity="0.07" />
-      <circle cx="-60"  cy="780" r="300" fill={theme.accent} fillOpacity="0.05" />
-      <circle cx="900"  cy="650" r="90"  fill={theme.accent} fillOpacity="0.06" />
-      <circle cx="200"  cy="120" r="160" fill={theme.accent} fillOpacity="0.05" />
-      <circle cx="640"  cy="380" r="240" fill={theme.accent} fillOpacity="0.035" />
-      <line x1="0" y1="680" x2="1280" y2="680" stroke={theme.accent} strokeOpacity="0.10" strokeWidth="1" />
-      <line x1="0" y1="40"  x2="1280" y2="40"  stroke={theme.accent} strokeOpacity="0.07" strokeWidth="1" />
-      <rect x="0" y="0" width="4"  height="200" fill={theme.accent} fillOpacity="0.70" rx="2" />
-      <rect x="0" y="0" width="80" height="2"   fill={theme.accent} fillOpacity="0.35" rx="1" />
-      {[0,1,2,3].map(r=>[0,1,2,3].map(c=>(
-        <circle key={`tr-${r}-${c}`} cx={980+c*28} cy={50+r*28} r="2" fill={theme.accent} fillOpacity="0.18" />
-      )))}
-      {[0,1,2].map(r=>[0,1,2,3,4].map(c=>(
-        <circle key={`bl-${r}-${c}`} cx={60+c*26} cy={600+r*26} r="2" fill={theme.accent} fillOpacity="0.14" />
-      )))}
-    </svg>
-  )
-}
-
-// ─── GVSU Logo ────────────────────────────────────────────────────────────────
-// Uses /gvsu-logo.png (the actual circular GV emblem — blue mark on black bg).
-//
-// Dark slides  → grayscale + max-brightness makes the mark white,
-//                mix-blend-mode:screen removes the black background.
-// Light slide  → white mark on a GVSU-blue pill (filter:invert removes
-//                the black bg inside the blue container).
-
-const GVSU_BLUE = '#0032A0'
-
-function GVSULogoSVG({ isDark = true }) {
-  if (isDark) {
-    // Dark themes: invert FIRST so the PNG's white background becomes black —
-    // then screen-blend makes black fully transparent on the dark slide, and
-    // only the (now light) logo mark shows. The old grayscale+brightness(20)
-    // pushed EVERYTHING to white, which is what rendered a solid white box.
-    return (
-      <img
-        src="/gvsu-logo.png"
-        alt="GVSU"
-        draggable={false}
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          filter: 'invert(1) grayscale(1) brightness(1.7)',
-          mixBlendMode: 'screen',
-        }}
-      />
-    )
-  }
-  // Light theme: multiply-blend makes the PNG's white background invisible on
-  // light slides while keeping the logo's real brand colors
-  return (
-    <img
-      src="/gvsu-logo.png"
-      alt="GVSU"
-      draggable={false}
-      style={{
-        width: '100%', height: 'auto', display: 'block',
-        mixBlendMode: 'multiply',
-      }}
-    />
-  )
-}
-
-// ─── Slide image / figure ─────────────────────────────────────────────────────
-
-function SlideImage({ url, shape }) {
-  const radius = shape === 'circle' ? '50%' : shape === 'rounded' ? '10%' : '4px'
-  return (
-    <img
-      src={url}
-      alt=""
-      draggable={false}
-      className="pa-icon"
-      style={{
-        width: '100%',
-        height: 'auto',
-        display: 'block',
-        borderRadius: radius,
-        objectFit: 'cover',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
-      }}
-      onError={e => { e.currentTarget.style.opacity = '0.25' }}
-    />
-  )
-}
-
-// ─── Title / subtitle as separate layers ─────────────────────────────────────
-
-function TitleLayer({ title, layout, theme }) {
-  const isHero  = layout === 'title-hero'
-  const isQuote = layout === 'quote'
-  return (
-    <h2
-      className="pa-title font-bold"
-      style={{
-        color:      theme.text,
-        fontSize:   isHero  ? FS(16,3.2,50) : isQuote ? FS(7,1.0,13) : FS(12,2.4,34),
-        fontWeight: isHero  ? 900            : isQuote ? 700           : 700,
-        lineHeight: 1.2,
-        letterSpacing: isHero ? '-0.01em' : isQuote ? '0.1em' : '-0.005em',
-        textTransform: isQuote ? 'uppercase' : 'none',
-        textAlign:  (isHero || layout==='quote') ? 'center' : 'left',
-        textShadow: theme.isDark ? '0 2px 12px rgba(0,0,0,0.5)' : 'none',
-        opacity:    isQuote ? 0.75 : 1,
-      }}
-    >
-      {title}
-    </h2>
-  )
-}
-
-function SubtitleLayer({ subtitle, layout, theme }) {
-  const isHero = layout === 'title-hero'
-  return (
-    <p
-      className="pa-sub"
-      style={{
-        color:      theme.accent,
-        fontSize:   isHero ? FS(9,1.4,20) : FS(8,1.15,16),
-        fontWeight: 600,
-        lineHeight: 1.45,
-        textAlign:  (isHero || layout==='quote') ? 'center' : 'left',
-        borderLeft: (!isHero && layout!=='quote' && layout!=='summary') ? `2px solid ${theme.accent}` : 'none',
-        paddingLeft:(!isHero && layout!=='quote' && layout!=='summary') ? '3%' : 0,
-      }}
-    >
-      {subtitle}
-    </p>
-  )
-}
-
-// ─── Content layer (layout-specific, no title/subtitle) ──────────────────────
-
-function ContentLayer({ layout, bullets, subtitle, theme, segments }) {
-  switch (layout) {
-    case 'title-hero':  return <TitleHeroContent   theme={theme} />
-    case 'bullets':     return <BulletsContent     bullets={bullets} theme={theme} />
-    case 'two-column':  return <TwoColumnContent   bullets={bullets} theme={theme} />
-    case 'icon-grid':   return <IconGridContent    bullets={bullets} theme={theme} />
-    case 'key-stats':   return <KeyStatsContent    bullets={bullets} theme={theme} />
-    case 'chart':       return <ChartContent       bullets={bullets} theme={theme} />
-    case 'definition':  return <DefinitionContent  bullets={bullets} theme={theme} />
-    case 'quote':       return <QuoteContent       bullets={bullets} theme={theme} />
-    case 'summary':     return <SummaryContent     bullets={bullets} theme={theme} />
-    case 'roadmap':     return <RoadmapContent     segments={segments} theme={theme} />
-    default:            return <BulletsContent     bullets={bullets} theme={theme} />
-  }
-}
-
-// ─── Layout content renderers ─────────────────────────────────────────────────
-
-function TitleHeroContent({ theme }) {
-  return (
-    <div className="pa-icon flex items-center gap-[2%]">
-      <div style={{ width:'6%', height:'2px', borderRadius:1, background:theme.accent }} />
-      <div style={{ width:'4%', height:'2px', borderRadius:1, background:theme.accent, opacity:0.5 }} />
-    </div>
-  )
-}
-
-function BulletsContent({ bullets, theme }) {
-  const validBullets = bullets.filter(b => b.text)
-  const count = validBullets.length || 1
-  // Spread bullets to fill available height — more gap when fewer bullets
-  const gapPct = count <= 3 ? '3.5%' : count <= 4 ? '2.5%' : '1.6%'
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:gapPct }}>
-      {validBullets.slice(0,6).map((b,i) => (
-        <div key={i} className={`pa-b${i} flex items-start`} style={{ gap:'2%', marginLeft:b.level===2?'5%':0 }}>
-          <div style={{
-            flexShrink:0, marginTop:'0.4%',
-            width:  b.level===1 ? FS(10,1.5,18) : FS(8,1.1,13),
-            height: b.level===1 ? FS(10,1.5,18) : FS(8,1.1,13),
-            borderRadius: b.level===1 ? '3px' : '50%',
-            background: b.level===1 ? theme.accent : theme.accent+'50',
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>
-            {b.level===1 && <span style={{ color:'#fff', fontSize:FS(6,0.8,10), fontWeight:700 }}>▸</span>}
-          </div>
-          <p style={{
-            color:      b.level===2 ? theme.textSub : theme.text,
-            fontSize:   b.level===2 ? FS(8,1.15,15) : FS(9,1.35,18),
-            fontWeight: b.level===1 ? 600 : 400,
-            lineHeight: 1.5,
-          }}>
-            {b.text}
-          </p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function TwoColumnContent({ bullets, theme }) {
-  const half = Math.ceil(bullets.length / 2)
-  const left = bullets.slice(0, half)
-  const right = bullets.slice(half)
-  return (
-    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'4%' }}>
-      <div style={{ borderRadius:6, padding:'4% 3%', background:`${theme.accent}14`, border:`1px solid ${theme.accent}30` }}>
-        {left.map((b,i) => (
-          <div key={i} className={`pa-b${i} flex items-start mb-[2.5%]`} style={{ gap:'3%' }}>
-            <span style={{ color:theme.accent, fontSize:FS(6,0.9,12), flexShrink:0, marginTop:'0.4%', fontWeight:700 }}>▸</span>
-            <p style={{ color:theme.text, fontSize:FS(7,1.05,14), lineHeight:1.4, fontWeight:500 }}>{b.text}</p>
-          </div>
-        ))}
-      </div>
-      <div style={{ borderRadius:6, padding:'4% 3%', background:`${theme.accent}08`, border:`1px solid ${theme.accent}20` }}>
-        {right.map((b,i) => (
-          <div key={i} className={`pa-b${half+i} flex items-start mb-[2.5%]`} style={{ gap:'3%' }}>
-            <span style={{ color:theme.textSub, fontSize:FS(6,0.9,12), flexShrink:0, marginTop:'0.4%' }}>◦</span>
-            <p style={{ color:theme.textSub, fontSize:FS(7,1.05,14), lineHeight:1.4 }}>{b.text}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function IconGridContent({ bullets, theme }) {
-  const items = bullets.slice(0,6)
-  const cols  = items.length <= 3 ? items.length : Math.min(3, Math.ceil(items.length/2))
-  return (
-    <div style={{ display:'grid', gridTemplateColumns:`repeat(${cols},1fr)`, gap:'2%' }}>
-      {items.map((b,i) => {
-        const Icon = pickIconAt(b.text, i)
-        return (
-          <div key={i} className={`pa-card${Math.min(i,4)}`} style={{
-            borderRadius:6, padding:'4% 3%',
-            background: `${theme.accent}${i%2===0?'14':'0C'}`,
-            border: `1px solid ${theme.accent}${i%2===0?'35':'20'}`,
-            display:'flex', flexDirection:'column', alignItems:'flex-start', gap:'5%',
-          }}>
-            <div style={{ color:theme.accent, opacity:0.85 }}>
-              <Icon style={{ width:FS(12,1.8,24), height:'auto' }} />
-            </div>
-            <p style={{ color:theme.text, fontSize:FS(6,0.95,13), lineHeight:1.4, fontWeight:500 }}>
-              {b.text.length>50 ? b.text.slice(0,50)+'…' : b.text}
-            </p>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function KeyStatsContent({ bullets, theme }) {
-  const stats = extractStats(bullets)
-  return (
-    <div style={{ display:'flex', gap:'3%', alignItems:'stretch' }}>
-      {stats.map((s,i) => {
-        const Icon = pickIconAt(s.label, i)
-        return (
-          <div key={i} className={`pa-card${i}`} style={{
-            flex:1, borderRadius:8, padding:'4% 3%',
-            background: i===0 ? `linear-gradient(135deg,${theme.accent}25,${theme.accent}10)` : `${theme.accent}0D`,
-            border: `1px solid ${theme.accent}${i===0?'50':'25'}`, textAlign:'center',
-          }}>
-            {/* Show real number if it exists, otherwise a topic icon */}
-            {s.hasNumber ? (
-              <p style={{ color:theme.accent, fontSize:FS(18,3.5,52), fontWeight:800, lineHeight:1, letterSpacing:'-0.02em', marginBottom:'4%' }}>
-                {s.stat}
+            <div className="p-5 overflow-y-auto">
+              <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+                {scene.scriptContent}
               </p>
-            ) : (
-              <div style={{ color:theme.accent, display:'flex', justifyContent:'center', marginBottom:'4%' }}>
-                <Icon style={{ width:FS(14,2.2,30), height:'auto' }} />
-              </div>
-            )}
-            <p style={{ color:i===0?theme.text:theme.textSub, fontSize:FS(6,0.9,12), lineHeight:1.4, fontWeight:i===0?500:400 }}>
-              {s.label.slice(0,45)}
-            </p>
+            </div>
+            <div className="px-5 py-2.5 border-t border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-slate-800/60 flex-shrink-0">
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                This is what's spoken aloud — the slide's title, key insight, and points are written separately to be concise and professional, not a copy of this text.
+              </p>
+            </div>
           </div>
-        )
-      })}
-    </div>
-  )
-}
-
-function ChartContent({ bullets, theme }) {
-  const data   = extractChartData(bullets)
-  if (!data.length) return null
-  const maxVal = Math.max(...data.map(d=>d.value), 1)
-  const chartW = 500, chartH = 180
-  const barW   = Math.min(60,(chartW-60)/data.length-10)
-  const gap    = (chartW-40-data.length*barW)/(data.length+1)
-  return (
-    <svg viewBox={`0 0 ${chartW} ${chartH+44}`} style={{ width:'100%', height:'auto', overflow:'visible' }}>
-      {[0.25,0.5,0.75,1].map(f=>(
-        <g key={f}>
-          <line x1="30" y1={chartH-f*chartH*0.85} x2={chartW-10} y2={chartH-f*chartH*0.85}
-            stroke={theme.accent} strokeOpacity="0.12" strokeWidth="1" strokeDasharray="4 4" />
-          <text x="24" y={chartH-f*chartH*0.85+4} textAnchor="end" fill={theme.textSub} style={{ fontSize:'9px', fontFamily:'sans-serif' }}>
-            {Math.round(f*maxVal)}
-          </text>
-        </g>
-      ))}
-      <line x1="30" y1={chartH} x2={chartW-10} y2={chartH} stroke={theme.accent} strokeOpacity="0.25" strokeWidth="1.5"/>
-      {data.map((d,i)=>{
-        const barH = Math.max((d.value/maxVal)*chartH*0.85,4)
-        const x    = 40+gap*(i+1)+i*barW
-        const isTop = i===data.reduce((mi,dd,ii)=>dd.value>data[mi].value?ii:mi,0)
-        return (
-          <g key={i}>
-            <rect x={x+2} y={chartH-barH+2} width={barW} height={barH} fill="rgba(0,0,0,0.15)" rx="3"/>
-            <rect x={x} y={chartH-barH} width={barW} height={barH}
-              fill={isTop?theme.accent:theme.accent+'aa'} rx="3"
-              className="pa-bar" style={{ animationDelay:`${0.3+i*0.1}s` }}/>
-            {d.valueLabel && (
-              <text x={x+barW/2} y={chartH-barH-5} textAnchor="middle" fill={theme.accent}
-                style={{ fontSize:'9px', fontWeight:700, fontFamily:'sans-serif' }}>{d.valueLabel}</text>
-            )}
-            <foreignObject x={x-4} y={chartH+6} width={barW+8} height={34}>
-              <div xmlns="http://www.w3.org/1999/xhtml"
-                style={{ fontSize:'8px', textAlign:'center', color:theme.textSub, lineHeight:1.3, wordBreak:'break-word', fontFamily:'sans-serif' }}>
-                {d.label}
-              </div>
-            </foreignObject>
-          </g>
-        )
-      })}
-    </svg>
-  )
-}
-
-function DefinitionContent({ bullets, theme }) {
-  // bullets[0] = definition, rest = examples
-  const definition = bullets[0]?.text || ''
-  const examples   = bullets.slice(1)
-  return (
-    <div>
-      {definition && (
-        <div className="pa-b0 mb-[2%]" style={{
-          borderLeft:`3px solid ${theme.accent}`, paddingLeft:'3%',
-          paddingTop:'1%', paddingBottom:'1%',
-          background:`${theme.accent}10`, borderRadius:'0 6px 6px 0',
-        }}>
-          <p style={{ color:theme.text, fontSize:FS(8,1.2,17), lineHeight:1.55, fontStyle:'italic' }}>
-            {definition}
-          </p>
         </div>
       )}
-      {examples.length>0 && (
-        <>
-          <p style={{ color:theme.accent, fontSize:FS(6,0.85,11), fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:'1.5%', marginTop:'2%' }}>
-            EXAMPLES
-          </p>
-          {examples.slice(0,3).map((b,i)=>(
-            <div key={i} className={`pa-b${i+1} flex items-start`} style={{ gap:'2%', marginBottom:'1%' }}>
-              <span style={{ color:theme.accent, fontSize:FS(6,0.9,12), flexShrink:0, marginTop:'0.3%' }}>→</span>
-              <p style={{ color:theme.textSub, fontSize:FS(7,1.05,14), lineHeight:1.4 }}>{b.text}</p>
-            </div>
-          ))}
-        </>
-      )}
-    </div>
-  )
-}
 
-function QuoteContent({ bullets, theme }) {
-  const quoteText = bullets[0]?.text || ''
-  return (
-    <div style={{ textAlign:'center' }}>
-      <div className="pa-icon" style={{ color:theme.accent, fontSize:FS(30,5.5,80), lineHeight:0.7, opacity:0.45, marginBottom:'3%', fontFamily:'Georgia,serif' }}>
-        "
+      <div className="flex-1 overflow-auto p-2 sm:p-3 lg:p-8 flex items-center justify-center">
+        <div
+          ref={canvasRef}
+          className="relative w-full max-w-4xl lg:max-w-5xl shadow-2xl rounded-lg overflow-hidden select-none"
+          style={{ aspectRatio: '16/9', backgroundColor: template.colors.bg, color: template.colors.text }}
+        >
+          {previewMode ? (
+            /* ── Preview: read-only rendered look, same data as the editor.
+                Each content block independently positioned on canvas. ── */
+            <>
+              <div className={`absolute pb-0 ${isHeroLayout ? 'text-center' : ''}`} style={{ ...titleBoxStyle, padding: 'clamp(1rem, 4vw, 2rem) clamp(1rem, 4vw, 2rem) 0 clamp(1rem, 4vw, 2rem)' }}>
+                <div className="rounded-full mb-2" style={{ height: 'clamp(2px, 0.3vw, 3px)', width: 'clamp(24px, 3vw, 40px)', backgroundColor: template.colors.accent, marginLeft: isHeroLayout ? 'auto' : 0, marginRight: isHeroLayout ? 'auto' : 0 }} />
+                <h3 className="font-bold tracking-tight leading-tight" style={{ color: template.colors.text, fontSize: 'clamp(1.4rem, 3.5vw, 1.75rem)', wordBreak: 'break-word', lineHeight: '1.2' }}>
+                  {slideData.title || 'Untitled Slide'}
+                </h3>
+              </div>
+              {slideData.subtitle && (
+                <div className={`absolute ${isHeroLayout ? 'text-center' : ''}`} style={{ ...subtitleBoxStyle, padding: 'clamp(0.75rem, 2.5vw, 1.5rem) clamp(1rem, 4vw, 2rem) 0 clamp(1rem, 4vw, 2rem)' }}>
+                  <p
+                    className={`font-medium inline-block rounded-full`}
+                    style={{ color: template.colors.accent, backgroundColor: `${template.colors.accent}15`, fontSize: 'clamp(0.8rem, 2vw, 0.95rem)', padding: 'clamp(0.3rem, 1vw, 0.6rem) clamp(0.6rem, 1.5vw, 1rem)', wordBreak: 'break-word' }}
+                  >
+                    {slideData.subtitle}
+                  </p>
+                </div>
+              )}
+              {/* Each content block independently positioned in preview mode */}
+              {slideData.contentBlocks.map((block, blockIdx) => {
+                const blockStyle = getContentBlockStyle(block, blockIdx, false)
+                // Use per-block cadreStyle instead of global
+                const applyFrame = block.cadreStyle && block.cadreStyle !== 'none'
+                const frameClass = block.cadreStyle === 'subtle' ? 'rounded-md' : block.cadreStyle === 'bold' ? 'rounded-lg border-2' : block.cadreStyle === 'rounded' ? 'rounded-3xl' : ''
+                
+                return (
+                  <div
+                    key={blockIdx}
+                    className={`${isHeroLayout ? 'flex flex-col items-center text-center' : ''}`}
+                    style={{ ...blockStyle, padding: 'clamp(0.5rem, 2vw, 1.5rem) clamp(0.5rem, 3vw, 2rem)' }}
+                  >
+                    <div className={`px-3 py-2 ${applyFrame ? frameClass : ''}`} style={{ 
+                      backgroundColor: applyFrame ? `${template.colors.text}08` : 'transparent',
+                      ...(applyFrame && { borderLeft: `2px solid ${template.colors.accent}` }),
+                      ...(block.cadreStyle === 'bold' && { borderColor: template.colors.accent })
+                    }}>
+                      {block.text && (
+                        <p className="font-semibold leading-snug" style={{ color: template.colors.text, fontSize: 'clamp(0.65rem, 1.2vw, 0.8rem)' }}>
+                          {block.text}
+                        </p>
+                      )}
+                      {block.showDetails && block.keyPoints.filter(Boolean).length > 0 && (
+                        <div className="mt-1 space-y-0.5">
+                          {block.keyPoints.filter(Boolean).map((kp, kpIdx) => (
+                            <p key={kpIdx} className="opacity-75 flex items-start gap-1.5" style={{ color: template.colors.text, fontSize: 'clamp(0.6rem, 1rem, 0.75rem)' }}>
+                              <span className="opacity-50 flex-shrink-0 mt-0.5">•</span> <span>{kp}</span>
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </>
+          ) : (
+          /* ── Edit mode: title/subtitle/content are already pre-filled from
+              the generated script — inputs let the user tweak them, they
+              never start blank. Each of the three has its OWN drag handle so
+              they move independently (#drop everything separately, not
+              together) — title, key insight, and content blocks are three
+              separate absolutely-positioned regions on the canvas. ── */
+          <>
+          <div className={`absolute group rounded-lg transition-shadow ${isHeroLayout ? 'text-center' : ''} ${dragTarget === 'title' ? 'ring-2 ring-indigo-400/60 bg-indigo-500/5' : ''}`} style={{ ...titleBoxStyle, padding: 'clamp(1rem, 4vw, 2rem) clamp(1rem, 4vw, 2rem) 0 clamp(1rem, 4vw, 2rem)' }}>
+            {/* Drag handle */}
+            <div
+              className={`absolute -top-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/80 text-white text-[10px] transition-opacity z-10 ${dragTarget === 'title' ? 'opacity-100 cursor-grabbing' : 'opacity-0 group-hover:opacity-100 cursor-grab'}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const rect = canvasRef.current.getBoundingClientRect()
+                titleDragOriginRef.current = {
+                  mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                  mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                  startX: slideData.titleX,
+                  startY: slideData.titleY,
+                }
+                setDragTarget('title')
+              }}
+              title="Drag to move the title"
+            >
+              <GripHorizontal className="w-3 h-3" /> Move
+            </div>
+
+            <input
+              type="text"
+              value={slideData.title}
+              onChange={(e) => updateSlide(prev => ({ ...prev, title: e.target.value }))}
+              className={`font-bold bg-transparent border-b-2 border-transparent hover:border-white/20 focus:border-indigo-400 outline-none w-full`}
+              style={{ color: template.colors.text, fontSize: 'clamp(1.4rem, 3.5vw, 1.75rem)', wordBreak: 'break-word', lineHeight: '1.2' }}
+              placeholder="Slide Title"
+            />
+          </div>
+
+          {/* Key Insight — dragged independently from title */}
+          <div className={`absolute group rounded-lg transition-shadow ${isHeroLayout ? 'text-center' : ''} ${dragTarget === 'subtitle' ? 'ring-2 ring-indigo-400/60 bg-indigo-500/5' : ''}`} style={{ ...subtitleBoxStyle, padding: 'clamp(0.75rem, 2.5vw, 1.5rem) clamp(1rem, 4vw, 2rem) 0 clamp(1rem, 4vw, 2rem)' }}>
+            {/* Drag handle */}
+            <div
+              className={`absolute -top-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/80 text-white text-[10px] transition-opacity z-10 ${dragTarget === 'subtitle' ? 'opacity-100 cursor-grabbing' : 'opacity-0 group-hover:opacity-100 cursor-grab'}`}
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const rect = canvasRef.current.getBoundingClientRect()
+                subtitleDragOriginRef.current = {
+                  mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                  mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                  startX: slideData.subtitleX,
+                  startY: slideData.subtitleY,
+                }
+                setDragTarget('subtitle')
+              }}
+              title="Drag to move the key insight"
+            >
+              <GripHorizontal className="w-3 h-3" /> Move
+            </div>
+
+            <input
+              type="text"
+              value={slideData.subtitle}
+              onChange={(e) => updateSlide(prev => ({ ...prev, subtitle: e.target.value }))}
+              className={`font-medium bg-transparent border-b border-transparent hover:border-white/20 focus:border-indigo-400 outline-none w-full`}
+              style={{ color: template.colors.accent, fontSize: 'clamp(0.8rem, 2vw, 0.95rem)', wordBreak: 'break-word' }}
+              placeholder="Key insight (short sentence)"
+            />
+          </div>
+
+          {/* Each content block is now independently draggable with its own position */}
+          {slideData.contentBlocks.map((block, blockIdx) => {
+            const isDragging = dragTarget && typeof dragTarget === 'object' && dragTarget.type === 'content-block' && dragTarget.index === blockIdx
+            const isSelected = selectedBlockIdx === blockIdx
+            const blockStyle = getContentBlockStyle(block, blockIdx, isDragging)
+
+            return (
+              <div
+                key={blockIdx}
+                className={`group rounded-lg transition-shadow ${isHeroLayout ? 'text-center' : ''} ${isDragging ? 'ring-2 ring-indigo-400/60 bg-indigo-500/5' : ''} ${isSelected ? 'ring-2 ring-amber-400/60 bg-amber-500/5' : ''}`}
+                style={{ ...blockStyle, padding: 'clamp(0.5rem, 2vw, 2rem) clamp(0.5rem, 3vw, 2.5rem)' }}
+              >
+                <div style={{ width: '100%' }}>
+                  <div className="space-y-2">
+                    <div
+                      className="group/block px-3 py-2"
+                      style={{ backgroundColor: isDragging ? `${template.colors.text}0D` : 'transparent', borderLeft: isDragging ? `3px solid ${template.colors.accent}` : 'none' }}
+                    >
+                      <div className="flex items-start gap-2">
+                        {/* Drag handle — inline with the text on the same row.
+                            Kept visible at a steady opacity (not hover-only)
+                            and colored with the template's TEXT color (always
+                            legible against the slide background, unlike the
+                            accent color which can wash out on some themes) so
+                            it's easy to find and grab on the first try. */}
+                        <div
+                          className={`flex items-center justify-center w-6 h-6 -ml-1 flex-shrink-0 select-none transition-opacity z-30 ${isDragging ? 'opacity-100 cursor-grabbing' : 'opacity-60 hover:opacity-100 cursor-grab'}`}
+                          style={{ color: template.colors.text }}
+                          onMouseDown={(e) => {
+                            e.preventDefault()
+                            const rect = canvasRef.current.getBoundingClientRect()
+                            contentBlockDragOriginsRef.current[blockIdx] = {
+                              mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                              mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                              startX: block.x,
+                              startY: block.y,
+                            }
+                            setDragTarget({ type: 'content-block', index: blockIdx })
+                          }}
+                          title="Drag to move this content point"
+                        >
+                          <GripHorizontal className="w-4 h-4" />
+                        </div>
+                        <textarea
+                          value={block.text}
+                          onChange={(e) => updateBlockText(blockIdx, e.target.value)}
+                          className="flex-1 font-semibold bg-transparent focus:outline-none resize-none"
+                          style={{ color: template.colors.text, fontSize: 'clamp(0.65rem, 1.2vw, 0.85rem)' }}
+                          placeholder="Content point"
+                          rows={1}
+                        />
+                        <button
+                          onClick={() => {
+                            setSelectedBlockIdx(isSelected ? null : blockIdx)
+                            setShowRightPanel(true)
+                          }}
+                          className="opacity-0 group-hover/block:opacity-100 text-xs text-indigo-400 hover:text-indigo-300 mt-1.5 transition-opacity"
+                          title="Edit frame style"
+                        >
+                          <Palette className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removeBlock(blockIdx)
+                          }}
+                          className="opacity-0 group-hover/block:opacity-100 text-xs text-red-400 hover:text-red-300 mt-1.5 transition-opacity"
+                          title="Delete this point"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="mt-1.5 space-y-1.5">
+                        {block.keyPoints.map((kp, kpIdx) => (
+                          <div key={kpIdx} className="flex items-center gap-2 group/kp">
+                            <span className="text-xs opacity-40">–</span>
+                            <input
+                              type="text"
+                              value={kp}
+                              onChange={(e) => updateKeyPoint(blockIdx, kpIdx, e.target.value)}
+                              className="flex-1 bg-transparent border-b border-transparent hover:border-white/20 focus:border-indigo-400 outline-none"
+                              style={{ color: template.colors.text, opacity: 0.85, fontSize: 'clamp(0.6rem, 1rem, 0.75rem)' }}
+                              placeholder="Nested key point"
+                            />
+                            <button
+                              onClick={() => removeKeyPoint(blockIdx, kpIdx)}
+                              className="opacity-0 group-hover/kp:opacity-100 text-[10px] text-red-400 hover:text-red-300"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => addKeyPoint(blockIdx)}
+                          className="text-xs opacity-0 group-hover/block:opacity-70 hover:!opacity-100 flex items-center gap-1 mt-1 transition-opacity"
+                          style={{ color: template.colors.accent }}
+                        >
+                          <Plus className="w-3 h-3" /> Add key point
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Empty state: nothing to drag/edit yet — make the next step obvious
+              instead of leaving the canvas looking broken/blank */}
+          {slideData.contentBlocks.length === 0 && (
+            <div
+              className="absolute rounded-xl border-2 border-dashed flex items-center justify-center text-center px-4"
+              style={{
+                left: `${contentMaxWidthPct / 2}%`,
+                top: '50%',
+                width: `${contentMaxWidthPct}%`,
+                transform: 'translate(-50%, -50%)',
+                minHeight: '20%',
+                borderColor: `${template.colors.accent}40`,
+                color: `${template.colors.text}80`,
+              }}
+            >
+              <p className="text-xs">No content points yet — click "Add content point" below to get started.</p>
+            </div>
+          )}
+
+          {/* Toned down to a small ghost pill, and anchored right after the
+              last content point's actual position (not a fixed bottom
+              offset) so it never sits on top of point text. */}
+          <button
+            onClick={addContentBlock}
+            className="absolute flex items-center gap-1 px-2.5 py-1 rounded-full border border-dashed text-[11px] font-medium opacity-60 hover:opacity-100 transition-opacity z-10"
+            style={{
+              color: template.colors.accent,
+              borderColor: `${template.colors.accent}50`,
+              left: isHeroLayout ? '50%' : `${contentMaxWidthPct / 2}%`,
+              top: `${addButtonTopPct}%`,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <Plus className="w-3 h-3" /> Add content point
+          </button>
+          </>
+          )}
+
+          {/* Responsive image (#5): independently resizable width/height —
+              can be stretched, not just uniformly scaled. Drag handles are
+              hidden in Preview mode — same image, just not editable there. */}
+          {slideData.imageUrl && (
+            <div
+              className={`absolute group ${previewMode ? '' : 'cursor-grab active:cursor-grabbing'} ${dragTarget === 'image' ? 'ring-2 ring-indigo-400 z-20' : ''}`}
+              style={{
+                left: `${slideData.imageX}%`,
+                top: `${slideData.imageY}%`,
+                width: `${slideData.imageWidth}%`,
+                height: `${slideData.imageHeight}%`,
+                transition: dragTarget === 'image' || resizeTarget === 'image-corner' ? 'none' : 'box-shadow 0.15s',
+              }}
+              onMouseDown={(e) => {
+                if (previewMode || e.button !== 0) return
+                e.preventDefault()
+                const rect = canvasRef.current.getBoundingClientRect()
+                imageDragOriginRef.current = {
+                  mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                  mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                  startX: slideData.imageX,
+                  startY: slideData.imageY,
+                }
+                setDragTarget('image')
+              }}
+            >
+              <img
+                src={slideData.imageUrl}
+                alt="Slide"
+                className={`w-full h-full object-cover rounded-lg border-2 transition-colors ${previewMode ? 'border-transparent' : 'border-white/20 group-hover:border-indigo-400'}`}
+                draggable={false}
+              />
+              {!previewMode && (
+                <>
+                  <div
+                    className="absolute -top-2 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/90 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                    <GripHorizontal className="w-3 h-3" /> Drag
+                  </div>
+                  <div
+                    className="absolute bottom-0 right-0 w-5 h-5 bg-indigo-500 rounded-tl cursor-se-resize hover:bg-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    onMouseDown={(e) => {
+                      e.stopPropagation()
+                      e.preventDefault()
+                      const rect = canvasRef.current.getBoundingClientRect()
+                      imageResizeOriginRef.current = {
+                        mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                        mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                        startWidth: slideData.imageWidth,
+                        startHeight: slideData.imageHeight,
+                      }
+                      setResizeTarget('image-corner')
+                    }}
+                    title="Drag to stretch/resize"
+                  >
+                    <Maximize2 className="w-2.5 h-2.5 text-white" />
+                  </div>
+                  <button
+                    onClick={() => updateSlide(prev => ({ ...prev, imageUrl: null }))}
+                    className="absolute top-0 right-0 bg-red-500 hover:bg-red-600 text-white p-1 rounded-bl opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Avatar Placeholder — direct manipulation on canvas (#2, #3),
+              center-anchored 9:16 box, positioned in far right corner with just border. */}
+          <div
+            className={`absolute flex items-center justify-center bg-transparent border-2 border-indigo-400 rounded-lg transition-colors ${previewMode ? '' : 'group hover:border-indigo-500'} ${dragTarget === 'avatar' ? 'ring-2 ring-indigo-300 z-20' : ''}`}
+            style={{
+              left: `${slideData.avatarX}%`,
+              top: `${slideData.avatarY}%`,
+              width: `${slideData.avatarWidth}%`,
+              aspectRatio: '9/16',
+              transform: 'translate(-50%, -50%)',
+              cursor: previewMode ? 'default' : dragTarget === 'avatar' ? 'grabbing' : 'grab',
+            }}
+            onMouseDown={(e) => {
+              if (previewMode || e.button !== 0) return
+              e.preventDefault()
+              const rect = canvasRef.current.getBoundingClientRect()
+              avatarDragOriginRef.current = {
+                mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                mouseYPct: ((e.clientY - rect.top) / rect.height) * 100,
+                startX: slideData.avatarX,
+                startY: slideData.avatarY,
+              }
+              setDragTarget('avatar')
+            }}
+          >
+            <div className="text-center pointer-events-none">
+              <div className="text-[10px] font-bold text-indigo-400">AVATAR</div>
+            </div>
+            {!previewMode && (
+              <div
+                className="absolute bottom-0 right-0 w-3 h-3 bg-indigo-400 rounded-tl cursor-se-resize hover:bg-indigo-500 opacity-60 hover:opacity-100 transition-opacity"
+                onMouseDown={(e) => {
+                  e.stopPropagation()
+                  e.preventDefault()
+                  const rect = canvasRef.current.getBoundingClientRect()
+                  avatarResizeOriginRef.current = {
+                    mouseXPct: ((e.clientX - rect.left) / rect.width) * 100,
+                    startWidth: slideData.avatarWidth,
+                  }
+                  setResizeTarget('avatar')
+                }}
+                title="Drag to resize (5%-20% of slide width)"
+              />
+            )}
+          </div>
+
+          {/* Smart alignment guide — appears while dragging any element
+              across the canvas's vertical center, snaps it into place. */}
+          {snapGuide.v && !previewMode && (
+            <div className="absolute top-0 bottom-0 left-1/2 w-px bg-indigo-400 pointer-events-none z-30" style={{ boxShadow: '0 0 4px rgba(99,102,241,0.6)' }} />
+          )}
+        </div>
       </div>
-      <p className="pa-title" style={{
-        color:theme.text, fontSize:FS(11,2.0,28), lineHeight:1.55,
-        fontStyle:'italic', fontWeight:600,
-        textShadow: theme.isDark?'0 1px 6px rgba(0,0,0,0.3)':'none',
-      }}>
-        {quoteText}
-      </p>
-    </div>
-  )
-}
 
-function SummaryContent({ bullets, theme }) {
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:'1.8%' }}>
-      {bullets.slice(0,5).map((b,i)=>(
-        <div key={i} className={`pa-b${i} flex items-center`} style={{ gap:'2.5%' }}>
-          <div style={{
-            flexShrink:0,
-            width:FS(12,1.6,22), height:FS(12,1.6,22),
-            borderRadius:'50%', background:`${theme.accent}25`,
-            border:`1.5px solid ${theme.accent}`,
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>
-            <span style={{ color:theme.accent, fontSize:FS(6,0.85,11), fontWeight:800 }}>✓</span>
-          </div>
-          <p style={{ color:theme.text, fontSize:FS(8,1.2,16), fontWeight:500, lineHeight:1.4 }}>
-            {b.text}
-          </p>
+      <div className="px-3 sm:px-6 py-2.5 border-t border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 flex items-center justify-between flex-shrink-0 gap-2 flex-wrap">
+        <div className="text-xs text-slate-500 dark:text-slate-400">
+          {previewMode ? 'Previewing — click Edit to make changes' : saving ? '💾 Saving...' : '✓ Auto-saved'}
         </div>
-      ))}
-    </div>
-  )
-}
+        <div className="flex items-center gap-2 text-xs text-slate-500 hidden sm:flex">
+          {!previewMode && <span>Drag the avatar box or image to move · drag the corner handle to resize</span>}
+        </div>
+      </div>
+      </div>
 
-function RoadmapContent({ segments, theme }) {
-  if (!segments || segments.length === 0) {
-    return <div style={{ color: theme.muted, textAlign: 'center', padding: '2em' }}>No segments configured</div>
-  }
+      {/* Edit options: a bottom sheet on narrow screens, a proper right-hand
+          sidebar once there's room for it (lg+) so canvas and options share
+          the screen instead of one pushing the other out of view. */}
+      <button
+        onClick={() => setShowRightPanel(!showRightPanel)}
+        className="lg:hidden w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-none text-xs font-medium bg-slate-100 dark:bg-slate-800/60 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition-colors border-t border-slate-200 dark:border-white/10"
+      >
+        <Settings className="w-3 h-3" />
+        {showRightPanel ? '▼' : '▶'} Edit Options
+      </button>
 
-  const segmentConfig = {
-    hook:        { color: '#06B6D4', icon: '📌', label: 'Hook' },
-    content:     { color: '#10B981', icon: '📚', label: 'Content' },
-    interaction: { color: '#F59E0B', icon: '💡', label: 'Think' },
-    recap:       { color: '#EC4899', icon: '✓', label: 'Recap' },
-  }
+      {/* Options sidebar: collapsed by default to maximize canvas space,
+          full-width stacked panel on mobile, fixed-width right column on lg+ */}
+      <div
+        className={`flex-shrink-0 border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 overflow-y-auto transition-all duration-200 ${
+          showRightPanel
+            ? 'block w-full p-4 space-y-4 border-t lg:border-t-0 lg:border-l lg:w-80 xl:w-96'
+            : 'hidden lg:block lg:w-0 lg:overflow-hidden lg:border-l-0'
+        }`}
+      >
+        {/* Panel title — makes the sidebar's purpose clear on its own, not
+            just via the toggle button label in the canvas header */}
+        <div className="flex items-center gap-2 pb-1">
+          <Settings className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">Slide Options</p>
+        </div>
 
-  return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', gap: '2%', padding: '2%' }}>
-      {segments.slice(0, 5).map((seg, i) => {
-        const config = segmentConfig[seg.segment_type] || { color: theme.accent, icon: '●', label: 'Step' }
-        return (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5em' }}>
-            {/* Arrow before circle (except first) */}
-            {i > 0 && (
-              <div style={{ color: theme.accent, opacity: 0.3, fontSize: '1.2em', marginBottom: '0.3em' }}>→</div>
-            )}
-            {/* Circle */}
-            <div style={{
-              width: FS(50, 6, 80),
-              height: FS(50, 6, 80),
-              borderRadius: '50%',
-              background: `${config.color}15`,
-              border: `2px solid ${config.color}`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-            }}>
-              <span style={{ fontSize: FS(20, 2.8, 36), lineHeight: 1 }}>{config.icon}</span>
-            </div>
-            {/* Label */}
-            <p style={{
-              color: config.color,
-              fontSize: FS(8, 1.2, 14),
-              fontWeight: 700,
-              textAlign: 'center',
-              margin: 0,
-              whiteSpace: 'nowrap',
-            }}>
-              {seg.slide_title || config.label}
-            </p>
+        {/* Layout — not the same for every slide by default */}
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/60 dark:bg-slate-800/30 p-3">
+          <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2">Layout</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {LAYOUT_OPTIONS.map(opt => (
+              <button
+                key={opt.id}
+                onClick={() => updateSlide(prev => ({ ...prev, layout: opt.id }))}
+                title={opt.desc}
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-medium border transition-all text-left ${
+                  slideData.layout === opt.id
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-700 dark:text-indigo-300'
+                    : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20'
+                }`}
+              >
+                <span className="w-6 h-4 rounded-sm border border-current/40 flex-shrink-0 flex items-center justify-center overflow-hidden relative">
+                  {opt.id === 'title-hero' && <span className="w-2.5 h-0.5 bg-current rounded-full" />}
+                  {opt.id === 'bullets' && (
+                    <span className="absolute left-0.5 top-0.5 flex flex-col gap-0.5">
+                      <span className="w-3.5 h-0.5 bg-current rounded-full" />
+                      <span className="w-2.5 h-0.5 bg-current rounded-full opacity-60" />
+                      <span className="w-2.5 h-0.5 bg-current rounded-full opacity-60" />
+                    </span>
+                  )}
+                  {opt.id === 'split' && (
+                    <span className="flex gap-0.5 w-full h-full px-0.5 py-0.5">
+                      <span className="flex-1 bg-current opacity-30 rounded-sm" />
+                      <span className="flex-1 bg-current opacity-15 rounded-sm" />
+                    </span>
+                  )}
+                  {opt.id === 'definition' && (
+                    <span className="absolute left-0.5 top-0.5 w-3.5 h-1 bg-current opacity-30 rounded-sm" />
+                  )}
+                  {opt.id === 'quote' && <span className="text-[10px] leading-none opacity-60">"</span>}
+                  {opt.id === 'summary' && (
+                    <span className="absolute left-0.5 top-0.5 flex flex-col gap-0.5">
+                      <span className="w-2.5 h-0.5 bg-current rounded-full" />
+                      <span className="w-2.5 h-0.5 bg-current rounded-full opacity-60" />
+                    </span>
+                  )}
+                </span>
+                {opt.label}
+              </button>
+            ))}
           </div>
-        )
-      })}
+          {slideData.layout === 'title-hero' && (
+            <p className="text-[10px] text-slate-500 mt-1.5">Title centered in the middle of the slide — good for an intro.</p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/60 dark:bg-slate-800/30 p-3">
+          <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-1.5">
+            <ImageIcon className="w-3.5 h-3.5" /> Image / Figure
+          </p>
+
+          <div className="flex gap-2 mb-2">
+            <input
+              type="text"
+              value={slideData.imageUrl && !slideData.imageUrl.startsWith('data:') ? slideData.imageUrl : ''}
+              onChange={(e) => updateSlide(prev => ({ ...prev, imageUrl: e.target.value }))}
+              placeholder="Paste image URL…"
+              className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="flex-shrink-0 flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:border-indigo-500/40 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors disabled:opacity-50"
+            >
+              {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+          </div>
+
+          {/* Generate with AI */}
+          <div className="flex gap-2 mb-2">
+            <input
+              type="text"
+              value={genPrompt}
+              onChange={(e) => { setGenPrompt(e.target.value); if (genError) setGenError(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleGenerateImage() }}
+              disabled={genLoading}
+              placeholder="Or describe an image to generate…"
+              className="flex-1 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors disabled:opacity-60"
+            />
+            <button
+              onClick={handleGenerateImage}
+              disabled={genLoading || !genPrompt.trim()}
+              className="flex-shrink-0 flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {genLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          {genError && (
+            <div className="flex items-start gap-1.5 mb-2">
+              <AlertCircle className="w-3 h-3 text-red-500 dark:text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-[10px] text-red-600 dark:text-red-300">{genError}</p>
+            </div>
+          )}
+
+          {slideData.imageUrl && (
+            <div className="flex items-center gap-2 mt-2">
+              <div className="w-14 h-10 rounded-md overflow-hidden flex-shrink-0 border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800">
+                <img src={slideData.imageUrl} alt="" className="w-full h-full object-cover" />
+              </div>
+              <p className="text-[10px] text-slate-500 flex-1">Drag on the slide to move · drag corner to stretch/resize</p>
+              <button
+                onClick={() => updateSlide(prev => ({ ...prev, imageUrl: null }))}
+                className="text-slate-400 hover:text-red-400 transition-colors flex-shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Text Motion — how the narration caption reveals on export */}
+        <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/60 dark:bg-slate-800/30 p-3">
+          <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2">Text Motion</p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {MOTION_STYLES.map(m => (
+              <button
+                key={m.id}
+                onClick={() => updateSlide(prev => ({ ...prev, textAnimationType: m.id }))}
+                title={m.desc}
+                className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
+                  slideData.textAnimationType === m.id
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-700 dark:text-indigo-300'
+                    : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20'
+                }`}
+              >
+                <div className="text-lg">{m.icon}</div>
+                <span className="text-[10px] leading-tight text-center">{m.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Content Point Details - Show when a block is selected */}
+        {selectedBlockIdx !== null && slideData.contentBlocks[selectedBlockIdx] && (
+          <div className="rounded-xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-500/5 p-3 space-y-3">
+            <div>
+              <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> Point #{selectedBlockIdx + 1} Details
+              </p>
+
+              {/* Toggle: Show Details or Just Text */}
+              <div className="mb-2 flex items-center gap-2 bg-slate-100 dark:bg-slate-800 p-2 rounded">
+                <label className="text-xs font-medium text-slate-600 dark:text-slate-300 flex-1">Include details?</label>
+                <button
+                  onClick={() => {
+                    updateSlide(prev => ({
+                      ...prev,
+                      contentBlocks: prev.contentBlocks.map((b, i) =>
+                        i === selectedBlockIdx ? { ...b, showDetails: !b.showDetails } : b
+                      )
+                    }))
+                  }}
+                  className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                    slideData.contentBlocks[selectedBlockIdx].showDetails
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-300 dark:bg-slate-600 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {slideData.contentBlocks[selectedBlockIdx].showDetails ? '✓ With Details' : '✗ Text Only'}
+                </button>
+              </div>
+
+              <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-3 space-y-2">
+                {/* Point text */}
+                <div>
+                  <label className="text-[10px] font-medium text-slate-600 dark:text-slate-300">Main Text</label>
+                  <textarea
+                    value={slideData.contentBlocks[selectedBlockIdx].text}
+                    onChange={(e) => updateBlockText(selectedBlockIdx, e.target.value)}
+                    className="w-full mt-1 p-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-indigo-400"
+                    placeholder="Point text"
+                    rows={2}
+                  />
+                </div>
+
+                {/* Key points - only show if showDetails is true */}
+                {slideData.contentBlocks[selectedBlockIdx].showDetails && (
+                  <div>
+                    <label className="text-[10px] font-medium text-slate-600 dark:text-slate-300 block mb-1">Supporting Details</label>
+                    <div className="space-y-1">
+                      {slideData.contentBlocks[selectedBlockIdx].keyPoints.map((kp, kpIdx) => (
+                        <div key={kpIdx} className="flex items-center gap-1">
+                          <input
+                            type="text"
+                            value={kp}
+                            onChange={(e) => updateKeyPoint(selectedBlockIdx, kpIdx, e.target.value)}
+                            className="flex-1 p-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-[10px] text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-indigo-400"
+                            placeholder="Detail"
+                          />
+                          <button
+                            onClick={() => removeKeyPoint(selectedBlockIdx, kpIdx)}
+                            className="text-red-400 hover:text-red-300 text-xs"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => addKeyPoint(selectedBlockIdx)}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1 mt-1"
+                      >
+                        <Plus className="w-3 h-3" /> Add detail
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="border-t border-amber-300/50 dark:border-amber-500/20" />
+
+            {/* Frame Style */}
+            <div>
+              <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2 flex items-center gap-1.5">
+                <Palette className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" /> Frame Style
+              </p>
+              <div className="grid grid-cols-4 gap-1.5">
+                {CADRE_STYLES.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => {
+                      updateSlide(prev => ({
+                        ...prev,
+                        contentBlocks: prev.contentBlocks.map((b, i) =>
+                          i === selectedBlockIdx ? { ...b, cadreStyle: c.id } : b
+                        )
+                      }))
+                    }}
+                    title={c.desc}
+                    className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
+                      slideData.contentBlocks[selectedBlockIdx].cadreStyle === c.id
+                        ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-700 dark:text-indigo-300'
+                        : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20'
+                    }`}
+                  >
+                    <span className="text-[10px] leading-tight text-center">{c.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
-

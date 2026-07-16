@@ -1,22 +1,24 @@
 /**
- * Stage 5 — Video (last / most expensive)
- * Generates avatar videos per scene, then merges each module's scene
- * videos into one full module video.
- * Requires TTS audio to be generated first.
+ * Stage 5 — Video Editing (Module-Level Editor with Unified Timeline)
+ * 
+ * Enhanced unified design:
+ * - Left: Scene storyboard with drag-reorder, numbered, + generation indicators
+ * - Center: Full canvas preview with timeline sync (avatar holder maintained)
+ * - Bottom: Pro Remotion timeline showing ALL scenes in module as merged
+ * - Video generation integrated per-scene with avatar support
+ * - Avatar placeholder visible and adjustable across entire timeline
  */
-import React, { useState, useEffect, useRef } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { scriptsService } from '@/services/scripts'
+import { useState, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { scenesService } from '@/services/scenes'
 import { modulesService } from '@/services/modules'
 import { agentsService } from '@/services/agents'
-import { Video, Loader2, CheckCircle, Sparkles, ExternalLink, RefreshCw, User, UserX, Film, Download, Zap } from 'lucide-react'
+import { Video, Loader2, CheckCircle, Sparkles, Download, Lock, RefreshCw } from 'lucide-react'
 import Button from '@/components/ui/Button'
-import Badge from '@/components/ui/Badge'
 import Spinner from '@/components/ui/Spinner'
+import StageHeader from '@/components/workspace/StageHeader'
+import SceneTimelineEditor from '@/components/workspace/SceneTimelineEditor'
 
-// Always coerce a caught error into a plain string — never let an object
-// (e.g. HeyGen's {code, message} payload) reach a render path.
 function errorToString(e) {
   if (!e) return 'Video generation failed'
   if (typeof e === 'string') return e
@@ -26,33 +28,74 @@ function errorToString(e) {
 }
 
 export default function VideoPanel({ project, onUpdate }) {
+  const [selectedModule, setSelectedModule] = useState(null)
+  const [selectedSceneId, setSelectedSceneId] = useState(null)
   const [generating, setGenerating] = useState({})
   const [polling, setPolling] = useState({})
   const [errors, setErrors] = useState({})
   const [useAvatar, setUseAvatar] = useState(true)
 
-  const { data: scripts = [], isLoading } = useQuery({
-    queryKey: ['scripts', project?.id],
-    queryFn: () => scriptsService.listByProject(project.id),
+  const { data: modules = [], isLoading: modulesLoading } = useQuery({
+    queryKey: ['modules', project?.id],
+    queryFn: () => modulesService.listByProject(project.id),
     enabled: !!project?.id,
   })
 
+  // Fetch ALL scenes from ALL modules (for module selector counting)
+  const { data: allScenes = [], isLoading: allScenesLoading } = useQuery({
+    queryKey: ['allScenes', project?.id],
+    queryFn: async () => {
+      if (!project?.id || !modules.length) return []
+      const allResults = []
+      for (const mod of modules) {
+        try {
+          const modScenes = await scenesService.listByModule(mod.id)
+          allResults.push(...modScenes)
+        } catch (err) {
+          console.error(`Failed to fetch scenes for module ${mod.id}:`, err)
+        }
+      }
+      return allResults
+    },
+    enabled: !!project?.id && modules.length > 0,
+    staleTime: 0,
+    refetchOnMount: 'stale',
+  })
+
+  // Fetch scenes for SELECTED module
+  const { data: scenes = [], isLoading: scenesLoading } = useQuery({
+    queryKey: ['scenes', selectedModule?.id],
+    queryFn: () => selectedModule?.id ? scenesService.listByModule(selectedModule.id) : Promise.resolve([]),
+    enabled: !!selectedModule?.id,
+    refetchOnMount: 'stale',
+    staleTime: 0,
+    refetchInterval: 5000,
+  })
+
+  const isLoading = modulesLoading || allScenesLoading || scenesLoading
+
+  // Initialize scene order from current scene order
+  useEffect(() => {
+    if (scenes.length > 0) {
+      if (!selectedSceneId && scenes.length > 0) {
+        setSelectedSceneId(scenes[0].id)
+      }
+    }
+  }, [scenes, selectedSceneId])
+
   const handleGenerateVideo = async (scene) => {
-    // Check if scene has segments
     if (scene.segments && scene.segments.length > 0) {
-      // For segmented scenes, check if ALL segments have TTS
       const missingSegments = scene.segments.filter(s => !s.ttsAudioUrl)
       if (missingSegments.length > 0) {
         setErrors(prev => ({
           ...prev,
-          [scene.id]: `${missingSegments.length} segments missing audio. Generate voice for all segments first (Stage 3)`
+          [scene.id]: `${missingSegments.length} segments missing audio`
         }))
         return
       }
     } else {
-      // For non-segmented scenes, check scene-level TTS
       if (!scene.ttsAudioUrl) {
-        setErrors(prev => ({ ...prev, [scene.id]: 'Generate voice audio first (Stage 3)' }))
+        setErrors(prev => ({ ...prev, [scene.id]: 'Generate voice audio first' }))
         return
       }
     }
@@ -67,8 +110,7 @@ export default function VideoPanel({ project, onUpdate }) {
         useAvatar
       )
       if (result?.video_id) {
-        // Start polling automatically (avatar mode only — voice-only mode finishes immediately)
-        handlePoll(scene.id, result.video_id)
+        handlePoll(scene.id, result.video_id, 0)
       }
       onUpdate?.()
     } catch (e) {
@@ -78,341 +120,297 @@ export default function VideoPanel({ project, onUpdate }) {
     }
   }
 
-  const handlePoll = async (sceneId, videoId) => {
+  const handlePoll = async (sceneId, videoId, attemptNumber = 0) => {
+    const MAX_POLL_ATTEMPTS = 180
+    if (attemptNumber > MAX_POLL_ATTEMPTS) {
+      setPolling(prev => ({ ...prev, [sceneId]: false }))
+      setErrors(prev => ({
+        ...prev,
+        [sceneId]: 'Video generation timed out'
+      }))
+      return
+    }
+    
     setPolling(prev => ({ ...prev, [sceneId]: true }))
     try {
       const result = await agentsService.pollHeyGen(videoId, sceneId)
       if (!result?.completed) {
-        // Poll again in 5 seconds
-        setTimeout(() => handlePoll(sceneId, videoId), 5000)
+        setTimeout(() => handlePoll(sceneId, videoId, attemptNumber + 1), 5000)
       } else {
         onUpdate?.()
         setPolling(prev => ({ ...prev, [sceneId]: false }))
       }
     } catch (e) {
       setPolling(prev => ({ ...prev, [sceneId]: false }))
+      setErrors(prev => ({ ...prev, [sceneId]: errorToString(e) }))
     }
   }
 
   if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
 
-  if (scripts.length === 0) {
+  if (!modules.length) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-12 text-center">
         <Video className="w-10 h-10 text-slate-300 dark:text-slate-700 mb-3" />
-        <p className="text-slate-500 dark:text-slate-400">No scripts yet. Complete previous stages first.</p>
+        <p className="text-slate-500 dark:text-slate-400">No modules yet. Complete previous stages first.</p>
       </div>
     )
   }
 
-  return (
-    <div className="p-6 max-w-3xl">
-      <div className="flex items-center gap-3 mb-4">
-        <Video className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
-        <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Video Generation</h2>
-        <Badge variant="yellow">Expensive API</Badge>
+  if (!selectedModule) {
+    return (
+      <div className="p-6 max-w-4xl">
+        <StageHeader
+          icon={Video}
+          title="5. Video Editing"
+          subtitle="Edit entire module with timeline and video generation"
+          complete={false}
+        />
+        
+        <div className="mt-6 space-y-3">
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">Select a module to edit:</p>
+          {modules.map((mod) => {
+            const modScenes = allScenes.filter(s => s.moduleId === mod.id)
+            const modSceneCount = modScenes.length
+            const designedCount = modScenes.filter(s => !!s.visualAssetUrl).length
+            // Designed = every scene in this module has a generated slide
+            // image. Modules that aren't designed yet are locked here —
+            // opening one used to show an empty/placeholder timeline that
+            // looked like broken output instead of "finish Visual Design
+            // first."
+            const isDesigned = modSceneCount > 0 && designedCount === modSceneCount
+            return (
+              <button
+                key={mod.id}
+                onClick={() => { if (isDesigned) setSelectedModule(mod) }}
+                disabled={!isDesigned}
+                title={isDesigned ? undefined : 'Generate this module’s slides in Visual Design first'}
+                className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+                  isDesigned
+                    ? 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/[0.08] hover:border-indigo-400 dark:hover:border-indigo-500 cursor-pointer'
+                    : 'bg-slate-50 dark:bg-slate-900/40 border-slate-200 dark:border-white/[0.06] opacity-60 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="font-medium text-slate-900 dark:text-white">{mod.title}</div>
+                  {isDesigned ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+                      <CheckCircle className="w-3 h-3" /> Designed
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">
+                      <Lock className="w-3 h-3" /> Locked
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {modSceneCount} {modSceneCount === 1 ? 'scene' : 'scenes'}
+                  {!isDesigned && modSceneCount > 0 && ` · ${designedCount}/${modSceneCount} slides generated — finish in Visual Design`}
+                </div>
+              </button>
+            )
+          })}
+        </div>
       </div>
+    )
+  }
 
-      {/* Avatar on/off toggle — voice-only is the fast draft path, say so */}
-      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] mb-6">
-        <div className="flex items-center gap-3">
+  const selectedScene = scenes.find(s => s.id === selectedSceneId) || scenes[0]
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
+      {/* Header */}
+      <div className="px-6 pt-4 pb-2 border-b border-slate-200 dark:border-white/[0.06]">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <StageHeader
+              icon={Video}
+              title="5. Video Editing"
+              subtitle={`${selectedModule.title} — ${scenes.length} scenes`}
+              complete={false}
+            />
+          </div>
           <button
-            onClick={() => setUseAvatar(false)}
-            className={`flex-1 flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
-              !useAvatar ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-800 dark:hover:text-slate-200'
-            }`}
+            onClick={() => setSelectedModule(null)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300"
           >
-            <span className="flex items-center gap-2"><Zap className="w-3.5 h-3.5" /> Quick preview — voice only</span>
-            <span className={`text-[10px] font-normal ${!useAvatar ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500'}`}></span>
+            ← Back
           </button>
+        </div>
+
+        {/* Avatar Toggle */}
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setUseAvatar(true)}
-            className={`flex-1 flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
-              useAvatar ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-800 dark:hover:text-slate-200'
+            className={`px-2 py-1 rounded text-xs font-medium transition-all ${
+              useAvatar ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
             }`}
           >
-            <span className="flex items-center gap-2"><User className="w-3.5 h-3.5" /> Final — with avatar presenter</span>
-            <span className={`text-[10px] font-normal ${useAvatar ? 'text-indigo-200' : 'text-slate-400 dark:text-slate-500'}`}></span>
+            With Avatar
+          </button>
+          <button
+            onClick={() => setUseAvatar(false)}
+            className={`px-2 py-1 rounded text-xs font-medium transition-all ${
+              !useAvatar ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Voice Only
           </button>
         </div>
-
       </div>
 
-      {scripts.map(script => (
-        <ModuleVideoCard
-          key={script.id}
-          title={script.title}
-          moduleId={script.moduleId}
-          generating={generating}
-          polling={polling}
-          errors={errors}
-          onGenerate={handleGenerateVideo}
-          onPoll={handlePoll}
-        />
-      ))}
-    </div>
-  )
-}
-
-function ModuleVideoCard({ title, moduleId, generating, polling, errors, onGenerate, onPoll }) {
-  const queryClient = useQueryClient()
-  const [merging, setMerging] = useState(false)
-  const [mergeError, setMergeError] = useState(null)
-
-  // Was raw fetch('/api/...') here instead of the apiClient-backed service
-  // layer used everywhere else — that bypassed apiClient's response
-  // interceptor (204 handling, non-JSON/HTML-fallback guard, 401/403
-  // redirect), so a transient backend hiccup during the 5s poll could throw
-  // an unhandled promise rejection on every refetch instead of surfacing a
-  // normal query error. Using the service layer keeps this consistent with
-  // the rest of the app and is the safer fix for "can't click anything" here.
-  const { data: scenes = [], isLoading: scenesLoading } = useQuery({
-    queryKey: ['scenes', moduleId],
-    queryFn: () => moduleId ? scenesService.listByModule(moduleId) : Promise.resolve([]),
-    enabled: !!moduleId,
-    // Only poll while a video is actually rendering — the old unconditional
-    // 5s interval hammered getModuleScenes for every module, forever.
-    refetchInterval: (query) =>
-      query.state.data?.some?.(s => s.status === 'rendering') ? 5000 : false,
-  })
-
-  const { data: moduleData } = useQuery({
-    queryKey: ['module', moduleId],
-    queryFn: () => modulesService.get(moduleId),
-    enabled: !!moduleId,
-  })
-
-  const sceneHasVideo = (scene) => !!scene.avatarVideoUrl && !scene.avatarVideoUrl?.startsWith('heygen:')
-  const allScenesReady = scenes.length > 0 && scenes.every(sceneHasVideo)
-  const fullVideoUrl = moduleData?.fullVideoUrl
-
-  const sceneAudioReady = (scene) =>
-    scene.segments?.length > 0 ? scene.segments.every(s => s.ttsAudioUrl) : !!scene.ttsAudioUrl
-  const sceneIsRendering = (scene) =>
-    scene.status === 'rendering' || polling[scene.id] || generating[scene.id]
-
-  const videosDone = scenes.filter(sceneHasVideo).length
-  const renderingCount = scenes.filter(s => !sceneHasVideo(s) && sceneIsRendering(s)).length
-  // Scenes we can fire right now: audio ready, no video yet, not already going
-  const generatable = scenes.filter(s => sceneAudioReady(s) && !sceneHasVideo(s) && !sceneIsRendering(s))
-
-  // All eligible scenes at once — HeyGen renders them in parallel, so the
-  // total wait is roughly ONE scene's render time instead of the sum of all.
-  const handleGenerateAll = () => {
-    generatable.forEach(scene => { onGenerate(scene) })
-  }
-
-  // Resume polling for scenes that were mid-render when the page was last
-  // closed/left (status 'rendering' with a heygen: video id) — otherwise they
-  // stay stuck until the user clicks the manual refresh icon.
-  const resumedRef = useRef({})
-  useEffect(() => {
-    scenes.forEach(scene => {
-      const heygenId = scene.avatarVideoUrl?.startsWith('heygen:')
-        ? scene.avatarVideoUrl.replace('heygen:', '') : null
-      if (heygenId && scene.status === 'rendering' && !polling[scene.id] && !resumedRef.current[scene.id]) {
-        resumedRef.current[scene.id] = true
-        onPoll(scene.id, heygenId)
-      }
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenes])
-
-  const handleMerge = async () => {
-    setMerging(true)
-    setMergeError(null)
-    try {
-      await agentsService.runMergeModuleVideo(moduleId)
-      queryClient.invalidateQueries({ queryKey: ['module', moduleId] })
-    } catch (e) {
-      setMergeError(errorToString(e))
-    } finally {
-      setMerging(false)
-    }
-  }
-
-  return (
-    <div className="mb-8 rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-950/40 overflow-hidden">
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 dark:border-white/[0.06] bg-slate-50 dark:bg-slate-900/40">
-        <div className="min-w-0">
-          <h3 className="text-sm font-medium text-slate-900 dark:text-white truncate">{title}</h3>
-          {scenes.length > 0 && (
-            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-              {videosDone}/{scenes.length} videos ready
-              {renderingCount > 0 && <span className="text-amber-600 dark:text-amber-400"> · {renderingCount} rendering…</span>}
-            </p>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {generatable.length > 1 && (
-            <Button size="sm" onClick={handleGenerateAll}>
-              <Sparkles className="w-3.5 h-3.5" />
-              Generate all ({generatable.length})
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant={fullVideoUrl ? 'secondary' : 'primary'}
-            disabled={!allScenesReady || merging}
-            onClick={handleMerge}
-          >
-            {merging
-              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Merging…</>
-              : fullVideoUrl
-                ? <><RefreshCw className="w-3.5 h-3.5" />Regenerate full video</>
-                : <><Film className="w-3.5 h-3.5" />Generate full module video</>}
-          </Button>
-        </div>
-      </div>
-
-      {mergeError && <p className="text-xs text-red-500 dark:text-red-400 px-4 pt-2">{mergeError}</p>}
-      {!allScenesReady && (
-        <p className="text-xs text-slate-500 px-4 pt-2">
-          Generate every scene's video below, then merge them into one full module video.
-        </p>
-      )}
-
-      {fullVideoUrl && (
-        <div className="px-4 pt-3">
-          <video src={fullVideoUrl} controls className="w-full rounded-lg bg-black" style={{ maxHeight: 280 }} />
-          <a
-            href={fullVideoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300 mt-2"
-          >
-            <Download className="w-3.5 h-3.5" /> Download full module video
-          </a>
-        </div>
-      )}
-
-      <div className="p-4">
-        {scenesLoading ? (
-          <div className="flex justify-center py-4"><Spinner size="sm" /></div>
-        ) : !scenes.length ? (
-          <p className="text-slate-400 dark:text-slate-600 text-sm">No scenes.</p>
-        ) : (
-          <SceneVideoList
-            scenes={scenes}
-            generating={generating}
-            polling={polling}
-            errors={errors}
-            onGenerate={onGenerate}
-            onPoll={onPoll}
-          />
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SceneVideoList({ scenes, generating, polling, errors, onGenerate, onPoll }) {
-  return (
-    <div className="space-y-4">
-      {scenes.map((scene, i) => {
-        const isGen = generating[scene.id]
-        const isPoll = polling[scene.id] || scene.status === 'rendering'
-        const hasVideo = !!scene.avatarVideoUrl && !scene.avatarVideoUrl?.startsWith('heygen:')
-        const isRendering = scene.status === 'rendering'
-        const rawErr = errors[scene.id]
-        // Defense in depth: even if something upstream slips an object through,
-        // never hand it to JSX directly.
-        const err = rawErr && typeof rawErr === 'object' ? (rawErr.message || JSON.stringify(rawErr)) : rawErr
-        const heygenVideoId = scene.avatarVideoUrl?.startsWith('heygen:')
-          ? scene.avatarVideoUrl.replace('heygen:', '')
-          : null
-
-        return (
-          <div key={scene.id}
-            className="rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] overflow-hidden">
-
-            {/* Video preview */}
-            {hasVideo && (
-              <video
-                src={scene.avatarVideoUrl}
-                controls
-                className="w-full rounded-t-xl bg-black"
-                style={{ maxHeight: 200 }}
-              />
-            )}
-
-            <div className="flex items-center gap-4 p-4">
-              <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0">
-                <span className="text-xs font-bold text-indigo-500 dark:text-indigo-400">{i + 1}</span>
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{scene.scriptContent?.slice(0, 80)}…</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className={`text-xs ${
-                    scene.segments?.length > 0
-                      ? (scene.segments.every(s => s.ttsAudioUrl) ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600')
-                      : (scene.ttsAudioUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600')
-                  }`}>
-                    {scene.segments?.length > 0
-                      ? (scene.segments.every(s => s.ttsAudioUrl)
-                          ? `✓ Audio ready (${scene.segments.length} segments)`
-                          : `✗ Audio incomplete (${scene.segments.filter(s => !s.ttsAudioUrl).length}/${scene.segments.length} missing)`)
-                      : (scene.ttsAudioUrl ? '✓ Audio ready' : '✗ No audio')
-                    }
-                  </span>
-                  <span className={`text-xs ${scene.visualAssetUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400 dark:text-slate-600'}`}>
-                    {scene.visualAssetUrl ? '✓ Visual ready' : '✗ No visual'}
-                  </span>
-                </div>
-                {err && <p className="text-xs text-red-500 dark:text-red-400 mt-1">{String(err)}</p>}
-              </div>
-
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {hasVideo && (
-                  <a href={scene.avatarVideoUrl} target="_blank" rel="noopener noreferrer"
-                    className="text-slate-400 dark:text-slate-500 hover:text-indigo-500 dark:hover:text-indigo-400 transition-colors">
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                )}
-
-                {hasVideo ? (
-                  <div className="flex items-center gap-2">
-                    <Badge variant="green"><CheckCircle className="w-3 h-3 mr-1" />Done</Badge>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={isGen}
-                      onClick={() => onGenerate(scene)}
-                      title="Regenerate this scene's video"
-                    >
-                      {isGen
-                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        : <RefreshCw className="w-3.5 h-3.5" />}
-                    </Button>
-                  </div>
-                ) : isRendering || isPoll ? (
-                  <div className="flex items-center gap-2">
-                    <Badge variant="yellow">
-                      <Loader2 className="w-3 h-3 mr-1 animate-spin" />Rendering…
-                    </Badge>
-                    {heygenVideoId && (
-                      <Button size="sm" variant="ghost" onClick={() => onPoll(scene.id, heygenVideoId)}>
-                        <RefreshCw className="w-3.5 h-3.5" />
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  <Button
-                    size="sm"
-                    disabled={isGen || !scene.ttsAudioUrl}
-                    onClick={() => onGenerate(scene)}
+      {/* Main Content: Storyboard + Timeline Editor */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {/* Top: Scene Timeline Editor with Visual Preview + Timeline */}
+        <div className="flex-1 min-h-0 flex gap-4 p-4 overflow-hidden">
+          {/* Left: Scene Storyboard Thumbnails */}
+          <div className="w-40 flex-shrink-0 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-white/[0.08] overflow-y-auto flex flex-col">
+            <div className="p-2 space-y-2 flex-1 overflow-y-auto">
+              {scenes.map((scene, idx) => {
+                const isSelected = scene.id === selectedSceneId
+                const hasVideo = !!scene.avatarVideoUrl && !scene.avatarVideoUrl?.startsWith('heygen:')
+                
+                return (
+                  <button
+                    key={scene.id}
+                    onClick={() => setSelectedSceneId(scene.id)}
+                    className={`w-full p-2 rounded-lg text-left transition-all border ${
+                      isSelected
+                        ? 'bg-indigo-600/20 border-indigo-500/50'
+                        : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/[0.12]'
+                    }`}
                   >
-                    {isGen
-                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Starting…</>
-                      : <><Sparkles className="w-3.5 h-3.5" />Generate</>}
-                  </Button>
-                )}
-              </div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-5 h-5 rounded bg-indigo-500 flex items-center justify-center text-xs text-white font-bold">
+                        {idx + 1}
+                      </div>
+                      {hasVideo && <CheckCircle className="w-3 h-3 text-green-500" />}
+                    </div>
+                    {/* Real generated slide thumbnail — same image shown in
+                        the main preview, so the storyboard matches what was
+                        actually designed instead of just a title label. */}
+                    {scene.visualAssetUrl ? (
+                      <div className="w-full aspect-video rounded overflow-hidden border border-slate-200 dark:border-white/10 mb-1 bg-slate-900">
+                        <img src={scene.visualAssetUrl} alt="" className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <div className="w-full aspect-video rounded border border-dashed border-slate-300 dark:border-slate-700 mb-1 flex items-center justify-center bg-slate-50 dark:bg-slate-800/50">
+                        <span className="text-[9px] text-slate-400 dark:text-slate-500">Not designed</span>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-600 dark:text-slate-400 truncate">
+                      {scene.slideComposition?.title || 'Scene'}
+                    </p>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Controls at Bottom of Storyboard */}
+            <div className="p-2 border-t border-slate-200 dark:border-white/[0.06] space-y-2">
+              {selectedScene?.avatarVideoUrl && !selectedScene?.avatarVideoUrl?.startsWith('heygen:') ? (
+                // Video is ready — "Download" used to just relabel the same
+                // button that actually re-ran generation, so clicking it
+                // never gave you a file, just a fresh (wasted) render. Now
+                // it's a real download link, with regenerate split out as
+                // its own explicit secondary action.
+                <div className="flex gap-1.5">
+                  <a
+                    href={selectedScene.avatarVideoUrl}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />Download
+                  </a>
+                  <button
+                    onClick={() => handleGenerateVideo(selectedScene)}
+                    disabled={generating[selectedScene?.id] || polling[selectedScene?.id]}
+                    title="Regenerate this scene's video"
+                    className="flex-shrink-0 inline-flex items-center justify-center px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+                  >
+                    {generating[selectedScene?.id] || polling[selectedScene?.id]
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <RefreshCw className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="w-full"
+                  disabled={generating[selectedScene?.id] || polling[selectedScene?.id] || !selectedScene?.ttsAudioUrl}
+                  onClick={() => handleGenerateVideo(selectedScene)}
+                >
+                  {generating[selectedScene?.id] ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" />Gen…</>
+                  ) : polling[selectedScene?.id] ? (
+                    <><Loader2 className="w-3.5 h-3.5 animate-spin" />Poll…</>
+                  ) : (
+                    <><Sparkles className="w-3.5 h-3.5" />Generate</>
+                  )}
+                </Button>
+              )}
+              {errors[selectedScene?.id] && (
+                <p className="text-[10px] text-red-600 dark:text-red-400 px-1">
+                  {errors[selectedScene?.id]}
+                </p>
+              )}
             </div>
           </div>
-        )
-      })}
+
+          {/* Right: Scene Timeline Editor (Canvas + Timeline for Sync) */}
+          <div className="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-white/[0.08] p-4 overflow-y-auto flex flex-col">
+            {selectedScene ? (
+              <>
+                <SceneTimelineEditor
+                  scene={selectedScene}
+                  onUpdate={() => onUpdate?.()}
+                  useAvatar={useAvatar}
+                />
+
+                {/* Generated video player — plays the actual rendered
+                    output right here once it's ready, so "Download" isn't
+                    the only way to see it; the file was already sitting
+                    there unwatchable before this. */}
+                {selectedScene.avatarVideoUrl && !selectedScene.avatarVideoUrl?.startsWith('heygen:') && (
+                  <div className="mt-4 pt-4 border-t border-slate-200 dark:border-white/[0.06]">
+                    <div className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-2">Generated Video</div>
+                    <video
+                      key={selectedScene.avatarVideoUrl}
+                      controls
+                      className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-black aspect-video"
+                      src={selectedScene.avatarVideoUrl}
+                    />
+                  </div>
+                )}
+
+                {/* Scene Info */}
+                <div className="mt-4 pt-4 border-t border-slate-200 dark:border-white/[0.06] text-xs">
+                  <div className="text-slate-600 dark:text-slate-400 mb-2 font-medium">Scene Status</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className={selectedScene.ttsAudioUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400'}>
+                      ✓ Voice
+                    </div>
+                    <div className={selectedScene.visualAssetUrl ? 'text-green-600 dark:text-green-400' : 'text-slate-400'}>
+                      ✓ Visual
+                    </div>
+                    <div className={selectedScene.avatarVideoUrl && !selectedScene.avatarVideoUrl?.startsWith('heygen:') ? 'text-green-600 dark:text-green-400' : 'text-slate-400'}>
+                      ✓ Video
+                    </div>
+                  </div>
+                  <div className="mt-2 text-slate-500 dark:text-slate-400">
+                    {selectedScene.segments?.length || 0} segments — {(selectedScene.segments?.reduce((sum, s) => sum + (s.duration || 0), 0) || 0).toFixed(1)}s
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="text-slate-500 dark:text-slate-400">No scene selected</p>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

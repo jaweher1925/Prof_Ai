@@ -42,6 +42,29 @@ export interface RenderableSegment {
 // HELPER: Convert /api/uploads/... URL to local disk path
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Pull the avatar placeholder's position/size (#3, #4) out of a segment's
+ * slideDesign JSON, as saved by the Visual Designer / SlideComposition sync
+ * (see compositions.ts#syncCompositionToSegment). Returns null when absent
+ * so callers fall back to the historical default overlay position.
+ */
+export function extractAvatarPosition(
+  slideDesignJson?: string | null
+): { x: number; y: number; width: number } | null {
+  if (!slideDesignJson) return null
+  try {
+    const design = JSON.parse(slideDesignJson)
+    if (
+      typeof design.avatarX === 'number' &&
+      typeof design.avatarY === 'number' &&
+      typeof design.avatarWidth === 'number'
+    ) {
+      return { x: design.avatarX, y: design.avatarY, width: design.avatarWidth }
+    }
+  } catch { /* malformed JSON — fall back to default */ }
+  return null
+}
+
 export function localPathFromUploadUrl(url?: string | null): string | null {
   if (!url) return null
   const match = url.match(/\/api\/uploads\/([^/?]+)/)
@@ -272,7 +295,7 @@ async function renderSegmentClip(
   // Normalize ANY input slide to exactly 1920×1080 — libx264 requires even
   // dimensions, and browser snapshots can come in at arbitrary sizes
   const baseVf = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black'
-  const FPS = 30
+  const FPS = 24  // Reduced from 30fps to 24fps for faster rendering
 
   // Background stays STATIC (no Ken Burns zoom) — text animation handles the motion
   // Extract text from slide design and apply animation timings
@@ -290,11 +313,26 @@ async function renderSegmentClip(
       console.warn(`[renderSegmentClip] Could not parse slide design for ${segment.id}`)
     }
     
-    // Extract text elements (title + bullets)
+    // Extract text elements (title + bullets). NOTE: the real slide shape
+    // (as written by compositions.ts#syncCompositionToSegment and
+    // scriptGeneratorAgent.ts) nests bullet text under
+    // slideDesign.blocks[].items[].text — there is no top-level
+    // `slideDesign.bullets` array. This previously always came up empty,
+    // silently skipping the animation-timing drawtext overlay below (the
+    // static PNG background from buildSlide() still carried the real
+    // content, so this alone wasn't the "content missing" bug, but the
+    // per-word/per-line caption timing feature was quietly dead).
     const textElements: string[] = []
     if (slideDesign.title) textElements.push(slideDesign.title)
-    if (slideDesign.bullets && Array.isArray(slideDesign.bullets)) {
-      textElements.push(...slideDesign.bullets.filter((b: any) => typeof b === 'string' || b?.text))
+    const bulletsBlock = Array.isArray(slideDesign.blocks)
+      ? slideDesign.blocks.find((b: any) => b?.type === 'bullets')
+      : null
+    if (bulletsBlock?.items && Array.isArray(bulletsBlock.items)) {
+      textElements.push(
+        ...bulletsBlock.items
+          .map((it: any) => (typeof it === 'string' ? it : it?.text))
+          .filter((t: any) => typeof t === 'string' && t.trim())
+      )
     }
     
     // Parse animation timings
@@ -596,30 +634,55 @@ export async function concatVideos(localPaths: string[]): Promise<string> {
 }
 
 /**
- * Overlay the HeyGen talking-avatar video bottom-right on the slide video
- * (#40) — sized/positioned to match the presenter-avatar box shown in the
- * Visual Designer preview (22% wide × 38% tall, 1.5%/2% margins).
+ * Overlay the HeyGen talking-avatar video on the slide video (#40), sized and
+ * positioned by the Visual Designer's avatar placeholder (#3, #4) — falls
+ * back to the old default box (22% wide × 38% tall, bottom-right, 1.5%/2%
+ * margins) when no placeholder position is available (e.g. scenes that
+ * predate the WYSIWYG canvas).
  *
- * The avatar is scaled to the box height and center-cropped to the box width
- * (portrait-style crop of HeyGen's 16:9 output). The final audio track is the
- * slide video's own TTS narration — the avatar is muted (it lip-syncs the
- * same audio anyway).
+ * `position` uses the same % coordinates as SlideComposition/SlideContent:
+ * avatarX/avatarY are the CENTER of the box (0-100, % of slide), avatarWidth
+ * is the box width as % of slide width; height is derived to keep a 9:16
+ * portrait crop of HeyGen's 16:9 output.
+ *
+ * The final audio track is the slide video's own TTS narration — the avatar
+ * is muted (it lip-syncs the same audio anyway).
  */
 export async function overlayAvatarOnVideo(
   baseVideoPath: string,
-  avatarVideoPath: string
+  avatarVideoPath: string,
+  position?: { x: number; y: number; width: number } | null
 ): Promise<string> {
   const outPath = join(UPLOAD_DIR, `${randomUUID()}_with_avatar.mp4`)
 
-  console.log(`[overlayAvatarOnVideo] Compositing avatar onto ${baseVideoPath}`)
+  console.log(`[overlayAvatarOnVideo] Compositing avatar onto ${baseVideoPath}`, position || '(default position)')
+
+  // Default: 22% wide × 38% tall, bottom-right with 1.5%/2% margins
+  let boxWPx: number, boxHPx: number, overlayX: string, overlayY: string
+
+  if (position && Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.width)) {
+    const wPct = Math.max(10, Math.min(60, position.width))
+    boxWPx = Math.round((OUT_W * wPct) / 100)
+    boxHPx = Math.round(boxWPx * (16 / 9)) // 9:16 portrait crop, even dims required by libx264
+    if (boxWPx % 2 !== 0) boxWPx += 1
+    if (boxHPx % 2 !== 0) boxHPx += 1
+    const centerXPx = (OUT_W * position.x) / 100
+    const centerYPx = (OUT_H * position.y) / 100
+    overlayX = String(Math.round(centerXPx - boxWPx / 2))
+    overlayY = String(Math.round(centerYPx - boxHPx / 2))
+  } else {
+    boxWPx = 422
+    boxHPx = 410
+    overlayX = `W-w-29`
+    overlayY = `H-h-22`
+  }
 
   await runFfmpeg([
     '-y',
     '-i', baseVideoPath,
     '-i', avatarVideoPath,
     '-filter_complex',
-    // 22% of 1920 = 422 wide; 38% of 1080 = 410 tall; right 1.5% = 29px; bottom 2% = 22px
-    '[1:v]scale=-2:410,crop=422:410[av];[0:v][av]overlay=W-w-29:H-h-22:eof_action=repeat[v]',
+    `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx}[av];[0:v][av]overlay=${overlayX}:${overlayY}:eof_action=repeat[v]`,
     '-map', '[v]',
     '-map', '0:a',
     '-c:v', 'libx264',

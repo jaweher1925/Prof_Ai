@@ -425,25 +425,31 @@ Always respond with valid JSON only — no markdown, no explanation.`
       const userPrompt = `Write a complete module package for this module.
 
 MODULE: ${mod.title}
+MODULE INDEX: ${modIdx + 1} of ${modules.length}
 LEARNING GOAL: ${mod.objective ?? 'Not specified'}
+MODULE DESCRIPTION: This is module ${modIdx + 1} in a ${modules.length}-module course. Create a UNIQUE welcome scene specific to this module's topic, NOT a generic course introduction.
 
 PROFESSOR'S SOURCE MATERIALS — base everything ONLY on this content:
 ${sourceContent.slice(0, 5000)}
 
 The package has exactly three parts:
 
-1. welcome_scene — a short, student-friendly hook + objectives scene that explains why this module
-   matters, told across 4 segments in this exact order and pedagogical role:
-   - segment_type "hook": a short, concrete hook (a question, surprising fact, or scenario from the source) — 30-40 words max
-   - segment_type "content": the first main point a student needs, from the source — 30-40 words max
-   - segment_type "content": the second main point a student needs, from the source — 30-40 words max
-   - segment_type "recap": a one-sentence recap of what this module will cover — 15-20 words max
+1. welcome_scene — a SHORT, UNIQUE, MODULE-SPECIFIC student-friendly hook + objectives scene that explains why THIS SPECIFIC MODULE matters.
+   DO NOT write a generic "welcome to the course" scene — write an introduction specific to this module's topic (${mod.title}).
+   This welcome scene tells across 4 segments in this exact order and pedagogical role:
+   - segment_type "hook": a short, concrete hook specific to this module's topic (a question, surprising fact, or scenario from the source) — 30-40 words max
+   - segment_type "content": the first main point a student needs from this module, from the source — 30-40 words max
+   - segment_type "content": the second main point a student needs from this module, from the source — 30-40 words max
+   - segment_type "recap": a one-sentence recap of what THIS MODULE will specifically cover — 15-20 words max
    Each segment needs its OWN narration text (keep as short as specified above) and its OWN "elements" array (a "title" element plus 1-3 "bullet" elements
    with real text from the source — never leave elements empty). Add an "image_prompt" on the hook
    segment describing a simple, original educational illustration (flat/infographic style, never
    referencing real people or copyrighted characters).
 
-2. content_scenes — EXACTLY 4 SCENES (no more, no less) covering the module's sub-topics in depth. Each scene has:
+2. content_scenes — AS MANY SCENES AS THE SOURCE MATERIAL ACTUALLY SUPPORTS, covering the
+   module's sub-topics in depth. Do not pad with filler scenes, and do not compress distinct
+   sub-topics into one scene just to hit a target count — one scene per genuinely distinct idea.
+   A short source might only support 2-3 scenes; a rich one might support 8-10+. Each scene has:
    - script_content: ONLY what the presenter says — natural conversational speech, 60-90 words
    - slide_content: ONLY what students read — a DIFFERENT, structured text from the speech, with
      a "blocks" array that MUST include at least one "bullets" block with 2-3 real items pulled
@@ -460,8 +466,10 @@ The package has exactly three parts:
    a short (1-2 sentence) explanation of why that answer is correct.
 ${specialInstructions}
 
-TOTAL SCENES LIMIT: Maximum 6 total scenes: 1 welcome + 4 content + 1 quiz. No more than 5 different scenes.
-Total estimated duration must not exceed 6 minutes (360 seconds) across welcome + content + quiz.
+SCENE COUNT: Not fixed. Let the amount of distinct, genuinely covered sub-topics in the source
+material decide how many content_scenes to write — could be as few as 2 or as many as 10+.
+Total estimated duration should stay reasonable for a single module (aim for 4-10 minutes across
+welcome + content + quiz, but content depth matters more than hitting a specific time).
 
 Return this exact JSON shape:
 {
@@ -630,16 +638,10 @@ Return this exact JSON shape:
         scenes.push(welcomeScene)
       }
 
-      // Scenes 1-4 — content (#30: bullets already guaranteed above).
-      // LIMIT: Ensure we only process maximum 4 content scenes (for max 6 total: welcome + 4 content + quiz)
-      const MAX_CONTENT_SCENES = 4
-      const limitedContentScenes = contentScenes.slice(0, MAX_CONTENT_SCENES)
-      
-      if (contentScenes.length > MAX_CONTENT_SCENES) {
-        context.warn(`Module "${mod.title}" generated ${contentScenes.length} content scenes; limiting to ${MAX_CONTENT_SCENES}`)
-      }
-      
-      for (const s of limitedContentScenes) {
+      // Scenes N — content (#30: bullets already guaranteed above).
+      // No fixed cap: scene count scales with however many distinct sub-topics
+      // the LLM found in the source material (removal of pagination limits, #6).
+      for (const s of contentScenes) {
         const scene = await prisma.scene.create({
           data: {
             moduleId:           mod.id,
@@ -668,12 +670,15 @@ Return this exact JSON shape:
             ]),
             imagePrompt: s.slide_content?.imagePrompt,
             animation:   s.text_animation_type === 'static' ? 'fade-in' : undefined,
-            // AUTO-DESIGN: Create a designed slide for each content segment
+            // AUTO-DESIGN: Create a designed slide for each content segment.
+            // subtitle MUST come from the LLM's actual generated key insight
+            // (s.slide_content.subtitle) — a hardcoded placeholder here used
+            // to silently override the real generated content every time.
             slideDesign: JSON.stringify({
               layout: 'bullets',
               theme: 'academic',
               title: s.slide_content?.title || 'Content',
-              subtitle: 'Key points to understand',
+              subtitle: s.slide_content?.subtitle || '',
               blocks: [{
                 type: 'bullets',
                 items: (bulletsBlock?.items ?? []).map((it, i) => ({ text: it.text, level: i === 0 ? 1 : 2 }))
@@ -721,13 +726,7 @@ Return this exact JSON shape:
         scenes.push(quizScene)
       }
 
-      // ── Validation: Ensure max 6 total scenes ──────────────────────────────
-      const TOTAL_MAX_SCENES = 6  // welcome (1) + content (4) + quiz (1) = 6
-      if (scenes.length > TOTAL_MAX_SCENES) {
-        context.error(`VIOLATION: Module "${mod.title}" has ${scenes.length} scenes but max is ${TOTAL_MAX_SCENES}. This should not happen!`)
-        throw new Error(`Script generation exceeded maximum scene limit: ${scenes.length} > ${TOTAL_MAX_SCENES}`)
-      }
-      context.log(`  ✓ Scene count valid: ${scenes.length}/${TOTAL_MAX_SCENES} (welcome + ${limitedContentScenes.length} content + quiz)`)
+      context.log(`  ✓ ${scenes.length} scenes (welcome + ${contentScenes.length} content + quiz) — no fixed cap`)
 
       // ── Save script record ────────────────────────────────────────────────
       await prisma.script.deleteMany({ where: { moduleId: mod.id } })

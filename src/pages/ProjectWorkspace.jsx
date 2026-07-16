@@ -6,10 +6,11 @@ import { projectsService } from '@/services/projects'
 import { sourceFilesService } from '@/services/sourceFiles'
 import { scriptsService } from '@/services/scripts'
 import { scenesService } from '@/services/scenes'
+import { modulesService } from '@/services/modules'
 import { agentsService } from '@/services/agents'
 import {
   ArrowLeft, Library, FileText, Mic2, Image, Video, Wand2,
-  Download, Settings, BookOpen, ChevronRight, Loader2, CheckCircle
+  Settings, BookOpen, ChevronRight, Loader2, CheckCircle
 } from 'lucide-react'
 import Spinner from '@/components/ui/Spinner'
 import Button from '@/components/ui/Button'
@@ -22,41 +23,118 @@ import VideoPanel from '@/components/workspace/VideoPanel'
 import CastingSettings from '@/components/workspace/CastingSettings'
 
 /**
- * NEW pipeline order (most expensive last):
- * 1. Library        → upload sources
- * 2. Script         → AI generates text scripts
- * 3. Voice          → Voice AI converts text to audio
- * 4. Visual         → Image AI generates background images
- * 5. Avatar Studio  → HeyGen-style avatar/voice/style settings (#37)
- * 6. Video          → Video AI generates avatar videos (expensive — LAST)
- *
- * Casting (avatar/voice settings) = gear button, quick version of Avatar Studio
+ * SEQUENTIAL PIPELINE ARCHITECTURE (Human-In-The-Loop):
+ * 
+ * Stage 1: Library
+ * → Upload PDF documents and source materials
+ * → UI Status: Card turns green with ✓ on success
+ * → Actions: View or Delete uploaded PDFs
+ * 
+ * Stage 2: Scripts
+ * → Auto-generate scripts from PDF content
+ * → Full CRUD on scenes: Edit, Delete, Add
+ * → Dynamic scene architecture (not fixed 4-segment)
+ * → HITL Gate: Approve Script → Lock for next stage
+ * 
+ * Stage 3: Voices
+ * → Voice casting with ElevenLabs integration
+ * → Configure voice settings and preferences
+ * → Clean, streamlined UI
+ * 
+ * Stage 4: Visual Design
+ * → Choose from design template library
+ * → WYSIWYG canvas with avatar placeholder
+ * → Direct manipulation: Resize, move, position avatar
+ * → Dynamic slide generation (remove 4-segment limits)
+ * → Manual image scaling and responsive assets
+ * → Clean typography with nested key points
+ * 
+ * Stage 5: Video Editing
+ * → Composition canvas (presentation + avatar)
+ * → Remotion-based timeline (Synthesia-like experience)
+ * → Motion graphics and slide transitions
+ * → Module-based merging and sequencing
+ * 
+ * Stage 6: Avatar Studio
+ * → Isolated avatar rendering layer
+ * → Fine-tune avatar position, style, settings
+ * → Feature parity with voice casting setup
+ * 
+ * Stage 7: Final Video
+ * → Pipeline convergence: Presentation + Motion + Avatar
+ * → Synchronized video compilation per module
+ * → Output ready for download
  */
 const STAGES = [
-  { id: 'library',         label: 'Library',         icon: Library,  desc: 'Upload sources',        grad: 'from-blue-500 to-blue-700'    },
-  { id: 'script',          label: 'Script',          icon: FileText, desc: 'Generate scripts',      grad: 'from-indigo-500 to-blue-700'  },
-  { id: 'voice',           label: 'Voice',           icon: Mic2,     desc: 'Text to audio',         grad: 'from-sky-500 to-blue-700'     },
-  { id: 'avatar-studio',   label: 'Avatar Studio',   icon: Wand2,    desc: 'Avatar, voice & style',  grad: 'from-blue-500 to-indigo-700'  },
-  { id: 'visual-designer', label: 'Visual Designer', icon: Image,    desc: 'Animated slides',       grad: 'from-cyan-500 to-blue-700'    },
-  { id: 'video',           label: 'Video',           icon: Video,    desc: 'Avatar videos',         grad: 'from-blue-600 to-sky-700'     },
+  { 
+    id: 'library',
+    label: '1. Library',
+    icon: Library,
+    desc: 'Upload sources & materials',
+  },
+  { 
+    id: 'scripts',
+    label: '2. Scripts',
+    icon: FileText,
+    desc: 'Generate & edit scenes',
+  },
+  { 
+    id: 'voices',
+    label: '3. Voices',
+    icon: Mic2,
+    desc: 'Voice casting & settings',
+  },
+  { 
+    id: 'visual-design',
+    label: '4. Visual Design',
+    icon: Image,
+    desc: 'Templates & WYSIWYG canvas',
+  },
+  { 
+    id: 'video-editing',
+    label: '5. Video Editing',
+    icon: Video,
+    desc: 'Timeline & motion graphics',
+  },
+  { 
+    id: 'avatar-studio',
+    label: '6. Avatar Studio',
+    icon: Wand2,
+    desc: 'Avatar rendering & styling',
+  },
+  { 
+    id: 'final-video',
+    label: '7. Final Video',
+    icon: Video,
+    desc: 'Compilation & export',
+  },
 ]
 
-// Chip that renders a stage icon with a 3D-style bevel: gradient fill, an
-// inner top highlight, a soft outer drop shadow, and a gentle hover tilt.
-function IconChip({ Icon, active, locked, grad }) {
+// Modern 3D icon chip with unified styling
+function IconChip({ active, locked, completed }) {
   return (
     <motion.div
-      className={`relative w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
+      className={`relative w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all ${
         locked
-          ? 'bg-blue-50/70 dark:bg-white/5'
+          ? 'bg-slate-100 dark:bg-white/5'
           : active
-          ? `bg-gradient-to-br ${grad} shadow-[inset_0_1px_1px_rgba(255,255,255,0.45),0_3px_6px_rgba(37,99,235,0.35)]`
-          : 'bg-gradient-to-br from-blue-50 to-sky-100 dark:from-white/10 dark:to-white/5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.6),0_1px_2px_rgba(0,0,0,0.06)]'
+          ? 'bg-gradient-to-br from-blue-500 to-blue-600 shadow-[inset_0_1px_2px_rgba(255,255,255,0.4),0_4px_12px_rgba(0,0,0,0.15)]'
+          : completed
+          ? 'bg-white dark:bg-slate-800/40 border border-green-500'
+          : 'bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-white/10 shadow-sm hover:border-slate-300 dark:hover:border-white/20'
       }`}
-      whileHover={!locked ? { scale: 1.08, rotate: -3 } : {}}
-      transition={{ type: 'spring', stiffness: 350, damping: 15 }}
+      whileHover={!locked ? { scale: 1.1 } : {}}
+      transition={{ type: 'spring', stiffness: 400, damping: 17 }}
     >
-      <Icon className={`w-4 h-4 ${locked ? 'text-slate-300 dark:text-slate-600' : active ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`} />
+      <CheckCircle className={`w-5 h-5 ${
+        locked 
+          ? 'text-slate-300 dark:text-slate-600' 
+          : active 
+          ? 'text-white' 
+          : completed 
+          ? 'text-green-600 dark:text-green-400' 
+          : 'text-slate-400 dark:text-slate-500'
+      }`} />
     </motion.div>
   )
 }
@@ -94,6 +172,41 @@ export default function ProjectWorkspace() {
     queryKey: ['sourceFiles', projectId],
     queryFn: () => sourceFilesService.listByProject(projectId),
     enabled: !!projectId,
+    refetchOnMount: 'stale',
+  })
+
+  const { data: scripts = [] } = useQuery({
+    queryKey: ['scripts', projectId],
+    queryFn: () => scriptsService.listByProject(projectId),
+    enabled: !!projectId,
+    refetchOnMount: 'stale',
+  })
+
+  const { data: modules = [] } = useQuery({
+    queryKey: ['modules', projectId],
+    queryFn: () => modulesService.listByProject(projectId),
+    enabled: !!projectId,
+    refetchOnMount: 'stale',
+  })
+
+  const { data: scenes = [] } = useQuery({
+    queryKey: ['scenes', projectId],
+    queryFn: async () => {
+      if (!modules.length) return []
+      // Fetch scenes for all modules
+      const allScenes = []
+      for (const mod of modules) {
+        try {
+          const modScenes = await scenesService.listByModule(mod.id)
+          allScenes.push(...modScenes)
+        } catch (err) {
+          console.error(`Failed to fetch scenes for module ${mod.id}:`, err)
+        }
+      }
+      return allScenes
+    },
+    enabled: !!projectId && modules.length > 0,
+    refetchOnMount: 'stale',
   })
 
   const invalidate = () => {
@@ -106,10 +219,10 @@ export default function ProjectWorkspace() {
     localStorage.getItem(`profai_casting_gate_${projectId}`) === 'done'
 
   // Navigate to a stage, inserting the Casting Settings popup gate the first
-  // time a project heads into Voice (from Script, or from the sidebar/jump).
+  // time a project heads into Voice (from Scripts, or from the sidebar/jump).
   const goToStage = (stageId) => {
     if (isLocked(stageId)) return
-    if (stageId === 'voice' && !castingGateDone()) {
+    if (stageId === 'voices' && !castingGateDone()) {
       setShowCastingGate(true)
       return
     }
@@ -120,19 +233,100 @@ export default function ProjectWorkspace() {
   const finishCastingGate = () => {
     localStorage.setItem(`profai_casting_gate_${projectId}`, 'done')
     setShowCastingGate(false)
-    setActiveStage('voice')
+    setActiveStage('voices')
     setShowCasting(false)
   }
 
   const isLocked = (stageId) => {
+    // Stages unlock only when previous stage is complete
+    const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'video-editing', 'avatar-studio', 'final-video']
+    const currentIndex = stageOrder.indexOf(stageId)
+    
+    // Library is always unlocked
+    if (currentIndex === 0) return false
+    
+    // Each stage requires previous stage to be complete
+    const previousStageId = stageOrder[currentIndex - 1]
+    return !isStageComplete(previousStageId)
+  }
+
+  const isStageComplete = (stageId) => {
+    /**
+     * CLEAR SEQUENTIAL COMPLETION RULES:
+     * 
+     * Stage 1 (Library):
+     *   - User uploads PDFs
+     *   - User clicks "Generate Journey"
+     *   - Scripts are created
+     *   - COMPLETE when: sources exist AND scripts are generated
+     * 
+     * Stage 2 (Scripts):
+     *   - User views auto-generated scripts
+     *   - User approves ALL scripts
+     *   - COMPLETE when: ALL scripts have approvalStatus === 'approved'
+     * 
+     * Stage 3 (Voices):
+     *   - User selects a voice
+     *   - COMPLETE when: defaultVoiceId is set
+     * 
+     * Stages 4-7: TODO
+     * 
+     * CASCADE DELETE:
+     *   - Delete all PDFs → cascade delete all scripts
+     *   - Reset project status to 'draft'
+     *   - Clear defaultVoiceId, defaultAvatarId
+     *   - Library becomes incomplete (no scripts)
+     *   - Scripts stage locks
+     *   - Voices stage locks
+     *   - User must restart from Library
+     */
+    
     switch (stageId) {
-      case 'library':         return false
-      case 'script':          return sources.length === 0
-      case 'voice':           return !['journey_approved','in_production','completed'].includes(project?.status)
-      case 'visual-designer': return !['journey_approved','in_production','completed'].includes(project?.status)
-      case 'avatar-studio':   return !['journey_approved','in_production','completed'].includes(project?.status)
-      case 'video':           return !['journey_approved','in_production','completed'].includes(project?.status)
-      default:                return true
+      case 'library':
+        // DONE when: sources uploaded AND scripts generated
+        return sources.length > 0 && scripts.length > 0
+        
+      case 'scripts':
+        // DONE when: scripts exist AND ALL are approved
+        return (
+          scripts.length > 0 &&
+          scripts.every(s => s.approvalStatus === 'approved')
+        )
+        
+      case 'voices':
+        // DONE when: voice is selected (defaultVoiceId is set)
+        return (
+          project?.defaultVoiceId !== null &&
+          project?.defaultVoiceId !== undefined
+        )
+        
+      case 'visual-design':
+        // DONE when: at least one module has all scenes generated
+        if (!modules.length) return false
+        return modules.some(mod => {
+          const moduleScenes = scenes.filter(s => s.moduleId === mod.id)
+          return moduleScenes.length > 0 && 
+                 moduleScenes.every(s => !!s.visualAssetUrl)
+        })
+        
+      case 'video-editing':
+        // DONE when: at least one module has all scenes with avatarVideoUrl (HeyGen videos) OR timeline edited
+        // For now, we consider video-editing complete when visual-design is complete (as users can view timeline)
+        // Full completion when at least one module has been merged (fullVideoUrl exists)
+        if (!modules.length) return false
+        return modules.some(mod => {
+          const mod_data = modules.find(m => m.id === mod.id)
+          return !!mod_data?.fullVideoUrl
+        })
+        
+      case 'avatar-studio':
+        return false // TODO
+        
+      case 'final-video':
+        return false // TODO
+        
+      default:
+        return false
     }
   }
 
@@ -152,13 +346,13 @@ export default function ProjectWorkspace() {
       return (
         <div className="flex flex-col items-center justify-center h-full text-center p-12">
           <div className="w-16 h-16 rounded-2xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-white/10 shadow-sm flex items-center justify-center mb-4">
-            <BookOpen className="w-7 h-7 text-blue-300 dark:text-blue-500/60" />
+            <BookOpen className="w-7 h-7 text-slate-300 dark:text-slate-500/60" />
           </div>
           <p className="text-slate-900 dark:text-white font-medium mb-2">{stageInfo?.label} is locked</p>
           <p className="text-slate-500 dark:text-slate-400 text-sm">
-            {activeStage === 'script'
+            {activeStage === 'scripts'
               ? 'Upload at least one source file in the Library first.'
-              : activeStage === 'voice' || activeStage === 'visual-designer'
+              : ['voices', 'visual-design', 'video-editing', 'avatar-studio', 'final-video'].includes(activeStage)
               ? 'Generate and approve scripts first.'
               : 'Complete the previous stages first.'}
           </p>
@@ -168,11 +362,12 @@ export default function ProjectWorkspace() {
 
     switch (activeStage) {
       case 'library':         return <SourcesPanel project={project} onStageChange={setActiveStage} />
-      case 'script':          return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
-      case 'voice':           return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
-      case 'avatar-studio':   return <AvatarStudioPanel project={project} onUpdate={invalidate} onContinue={() => setActiveStage('visual-designer')} />
-      case 'visual-designer': return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
-      case 'video':           return <VideoPanel project={project} onUpdate={invalidate} />
+      case 'scripts':         return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
+      case 'voices':          return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
+      case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'video-editing':   return <VideoPanel project={project} onUpdate={invalidate} />
+      case 'avatar-studio':   return <AvatarStudioPanel project={project} onUpdate={invalidate} onContinue={() => setActiveStage('final-video')} />
+      case 'final-video':     return <VideoPanel project={project} onUpdate={invalidate} />
       default:                return null
     }
   }
@@ -197,81 +392,96 @@ export default function ProjectWorkspace() {
   }
 
   return (
-    <div className="flex h-full bg-[#f5f7fb] dark:bg-[#0a0e1a]">
-      {/* Stage Rail */}
-      <div className="w-14 lg:w-56 bg-white dark:bg-slate-900 border-r border-slate-100 dark:border-white/10 flex flex-col flex-shrink-0">
+    <div className="flex h-full bg-[#f5f7fb] dark:bg-[#0a0e1a] overflow-hidden">
+      {/* Stage Rail — always starts icon-only, single column, at every
+          screen size (no more lg:-breakpoint-only expansion), and expands
+          to show labels only while actually hovered. "group/rail" scopes
+          the hover so nothing outside this rail reacts to it. */}
+      <div className="group/rail w-16 hover:w-80 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 border-r border-slate-100 dark:border-white/10 flex flex-col flex-shrink-0 overflow-hidden transition-all duration-200">
 
-        {/* Back + Project name */}
-        <div className="p-3 border-b border-slate-100 dark:border-white/10">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate('/dashboard')}
-            className="w-full justify-start mb-2"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="hidden lg:block">Projects</span>
-          </Button>
-          <div className="hidden lg:block px-1">
-            <p className="text-xs text-slate-700 dark:text-slate-300 font-medium truncate">{project?.title}</p>
-            <p className="text-xs text-slate-400 dark:text-slate-500 capitalize mt-0.5">
-              {project?.status?.replace(/_/g, ' ') || 'draft'}
-            </p>
+        {/* Header */}
+        <div className="px-2 group-hover/rail:px-6 py-4 border-b border-slate-100 dark:border-white/10 transition-all duration-200">
+          <div className="flex items-center justify-center group-hover/rail:justify-start gap-2 mb-0 group-hover/rail:mb-3">
+            <button
+              onClick={() => navigate('/dashboard')}
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 transition-colors text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-white flex-shrink-0"
+              title="Back to dashboard"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <div className="flex-1 min-w-0 hidden group-hover/rail:block">
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">{project?.title}</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 capitalize">{project?.status?.replace(/_/g, ' ')}</p>
+            </div>
           </div>
         </div>
 
-        {/* Pipeline stages */}
-        <nav className="flex-1 p-2 space-y-1.5">
-          {STAGES.map(({ id, label, icon: Icon, desc, grad }, index) => {
+        {/* Pipeline stages - Scrollable */}
+        <nav className="flex-1 overflow-y-auto px-1.5 group-hover/rail:px-6 py-6 space-y-3 transition-all duration-200">
+          {STAGES.map(({ id, label, icon: Icon, desc }) => {
             const locked = isLocked(id)
             const active = activeStage === id && !showCasting
+            // Only show as completed if NOT locked AND genuinely complete
+            const completed = !locked && isStageComplete(id) && !active
+
             return (
-              <button
+              <motion.button
                 key={id}
                 onClick={() => goToStage(id)}
                 disabled={locked}
-                title={locked ? 'Complete previous stages first' : desc}
-                className={`w-full flex items-center gap-3 px-2 lg:px-2.5 py-2 rounded-xl text-sm text-left transition-all ${
-                  active
-                    ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-500/20'
-                    : locked
-                    ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5'
-                }`}
+                whileHover={!locked ? { x: 4 } : {}}
+                whileTap={!locked ? { scale: 0.98 } : {}}
+                title={label}
+                className={`w-full group text-left transition-all duration-200 ${locked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               >
-                <IconChip Icon={Icon} active={active} locked={locked} grad={grad} />
-                <div className="hidden lg:flex flex-1 items-center justify-between min-w-0">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{label}</p>
+                <div className={`p-2 group-hover/rail:p-4 rounded-2xl border-2 transition-all ${
+                  active
+                    ? 'bg-gradient-to-br from-blue-600 to-blue-700 border-transparent shadow-lg shadow-opacity-20'
+                    : completed
+                    ? 'bg-white dark:bg-slate-800/30 border-green-500 shadow-md'
+                    : locked
+                    ? 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 group-hover:border-slate-200 dark:group-hover:border-white/20'
+                    : 'bg-white dark:bg-slate-800/30 border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 hover:shadow-md'
+                }`}>
+                  <div className="flex items-center justify-center group-hover/rail:justify-start group-hover/rail:items-start gap-3">
+                    <IconChip active={active} locked={locked} completed={completed} />
+                    <div className="flex-1 min-w-0 hidden group-hover/rail:block">
+                      <p className={`text-sm font-semibold ${active ? 'text-white' : completed ? 'text-green-700 dark:text-green-300' : 'text-slate-900 dark:text-white'}`}>{label}</p>
+                      <p className={`text-xs ${active ? 'text-white/80' : completed ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'}`}>{desc}</p>
+                    </div>
+                    <div className="hidden group-hover/rail:flex flex-shrink-0 mt-0.5">
+                      {active && <CheckCircle className="w-4 h-4 text-white" />}
+                      {completed && <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />}
+                      {!locked && !active && !completed && <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-300" />}
+                      {locked && <span className="text-xs text-slate-400 dark:text-slate-500">Locked</span>}
+                    </div>
                   </div>
-                  {!locked && !active && (
-                    <ChevronRight className="w-3 h-3 text-slate-300 dark:text-slate-600 flex-shrink-0" />
-                  )}
                 </div>
-              </button>
+              </motion.button>
             )
           })}
         </nav>
 
         {/* Casting settings button */}
-        <div className="p-2 border-t border-slate-100 dark:border-white/10">
+        <div className="p-2 group-hover/rail:p-6 border-t border-slate-100 dark:border-white/10 bg-gradient-to-b from-transparent to-slate-50 dark:to-slate-900/50 transition-all duration-200">
           <button
             onClick={() => setShowCasting(v => !v)}
-            title="Casting settings — choose avatar and voice"
-            className={`w-full flex items-center gap-3 px-2 lg:px-2.5 py-2.5 rounded-xl text-sm transition-all ${
+            title="Configure avatar, voice, and styling"
+            className={`w-full flex items-center justify-center group-hover/rail:justify-start gap-3 px-2 group-hover/rail:px-4 py-3 rounded-xl font-medium text-sm transition-all ${
               showCasting
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-50 dark:hover:bg-white/5'
+                ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-lg shadow-indigo-500/30'
+                : 'bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/20 hover:shadow-md'
             }`}
           >
             <Settings className="w-4 h-4 flex-shrink-0" />
-            <span className="hidden lg:block text-xs font-medium">Casting Settings</span>
+            <span className="hidden group-hover/rail:inline">Casting Settings</span>
           </button>
         </div>
       </div>
 
-      {/* Main content */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Main content — min-w-0 lets it actually shrink inside the flex row
+          instead of forcing overflow when the viewport is narrow */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
         {renderPanel()}
       </div>
 

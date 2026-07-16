@@ -10,7 +10,7 @@ import { join, parse } from 'path'
 import { existsSync, readFileSync, copyFileSync, unlinkSync } from 'fs'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
-import { compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl } from '../../lib/ffmpegVideo'
+import { compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl, extractAvatarPosition } from '../../lib/ffmpegVideo'
 import { downloadToUploads } from '../../lib/heygenAvatar'
 
 const HEYGEN_API = 'https://api.heygen.com'
@@ -107,6 +107,7 @@ async function pollHeyGenVideoHandler(
         try {
           const meta = JSON.parse(readFileSync(sidecarPath, 'utf8')) as {
             slideVideoUrl: string; cachePath?: string; createdAt?: number
+            avatarPosition?: { x: number; y: number; width: number } | null
           }
           
           // Check if this job has been pending for too long (>30 min indicates a problem)
@@ -125,7 +126,7 @@ async function pollHeyGenVideoHandler(
           const basePath = localPathFromUploadUrl(meta.slideVideoUrl)
           if (basePath) {
             try {
-              const finalPath = await overlayAvatarOnVideo(basePath, avatarPath)
+              const finalPath = await overlayAvatarOnVideo(basePath, avatarPath, meta.avatarPosition)
               finalUrl = `/api/uploads/${parse(finalPath).base}`
               context.log(`Scene ${body.scene_id}: async avatar composited onto slide video after ${elapsedMin}min`)
             } catch (e: any) {

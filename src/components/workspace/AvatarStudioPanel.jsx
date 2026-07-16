@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
+import StageHeader from '@/components/workspace/StageHeader'
 
 const DEFAULT_AVATAR_ID = 'Daisy-inskirt-20220818' // HeyGen's free default avatar — always available
 
@@ -352,15 +353,14 @@ export default function AvatarStudioPanel({ project, onUpdate, onContinue }) {
 
   return (
     <div className="p-6 max-w-none">
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-1">
-          <Wand2 className="w-5 h-5 text-teal-500 dark:text-teal-400" />
-          <h2 className="text-lg font-medium text-slate-900 dark:text-white tracking-wide">Avatar Studio</h2>
-        </div>
-        <p className="text-sm text-slate-500">
-          Choose your presenter, fine-tune their voice, and set the look — applied to every scene's video.
-        </p>
-      </div>
+      <StageHeader
+        icon={Wand2}
+        title="6. Avatar Studio"
+        subtitle="Choose your presenter, fine-tune their voice, and set the look — applied to every scene's video."
+        complete={!!(avatarId && voiceId)}
+        onContinue={handleRenderScene}
+        continueLabel="Continue to Final Video"
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Preview on left (2/3 on desktop) */}
