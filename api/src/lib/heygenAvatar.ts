@@ -82,6 +82,21 @@ export async function createAvatarVideo(opts: {
   let background: any = { type: 'color', value: '#0F172A' }
   try { if (opts.background) background = JSON.parse(opts.background) } catch { /* keep default */ }
 
+  // HeyGen's v2 /video/generate only accepts background.type of 'color',
+  // 'image' or 'video' — a 'transparent' type (from Avatar Studio's
+  // transparent-background option) makes it 400 with "Input tag 'transparent'
+  // … does not match any of the expected tags". The avatar is composited as a
+  // solid cropped picture-in-picture box locally anyway (overlayAvatarOnVideo
+  // does no chroma-keying), so real transparency isn't achievable through
+  // HeyGen here — coerce it to a solid color HeyGen accepts instead of
+  // crashing the whole render.
+  const ALLOWED_BG = ['color', 'image', 'video']
+  if (!background || typeof background !== 'object' || !ALLOWED_BG.includes(background.type)) {
+    background = { type: 'color', value: (background && background.value) || '#0F172A' }
+  } else if (background.type === 'color' && !background.value) {
+    background.value = '#0F172A'
+  }
+
   const submit = async (character: any): Promise<{ ok: boolean; status: number; videoId?: string; body: string }> => {
     const res = await fetch(`${HEYGEN_API}/v2/video/generate`, {
       method: 'POST',

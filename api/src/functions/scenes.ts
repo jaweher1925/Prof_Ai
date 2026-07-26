@@ -14,26 +14,27 @@ app.http('getModuleScenes', {
       const moduleId = req.params.id
       if (!moduleId) return { status: 400, jsonBody: { error: 'moduleId is required' } }
       
-      // Get all scenes for this module with their composition
+      // Get all scenes for this module — composition now lives PER SEGMENT
+      // (#40), not per scene, so it's fetched below alongside each segment.
       const scenes = await prisma.scene.findMany({
         where: { moduleId },
         orderBy: { orderIndex: 'asc' },
-        include: { 
-          composition: true,  // Include slideComposition
-        },
       })
-      
-      // For each scene, get its segments
+
+      // For each scene, get its segments — each carrying its OWN composition
+      // (one editable slide per narrated part, e.g. a welcome scene's
+      // hook/content/content/recap each get their own).
       const result = []
       for (const scene of scenes) {
         const segments = await prisma.sceneSegment.findMany({
           where: { sceneId: scene.id },
           orderBy: { orderIndex: 'asc' },
+          include: { composition: true },
         }).catch(e => {
           ctx.warn(`Failed to fetch segments for scene ${scene.id}: ${e.message}`)
           return []
         })
-        
+
         // If segments have no duration but have audio, estimate from text length
         const enrichedSegments = segments.map(seg => {
           if ((!seg.durationSeconds || seg.durationSeconds === 0) && seg.text) {
@@ -44,11 +45,13 @@ app.http('getModuleScenes', {
           }
           return seg
         })
-        
-        // Map composition to slideComposition field name
-        result.push({ 
-          ...scene, 
-          slideComposition: scene.composition, 
+
+        // Legacy back-compat: slideComposition = the scene's primary
+        // (first) segment's composition — panels that haven't moved to
+        // per-segment editing yet (none currently) can keep reading this.
+        result.push({
+          ...scene,
+          slideComposition: enrichedSegments[0]?.composition ?? null,
           segments: enrichedSegments
         })
       }
@@ -73,10 +76,27 @@ app.http('updateScene', {
         data: {
           ...(body.script_content !== undefined && { scriptContent: body.script_content }),
           ...(body.slide_deck_content !== undefined && { slideDeckContent: body.slide_deck_content }),
+          // Set directly from the Visual Designer's WYSIWYG snapshot on save —
+          // the snapshot IS the finished slide, so there's no separate/slow
+          // "generate slide image" step needed to mark a scene ready.
+          ...(body.visual_asset_url !== undefined && { visualAssetUrl: body.visual_asset_url }),
+          // Editing a scene invalidates its previously-rendered video — the
+          // Visual Design menu's green "Generated" tick is keyed on
+          // avatarVideoUrl, so clearing it here makes the tick disappear the
+          // moment the user changes a generated scene (they'd re-generate).
+          ...(body.avatar_video_url !== undefined && { avatarVideoUrl: body.avatar_video_url }),
           ...(body.visual_prompt !== undefined && { visualPrompt: body.visual_prompt }),
           ...(body.text_animation_type !== undefined && { textAnimationType: body.text_animation_type }),
           ...(body.presenter_position !== undefined && { presenterPosition: body.presenter_position }),
           ...(body.status !== undefined && { status: body.status }),
+          // Approval lock (#user-approve). Passing approved_at: null clears the
+          // approval — the frontend does this the moment a user edits an already
+          // approved scene, so the green "Approved" tick drops until they
+          // re-approve. A non-null ISO string (or the /approve endpoint) sets it.
+          ...(body.approved_at !== undefined && {
+            approvedAt: body.approved_at ? new Date(body.approved_at) : null,
+            ...(body.approved_at ? {} : { status: 'draft' }),
+          }),
         },
       })
       return { status: 200, jsonBody: scene }
@@ -111,7 +131,11 @@ app.http('createScene', {
   },
 })
 
-// DELETE /api/scenes/{id} — removes a scene and re-normalizes orderIndex of remaining siblings
+// DELETE /api/scenes/{id} — removes a scene EVERYWHERE: the Scene row (which
+// cascade-deletes its SceneSegments → their voice clips, slide designs and
+// compositions), and the matching entry in the module's Script.sections so it
+// doesn't linger in the Script stage or re-sync back. Nothing about this scene
+// survives into any later step.
 app.http('deleteScene', {
   methods: ['DELETE'], route: 'scenes/{id}', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
@@ -120,8 +144,45 @@ app.http('deleteScene', {
       const scene = await prisma.scene.findUnique({ where: { id: req.params.id } })
       if (!scene) return { status: 404, jsonBody: { error: 'Scene not found' } }
 
+      // Where does this scene sit among its content-kind siblings? Needed to
+      // remove the right entry from Script.sections.content_scenes below.
+      const siblingsBefore = await prisma.scene.findMany({
+        where: { moduleId: scene.moduleId },
+        orderBy: { orderIndex: 'asc' },
+      })
+      const contentIndex = siblingsBefore
+        .filter(s => s.sceneKind === 'content' && s.orderIndex < scene.orderIndex)
+        .length
+
+      // Delete the scene (cascades segments → voice + slide + composition).
       await prisma.scene.delete({ where: { id: req.params.id } })
 
+      // Strip the matching section from the module's script so the Script stage
+      // (and any re-sync) no longer knows about it. Best-effort — a failure
+      // here must not undo the scene deletion above.
+      if (scene.moduleId) {
+        try {
+          const script = await prisma.script.findFirst({ where: { moduleId: scene.moduleId } })
+          if (script) {
+            const sections = JSON.parse(script.sections || '{}')
+            if (Array.isArray(sections)) {
+              // Legacy flat array — remove by orderIndex position.
+              sections.splice(scene.orderIndex, 1)
+            } else if (scene.sceneKind === 'welcome') {
+              delete sections.welcome
+            } else if (scene.sceneKind === 'quiz') {
+              delete sections.quiz_scene
+            } else if (Array.isArray(sections.content_scenes)) {
+              sections.content_scenes.splice(contentIndex, 1)
+            }
+            await prisma.script.update({ where: { id: script.id }, data: { sections: JSON.stringify(sections) } })
+          }
+        } catch (e: any) {
+          ctx.warn(`deleteScene: could not prune script sections — ${e?.message}`)
+        }
+      }
+
+      // Re-normalize remaining scenes' orderIndex so there's no gap.
       const siblings = await prisma.scene.findMany({
         where: { moduleId: scene.moduleId },
         orderBy: { orderIndex: 'asc' },
@@ -273,13 +334,23 @@ app.http('applyThemeToSegments', {
             delete design.renderedSlideUrl
             return prisma.sceneSegment.update({
               where: { id: seg.id },
-              data: { slideDesign: JSON.stringify(design) },
+              // Also clear the already-generated slide PNG (visualAssetUrl) —
+              // this is what "Generate Slide Image" produces and what shows up
+              // in Video Editing thumbnails. Without this, that image stays
+              // frozen at the OLD theme even though the design JSON (and the
+              // live editor) already reflect the new one, since nothing else
+              // ever re-renders it automatically — only an explicit
+              // Generate/Regenerate action does, and that's a separate step
+              // the user has to take after switching themes. Clearing it here
+              // makes the staleness visible (falls back to "not generated
+              // yet") instead of silently showing the wrong theme.
+              data: { slideDesign: JSON.stringify(design), visualAssetUrl: null },
             })
           } catch {
             // If design is malformed, create a new one with just the theme
             return prisma.sceneSegment.update({
               where: { id: seg.id },
-              data: { slideDesign: JSON.stringify({ theme: body.theme, layout: 'bullets' }) },
+              data: { slideDesign: JSON.stringify({ theme: body.theme, layout: 'bullets' }), visualAssetUrl: null },
             })
           }
         })
@@ -294,7 +365,9 @@ app.http('applyThemeToSegments', {
           mainDesign.theme = body.theme
           await prisma.scene.update({
             where: { id: sceneId },
-            data: { slideDeckContent: JSON.stringify(mainDesign) },
+            // Same staleness fix as segments above — Scene.visualAssetUrl is
+            // the legacy non-segmented equivalent of segment.visualAssetUrl.
+            data: { slideDeckContent: JSON.stringify(mainDesign), visualAssetUrl: null },
           })
         } catch {}
       }
@@ -364,9 +437,19 @@ app.http('updateElementTiming', {
         return { status: 400, jsonBody: { error: 'elementId and startTime are required' } }
       }
 
-      // Get the scene's slide composition
-      const composition = await prisma.slideComposition.findUnique({
+      // Composition now lives per-segment (#40) — this endpoint (used by
+      // Video Editing's element-timing view) still only deals with a
+      // scene's single PRIMARY slide, so resolve that segment first.
+      const primarySegment = await prisma.sceneSegment.findFirst({
         where: { sceneId },
+        orderBy: { orderIndex: 'asc' },
+      })
+      if (!primarySegment) {
+        return { status: 404, jsonBody: { error: 'Scene has no segments' } }
+      }
+
+      const composition = await prisma.slideComposition.findUnique({
+        where: { segmentId: primarySegment.id },
       })
 
       if (!composition) {
@@ -406,7 +489,7 @@ app.http('updateElementTiming', {
       }
 
       const updated = await prisma.slideComposition.update({
-        where: { sceneId },
+        where: { segmentId: primarySegment.id },
         data: updateData,
       })
 

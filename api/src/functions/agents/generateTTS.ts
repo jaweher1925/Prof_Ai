@@ -53,7 +53,30 @@ async function synthesize(text: string, voiceId: string, apiKey: string, setting
   })
   if (!ttsResponse.ok) {
     const errText = await ttsResponse.text()
-    throw new Error(`Voice API error: ${errText}`)
+    // Turn ElevenLabs' raw JSON into a clear, human message — especially for
+    // the common "out of credits" case, which otherwise reaches the user as an
+    // opaque blob. Detect it and say plainly what's wrong and what to do.
+    let friendly = `Voice API error: ${errText}`
+    try {
+      const parsed = JSON.parse(errText)
+      const code = parsed?.detail?.code || parsed?.detail?.status
+      const remaining = parsed?.detail?.message?.match(/have\s+(\d+)\s+credits/i)?.[1]
+      const needed = parsed?.detail?.message?.match(/(\d+)\s+credits are required/i)?.[1]
+      if (code === 'quota_exceeded') {
+        friendly =
+          'ElevenLabs voice credits are exhausted' +
+          (remaining && needed ? ` (${remaining} left, this needs ${needed}).` : '.') +
+          ' Top up or upgrade your ElevenLabs plan, or wait for the monthly quota to reset, then generate voice again.'
+      } else if (ttsResponse.status === 401) {
+        friendly = 'ElevenLabs rejected the API key (401). Check ELEVENLABS_API_KEY in api/.env.'
+      } else if (parsed?.detail?.message) {
+        friendly = `Voice API error: ${parsed.detail.message}`
+      }
+    } catch { /* not JSON — keep the raw text */ }
+    const err = new Error(friendly) as Error & { code?: string; status?: number }
+    if (friendly.startsWith('ElevenLabs voice credits')) err.code = 'quota_exceeded'
+    err.status = ttsResponse.status
+    throw err
   }
   const audioBuffer = Buffer.from(await ttsResponse.arrayBuffer())
   return uploadBuffer(audioBuffer, 'mp3', 'audio/mpeg')
@@ -216,6 +239,12 @@ async function generateTTSHandler(
     context.error('generateTTS error:', error)
     if (sceneIdForCleanup) {
       try { await prisma.scene.update({ where: { id: sceneIdForCleanup }, data: { status: 'draft' } }) } catch {}
+    }
+    // Out-of-credits is a billing state, not a server fault — return 402
+    // (Payment Required) with a flag so the UI can show a distinct "top up
+    // your ElevenLabs plan" notice instead of a generic failure.
+    if (error?.code === 'quota_exceeded') {
+      return { status: 402, jsonBody: { error: error.message, quota_exceeded: true } }
     }
     return { status: 500, jsonBody: { error: error.message || 'TTS generation failed' } }
   }

@@ -41,7 +41,7 @@ function normGender(raw) {
 // session and reused everywhere (this is what fixes the slow "select avatar"
 // load — every picker after the first hits the cache, and the backend itself
 // now also caches the external API call for 10 minutes).
-const AVATARS_QUERY = { queryKey: ['heygen-avatars'], queryFn: () => mediaService.listAvatars(), staleTime: 10 * 60 * 1000 }
+const AVATARS_QUERY = { queryKey: ['heygen-avatars'], queryFn: () => mediaService.listAvatars(), staleTime: 10 * 60 * 1000, initialData: () => mediaService.cachedAvatars(), initialDataUpdatedAt: 0 }
 const VOICES_QUERY  = { queryKey: ['elevenlabs-voices'], queryFn: () => mediaService.listVoices(),  staleTime: 10 * 60 * 1000 }
 
 // ─── Avatar Picker ────────────────────────────────────────────────────────────

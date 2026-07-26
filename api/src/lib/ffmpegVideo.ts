@@ -21,6 +21,21 @@ import type { SlideContent } from './slideRenderer'
 
 const ffmpegPath = require('ffmpeg-static')
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
+
+/**
+ * Shared x264 speed flags for every encode in this file.
+ *
+ * These clips are slideshow-style: a static 1920x1080 slide held for the
+ * length of the narration, plus a small avatar overlay. x264's DEFAULT preset
+ * is 'medium', which budgets most of its time for motion estimation — work
+ * that finds almost nothing on this content but costs minutes per clip at
+ * 1080p. 'veryfast' produces near-identical output here for a fraction of the
+ * time, and '-threads 0' lets x264 use every core instead of its default cap.
+ *
+ * This was the main reason a single scene took 4+ minutes to render.
+ */
+const ENCODE_SPEED = ['-preset', 'veryfast', '-crf', '23', '-threads', '0'] as const
+
 const OUT_W = 1920, OUT_H = 1080
 
 console.log('[ffmpegVideo] Initialized', { UPLOAD_DIR, OUT_W, OUT_H })
@@ -297,109 +312,18 @@ async function renderSegmentClip(
   const baseVf = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black'
   const FPS = 24  // Reduced from 30fps to 24fps for faster rendering
 
-  // Background stays STATIC (no Ken Burns zoom) — text animation handles the motion
-  // Extract text from slide design and apply animation timings
-  let vf = baseVf
-  let useLoop = true
-  
-  try {
-    const durationSec = await getAudioDurationSec(audioPath)
-    
-    // Parse slide design to extract text content
-    let slideDesign: any = {}
-    try {
-      slideDesign = JSON.parse(segment.slideDesign || '{}')
-    } catch {
-      console.warn(`[renderSegmentClip] Could not parse slide design for ${segment.id}`)
-    }
-    
-    // Extract text elements (title + bullets). NOTE: the real slide shape
-    // (as written by compositions.ts#syncCompositionToSegment and
-    // scriptGeneratorAgent.ts) nests bullet text under
-    // slideDesign.blocks[].items[].text — there is no top-level
-    // `slideDesign.bullets` array. This previously always came up empty,
-    // silently skipping the animation-timing drawtext overlay below (the
-    // static PNG background from buildSlide() still carried the real
-    // content, so this alone wasn't the "content missing" bug, but the
-    // per-word/per-line caption timing feature was quietly dead).
-    const textElements: string[] = []
-    if (slideDesign.title) textElements.push(slideDesign.title)
-    const bulletsBlock = Array.isArray(slideDesign.blocks)
-      ? slideDesign.blocks.find((b: any) => b?.type === 'bullets')
-      : null
-    if (bulletsBlock?.items && Array.isArray(bulletsBlock.items)) {
-      textElements.push(
-        ...bulletsBlock.items
-          .map((it: any) => (typeof it === 'string' ? it : it?.text))
-          .filter((t: any) => typeof t === 'string' && t.trim())
-      )
-    }
-    
-    // Parse animation timings
-    let timings: Array<{ elementIndex: number; startMs: number; durationMs: number }> = []
-    if (textAnimationTimings) {
-      try {
-        const parsed = JSON.parse(textAnimationTimings)
-        timings = parsed.timings || []
-      } catch {
-        console.warn(`[renderSegmentClip] Could not parse animation timings for ${segment.id}`)
-      }
-    }
-    
-    // Build text animation filters if we have text and timings
-    let textFilters = ''
-    if (textElements.length > 0 && timings.length > 0) {
-      const drawTextFilters: string[] = []
-      const fontSize = 48
-      const positionX = 100
-      let positionY = 150
-      const lineHeight = fontSize * 1.4
-      
-      for (let i = 0; i < textElements.length; i++) {
-        const text = String(textElements[i])
-          .replace(/'/g, "\\'")
-          .replace(/\n/g, ' ')
-          .slice(0, 100)  // Limit text length
-        
-        const timing = timings.find(t => t.elementIndex === i)
-        
-        if (timing) {
-          // Text with animation timing
-          const startSec = timing.startMs / 1000
-          const endSec = (timing.startMs + timing.durationMs) / 1000
-          
-          // Alpha expression: fade in during startMs→endMs, then stay visible
-          // if(t < start, 0, if(t < end, (t-start)/duration, 1))
-          const alphaExpr = `if(lt(t\\,${startSec})\\,0\\,if(lt(t\\,${endSec})\\,(t-${startSec})/${timing.durationMs / 1000}\\,1))`
-          
-          drawTextFilters.push(
-            `drawtext=text='${text}':x=${positionX}:y=${positionY}:fontsize=${fontSize}:fontcolor=white:fontfile='C\\:/Windows/Fonts/arial.ttf':alpha='${alphaExpr}'`
-          )
-        } else {
-          // Text without timing, visible from start
-          drawTextFilters.push(
-            `drawtext=text='${text}':x=${positionX}:y=${positionY}:fontsize=${fontSize}:fontcolor=white:fontfile='C\\:/Windows/Fonts/arial.ttf'`
-          )
-        }
-        
-        positionY += lineHeight
-      }
-      
-      if (drawTextFilters.length > 0) {
-        textFilters = drawTextFilters.join(',')
-        console.log(`[renderSegmentClip] Applied ${drawTextFilters.length} text animation filters`)
-      }
-    }
-    
-    // Static background with optional text animations
-    vf = textFilters ? `${baseVf},${textFilters}` : baseVf
-    useLoop = true
-    
-    console.log(`[renderSegmentClip] Static background over ${durationSec.toFixed(1)}s with ${textElements.length} text elements`)
-  } catch (err: any) {
-    console.warn(`[renderSegmentClip] Text animation setup failed, using static slide: ${err?.message}`)
-    vf = baseVf
-  }
+  // Background stays STATIC — the slide PNG (whether the Visual Designer's
+  // own WYSIWYG snapshot or the server-side SVG fallback) already has the
+  // title/bullets fully drawn, correctly positioned and styled. This used to
+  // ALSO draw a second, generic-styled copy of that same title/bullet text
+  // on top via ffmpeg drawtext — hardcoded white Arial at a fixed x:100,y:150
+  // position that had no relationship to the slide's real layout — fading in
+  // word-by-word/line-by-line. That's the stray "caption" users were seeing
+  // float over the scene: a duplicate, misplaced re-draw of text already
+  // baked into the background. Removed entirely; the slide image is now the
+  // only place this text is drawn, matching what the editor actually shows.
+  const vf = baseVf
+  const useLoop = true
 
   const buildArgs = (filter: string, loop: boolean): string[] => [
     '-y',
@@ -407,6 +331,13 @@ async function renderSegmentClip(
     '-i', pngPath,
     '-i', audioPath,
     '-c:v', 'libx264',
+    // A slide clip is a STATIC image held for the length of the narration —
+    // x264's default 'medium' preset spends most of its time on motion
+    // estimation that has nothing to find here. 'veryfast' + 'stillimage'
+    // cuts this encode by roughly 5-8x at equivalent visual quality, which is
+    // the single biggest win in the whole render path (see ENCODE_SPEED).
+    ...ENCODE_SPEED,
+    '-tune', 'stillimage',
     '-r', String(FPS),  // uniform fps so xfade transitions can join clips
     '-c:a', 'aac', '-b:a', '192k',
     '-pix_fmt', 'yuv420p',
@@ -529,6 +460,7 @@ async function concatenateVideos(videoPaths: string[]): Promise<string> {
       '-map', '[vout]',
       '-map', '[aout]',
       '-c:v', 'libx264',
+      ...ENCODE_SPEED,
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '192k',
       outPath,
@@ -561,11 +493,21 @@ export async function renderSegmentsToVideo(opts: {
   const segmentVideoPaths: string[] = []
   
   try {
-    for (let i = 0; i < opts.segments.length; i++) {
-      const segment = opts.segments[i]
-      
+    // Segments are INDEPENDENT of one another — each is just its own slide PNG
+    // muxed with its own audio — so rendering them one after another (as this
+    // used to) meant a 4-part scene serialised four full 1080p encodes before
+    // it could even start concatenating. Render them concurrently instead.
+    //
+    // Concurrency is capped rather than unbounded: each ffmpeg already uses
+    // every core via '-threads 0', so launching all segments at once would
+    // oversubscribe the CPU and finish no faster (often slower, plus a memory
+    // spike on long scenes). Two at a time keeps the cores saturated while
+    // still overlapping the single-threaded parts of each job.
+    const RENDER_CONCURRENCY = 2
+
+    const renderOne = async (segment: RenderableSegment, i: number) => {
       console.log(`[renderSegmentsToVideo] Processing segment ${i + 1}/${opts.segments.length}: ${segment.id}`)
-      
+
       // Validate segment has audio
       if (!segment.ttsAudioUrl) {
         throw new Error(`Segment ${segment.id}: Missing ttsAudioUrl (run TTS generation first)`)
@@ -597,10 +539,28 @@ export async function renderSegmentsToVideo(opts: {
       }
 
       // Step 4: Render segment video (PNG + audio)
-      const videoPath = await renderSegmentClip(segment, pngPath, segment.textAnimationTimings)
-      segmentVideoPaths.push(videoPath)
+      return renderSegmentClip(segment, pngPath, segment.textAnimationTimings)
     }
-    
+
+    // Results are written back BY INDEX, so the finished clips stay in
+    // narration order no matter which worker finishes first — concatenating
+    // them out of order would scramble the scene.
+    const rendered: string[] = new Array(opts.segments.length)
+    let cursor = 0
+    const workers = Array.from(
+      { length: Math.min(RENDER_CONCURRENCY, opts.segments.length) },
+      async () => {
+        while (true) {
+          const i = cursor++
+          if (i >= opts.segments.length) break
+          rendered[i] = await renderOne(opts.segments[i], i)
+        }
+      }
+    )
+    await Promise.all(workers)
+    segmentVideoPaths.push(...rendered)
+
+
     // Step 5: Concatenate all segment videos
     const finalVideoPath = await concatenateVideos(segmentVideoPaths)
     
@@ -628,9 +588,46 @@ export function localVideoPathFromUploadUrl(url?: string | null): string | null 
   return localPathFromUploadUrl(url)
 }
 
+// Deliberate breathing room between SCENES in the merged module video — a
+// scene finishing and the next one starting immediately (or crossfading,
+// which is what this used to do by reusing concatenateVideos) read as a
+// jump cut. This is separate from the crossfade used to join SEGMENTS
+// within one scene (concatenateVideos above), which stays smooth/quick on
+// purpose since those are parts of the same continuous scene.
+const SCENE_PAUSE_SEC = 2
+
+/** Extends a clip by holding its last frame (+ silence) for `padSec` more
+ *  seconds, instead of cutting/fading straight into the next clip. */
+async function padClipEnd(inputPath: string, padSec: number): Promise<string> {
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_paused.mp4`)
+  await runFfmpeg([
+    '-y',
+    '-i', inputPath,
+    '-vf', `tpad=stop_mode=clone:stop_duration=${padSec}`,
+    '-af', `apad=pad_dur=${padSec}`,
+    '-c:v', 'libx264',
+    ...ENCODE_SPEED,
+    '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac',
+    outPath,
+  ])
+  return outPath
+}
+
 export async function concatVideos(localPaths: string[]): Promise<string> {
   if (!localPaths.length) throw new Error('No videos to concatenate')
-  return concatenateVideos(localPaths)
+  if (localPaths.length === 1) return localPaths[0]
+  try {
+    // Pad every clip except the last — the last scene doesn't need a pause
+    // after it since there's nothing following it in this video.
+    const padded = await Promise.all(
+      localPaths.map((p, i) => (i < localPaths.length - 1 ? padClipEnd(p, SCENE_PAUSE_SEC) : Promise.resolve(p)))
+    )
+    return await plainConcat(padded)
+  } catch (err: any) {
+    console.warn(`[concatVideos] Pause-padding failed, falling back to a plain crossfaded join with no pause: ${err?.message?.slice(-300)}`)
+    return await concatenateVideos(localPaths)
+  }
 }
 
 /**
@@ -686,6 +683,7 @@ export async function overlayAvatarOnVideo(
     '-map', '[v]',
     '-map', '0:a',
     '-c:v', 'libx264',
+    ...ENCODE_SPEED,
     '-pix_fmt', 'yuv420p',
     '-c:a', 'copy',
     outPath,

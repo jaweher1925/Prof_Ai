@@ -11,6 +11,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { scriptsService } from '@/services/scripts'
+import { scenesService } from '@/services/scenes'
 import { agentsService } from '@/services/agents'
 import {
   Mic2, Play, Square, Loader2, CheckCircle, Sparkles, Edit2, X,
@@ -54,11 +55,53 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
     enabled:  !!project?.id,
   })
 
-  const handleGenerateTTS = async (sceneId, overrideText) => {
+  // `segments` is only passed when the caller has edited text to save first
+  // (the plain Generate/Regenerate buttons never pass overrideText). Persist
+  // the edit BEFORE generating instead of passing it as a one-off
+  // override_text — generateTTS's per-segment path (which almost every scene
+  // takes, since scriptGeneratorAgent gives every scene at least one segment)
+  // only reads segment.text and ignores override_text unless a segment_id is
+  // also given, so the old "just pass override_text" approach silently kept
+  // voicing the ORIGINAL narration while the UI looked like it had changed.
+  // Writing straight to Scene.scriptContent (+ the single segment's text when
+  // there's exactly one) makes this the same write-then-generate flow the
+  // Scripts step uses, so Voice/Scripts/Visual Design stop drifting apart.
+  const handleGenerateTTS = async (sceneId, overrideText, segments) => {
     setGenerating(prev => ({ ...prev, [sceneId]: true }))
     setErrors(prev => ({ ...prev, [sceneId]: null }))
     try {
-      await agentsService.runGenerateTTS(sceneId, project?.defaultVoiceId, overrideText, voiceSettings)
+      if (overrideText !== undefined) {
+        await scenesService.update(sceneId, { script_content: overrideText })
+        if (segments?.length === 1) {
+          await agentsService.updateSceneSegment(segments[0].id, { text: overrideText })
+        }
+      }
+      await agentsService.runGenerateTTS(sceneId, project?.defaultVoiceId, undefined, voiceSettings)
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+      queryClient.invalidateQueries({ queryKey: ['scripts', project.id] })
+      onUpdate?.()
+    } catch (e) {
+      const msg = typeof e?.message === 'string' ? e.message
+        : e?.message ? JSON.stringify(e.message)
+        : 'Audio generation failed'
+      setErrors(prev => ({ ...prev, [sceneId]: msg }))
+    } finally {
+      setGenerating(prev => ({ ...prev, [sceneId]: false }))
+    }
+  }
+
+  // Edit + regenerate the voice script of ONE part of a multi-part scene
+  // straight from the Voice stage (no round-trip to Script Generation).
+  // Persists the segment's text first, then voices just that segment via
+  // generateTTS's segment_id path so the other parts' audio is untouched.
+  const handleGenerateSegment = async (sceneId, segmentId, overrideText) => {
+    setGenerating(prev => ({ ...prev, [sceneId]: true }))
+    setErrors(prev => ({ ...prev, [sceneId]: null }))
+    try {
+      if (overrideText !== undefined) {
+        await agentsService.updateSceneSegment(segmentId, { text: overrideText })
+      }
+      await agentsService.runGenerateTTS(sceneId, project?.defaultVoiceId, undefined, voiceSettings, segmentId)
       queryClient.invalidateQueries({ queryKey: ['scenes'] })
       queryClient.invalidateQueries({ queryKey: ['scripts', project.id] })
       onUpdate?.()
@@ -316,6 +359,7 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
                 errors={errors}
                 playingUrl={playingUrl}
                 onGenerate={handleGenerateTTS}
+                onGenerateSegment={handleGenerateSegment}
                 onPlay={handlePlay}
                 generateAllTrigger={generateAllTrigger}
                 onModuleDone={() => {
@@ -365,10 +409,38 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
 
 // ─── Per-module scene list ────────────────────────────────────────────────────
 
-function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, onPlay, generateAllTrigger, onModuleDone, onStatusChange, onDelete }) {
+// A multi-part scene (welcome scene's hook/content/content/recap, or a quiz
+// scene's one segment per question) is only ACTUALLY fully voiced once EVERY
+// segment has its own ttsAudioUrl. Scene.ttsAudioUrl is just a back-compat
+// mirror of the FIRST segment's clip (see generateTTS.ts) — checking that
+// alone made a scene look "Done" (and get skipped by "Generate All") the
+// moment its first part (hook) had audio, even while later parts
+// (introduction/overview) never got voiced at all. That's what let those
+// segments silently end up with no voice ever generated.
+function isSceneFullyVoiced(scene) {
+  return scene.segments?.length > 1
+    ? scene.segments.every(s => !!s.ttsAudioUrl)
+    : !!scene.ttsAudioUrl
+}
+
+// Human label for an individual narrated part (hook / introduction / overview /
+// recap …) so each segment reads as its own distinct row instead of an
+// anonymous "part 2". Prefer the segment's own slide title, then its type.
+function segmentLabel(seg, index) {
+  if (seg?.slideTitle && seg.slideTitle.trim()) return seg.slideTitle.trim()
+  const t = seg?.segmentType
+  if (t) return t.charAt(0).toUpperCase() + t.slice(1)
+  return `Part ${index + 1}`
+}
+
+function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, onGenerateSegment, onPlay, generateAllTrigger, onModuleDone, onStatusChange, onDelete }) {
   const [editingId,    setEditingId]    = useState(null)
   const [editText,     setEditText]     = useState('')
   const [moduleGenAll, setModuleGenAll] = useState(false)
+  // Which individual segment (part) of a multi-part scene is being edited
+  // inline in the Voice stage, and its working text.
+  const [editingSegId, setEditingSegId] = useState(null)
+  const [segEditText,  setSegEditText]  = useState('')
 
   const { data: scenes = [], isLoading } = useQuery({
     queryKey: ['scenes', moduleId],
@@ -384,15 +456,24 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
 
   // Report progress up to the module header (works even while this list is
   // display:none-collapsed, since it stays mounted — see VoicePanel above).
+  // Count by PART, not by scene — each narrated part (hook/intro/overview/…)
+  // is its own row now, and the header/progress should match that 1:1 with
+  // Script Generation ("nb of script == nb of voice").
+  const countParts = (list) => list.reduce((n, s) =>
+    n + (s.segments?.length > 1 ? s.segments.length : 1), 0)
+  const countVoicedParts = (list) => list.reduce((n, s) =>
+    n + (s.segments?.length > 1
+      ? s.segments.filter(x => !!x.ttsAudioUrl).length
+      : (s.ttsAudioUrl ? 1 : 0)), 0)
+
   useEffect(() => {
     if (!scenes.length) return
-    const done = scenes.filter(s => !!s.ttsAudioUrl).length
-    onStatusChange?.(done, scenes.length)
+    onStatusChange?.(countVoicedParts(scenes), countParts(scenes))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenes])
 
   const runGenerateAll = useCallback(async (sceneList) => {
-    const pending = sceneList.filter(s => !s.ttsAudioUrl)
+    const pending = sceneList.filter(s => !isSceneFullyVoiced(s))
     if (!pending.length) { onModuleDone?.(); return }
     setModuleGenAll(true)
     for (const s of pending) { await onGenerate(s.id) }
@@ -411,15 +492,26 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
   if (isLoading) return <div className="flex justify-center py-4"><Spinner size="sm" /></div>
   if (!scenes.length) return <p className="text-slate-400 dark:text-slate-600 text-sm py-2">No scenes found.</p>
 
-  const allDone   = scenes.every(s => !!s.ttsAudioUrl)
-  const doneCount = scenes.filter(s => !!s.ttsAudioUrl).length
+  const totalParts  = countParts(scenes)
+  const voicedParts = countVoicedParts(scenes)
+  const allDone     = totalParts > 0 && voicedParts === totalParts
+
+  // Flatten every scene into one row PER narrated part. A multi-part scene
+  // (welcome scene's hook/intro/overview/recap) contributes one row per
+  // segment; a single-part scene contributes one row. Numbering runs 1,2,3,…
+  // straight down the list — no "1.1 / 1.2" nesting — so each part reads as
+  // its own separate scene, matching how Script Generation lists them.
+  const flatRows = scenes.flatMap(scene => {
+    const parts = scene.segments?.length > 1 ? scene.segments : [null]
+    return parts.map((seg, si) => ({ scene, seg, si }))
+  })
 
   return (
     <div>
       {/* Module header row */}
       <div className="flex items-center justify-between mb-2">
         <p className="text-xs text-slate-500">
-          {doneCount}/{scenes.length} scenes generated
+          {voicedParts}/{totalParts} scenes generated
           {allDone && <span className="ml-2 text-emerald-600 dark:text-emerald-400">✓ Complete</span>}
         </p>
         {!allDone && (
@@ -436,26 +528,51 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
         )}
       </div>
 
-      {/* Scene cards */}
+      {/* One card PER part — each narrated part is its own numbered scene
+          (1, 2, 3, …), not nested under a parent. */}
       <div className="space-y-2">
-        {scenes.map((scene, i) => {
+        {flatRows.map((row, idx) => {
+          const { scene, seg, si } = row
+          const isPart    = !!seg
+          const number    = idx + 1
+          const audioUrl  = isPart ? seg.ttsAudioUrl : scene.ttsAudioUrl
+          const hasAudio  = !!audioUrl
+          const scriptText = isPart ? (seg.text || '') : (scene.scriptContent || '')
+          const label     = isPart ? segmentLabel(seg, si) : null
           const isGen     = generating[scene.id] || scene.status === 'assets_generating' || moduleGenAll
-          const hasAudio  = !!scene.ttsAudioUrl
-          const err       = errors[scene.id]
-          const isEditing = editingId === scene.id
+          const err       = isPart ? null : errors[scene.id]
+          const isEditing = isPart ? (editingSegId === seg.id) : (editingId === scene.id)
+          const curEditText = isPart ? segEditText : editText
+          const setCurEditText = (v) => isPart ? setSegEditText(v) : setEditText(v)
+
+          const startEdit = () => {
+            if (isPart) { setEditingSegId(seg.id); setSegEditText(seg.text || '') }
+            else { setEditingId(scene.id); setEditText(scene.scriptContent || '') }
+          }
+          const cancelEdit = () => { isPart ? setEditingSegId(null) : setEditingId(null) }
+          // Save the edited script + regenerate JUST this part (per-segment TTS)
+          // for a part; for a single-part scene, the whole scene.
+          const saveAndGen = () => {
+            if (isPart) { onGenerateSegment?.(scene.id, seg.id, segEditText); setEditingSegId(null) }
+            else { onGenerate(scene.id, editText, scene.segments); setEditingId(null) }
+          }
+          const regen = () => { isPart ? onGenerateSegment?.(scene.id, seg.id) : onGenerate(scene.id) }
 
           return (
-            <div key={scene.id} className="rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] p-3">
+            <div key={isPart ? seg.id : scene.id} className="rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] p-3">
               <div className="flex items-start gap-3">
-                <span className="text-xs text-indigo-500 dark:text-indigo-400 font-bold w-5 flex-shrink-0 mt-0.5">{i + 1}</span>
+                <span className="text-xs text-indigo-500 dark:text-indigo-400 font-bold w-5 flex-shrink-0 mt-0.5 tabular-nums">{number}</span>
                 <div className="flex-1 min-w-0">
+                  {label && (
+                    <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 mb-0.5 truncate">{label}</p>
+                  )}
                   {isEditing ? (
-                    <textarea value={editText} onChange={e => setEditText(e.target.value)}
-                      className="w-full bg-slate-800/80 border border-indigo-500/40 rounded-lg p-2 text-xs text-slate-900 dark:text-white resize-none focus:outline-none focus:border-indigo-500 mb-2"
+                    <textarea value={curEditText} onChange={e => setCurEditText(e.target.value)}
+                      className="w-full bg-slate-100 dark:bg-slate-800/80 border border-indigo-500/40 rounded-lg p-2 text-xs text-slate-900 dark:text-white resize-none focus:outline-none focus:border-indigo-500 mb-2"
                       rows={5} autoFocus />
                   ) : (
                     <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed mb-2">
-                      {scene.scriptContent?.slice(0, 150)}{scene.scriptContent?.length > 150 ? '...' : ''}
+                      {scriptText.slice(0, 150)}{scriptText.length > 150 ? '…' : ''}
                     </p>
                   )}
                   {err && <p className="text-xs text-red-500 dark:text-red-400">{err}</p>}
@@ -464,17 +581,17 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
 
               <div className="flex items-center gap-2 mt-2 ml-8">
                 {!isEditing ? (
-                  <button onClick={() => { setEditingId(scene.id); setEditText(scene.scriptContent || '') }}
-                    className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-600 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors px-2 py-1 rounded-lg hover:bg-indigo-500/10">
+                  <button onClick={startEdit} disabled={isGen}
+                    className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-600 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-40 transition-colors px-2 py-1 rounded-lg hover:bg-indigo-500/10">
                     <Edit2 className="w-3 h-3" /> Edit text
                   </button>
                 ) : (
                   <>
-                    <button onClick={() => { onGenerate(scene.id, editText); setEditingId(null) }}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors">
+                    <button onClick={saveAndGen} disabled={isGen || !curEditText.trim()}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition-colors">
                       <Sparkles className="w-3 h-3" /> Generate with this text
                     </button>
-                    <button onClick={() => setEditingId(null)}
+                    <button onClick={cancelEdit}
                       className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 px-2 py-1 rounded-lg transition-colors">
                       <X className="w-3 h-3" /> Cancel
                     </button>
@@ -484,11 +601,11 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
                 <div className="flex-1" />
 
                 {hasAudio && !isEditing && (
-                  <button onClick={() => onPlay(scene.ttsAudioUrl)}
+                  <button onClick={() => onPlay(audioUrl)}
                     className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
-                      playingUrl === scene.ttsAudioUrl ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-indigo-600'
-                    }`} title={playingUrl === scene.ttsAudioUrl ? 'Stop' : 'Play audio'}>
-                    {playingUrl === scene.ttsAudioUrl
+                      playingUrl === audioUrl ? 'bg-indigo-600' : 'bg-slate-700 hover:bg-indigo-600'
+                    }`} title={playingUrl === audioUrl ? 'Stop' : 'Play audio'}>
+                    {playingUrl === audioUrl
                       ? <Square className="w-3 h-3 text-slate-900 dark:text-white" />
                       : <Play className="w-3 h-3 text-slate-900 dark:text-white ml-0.5" />}
                   </button>
@@ -499,25 +616,30 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
                     ? <div className="flex items-center gap-2">
                         <Badge variant="green"><CheckCircle className="w-3 h-3 mr-1" />Done</Badge>
                         <button
-                          onClick={() => onGenerate(scene.id)}
+                          onClick={regen}
                           disabled={isGen}
-                          title="Regenerate with the current casting voice"
+                          title={isPart ? 'Regenerate voice for this part only' : 'Regenerate with the current casting voice'}
                           className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 disabled:opacity-50 transition-colors px-2 py-1 rounded-lg hover:bg-indigo-500/10"
                         >
                           {isGen ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
                           Regenerate
                         </button>
-                        <button
-                          onClick={() => onDelete?.(scene.id)}
-                          disabled={isGen}
-                          title="Delete voice audio and timing data"
-                          className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
-                        >
-                          <X className="w-3 h-3" />
-                          Delete
-                        </button>
+                        {/* Per-part delete isn't wired server-side; delete stays
+                            a whole-scene action, so only offer it on single-part
+                            scenes to avoid implying it removes just one part. */}
+                        {!isPart && (
+                          <button
+                            onClick={() => onDelete?.(scene.id)}
+                            disabled={isGen}
+                            title="Delete voice audio and timing data"
+                            className="flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
+                          >
+                            <X className="w-3 h-3" />
+                            Delete
+                          </button>
+                        )}
                       </div>
-                    : <Button size="sm" variant="secondary" disabled={isGen} onClick={() => onGenerate(scene.id)}>
+                    : <Button size="sm" variant="secondary" disabled={isGen} onClick={regen}>
                         {isGen ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Generating…</> : <><Sparkles className="w-3.5 h-3.5" />Generate</>}
                       </Button>
                 )}

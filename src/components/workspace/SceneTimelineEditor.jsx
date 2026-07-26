@@ -16,7 +16,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { scenesService } from '@/services/scenes'
 import { agentsService } from '@/services/agents'
-import { Volume2, RotateCcw, GripHorizontal, Play, Pause, Sparkles } from 'lucide-react'
+import { Volume2, RotateCcw, GripHorizontal, Play, Pause, Sparkles, Star } from 'lucide-react'
 import Spinner from '@/components/ui/Spinner'
 import Button from '@/components/ui/Button'
 
@@ -24,7 +24,7 @@ import Button from '@/components/ui/Button'
 // VISUAL DESIGN PREVIEW — Shows the exact slide that will be rendered
 // ═══════════════════════════════════════════════════════════════════════════
 
-function VisualSlidePreview({ composition, template = 'modern', elements = null, revealAt = null, useAvatar = true }) {
+export function VisualSlidePreview({ composition, template = 'modern', elements = null, revealAt = null, useAvatar = true, avatarImageUrl = null, avatarAnimating = false }) {
   // When revealAt is a number (only while Play is active), each piece only
   // shows once the current playback time has passed its element's
   // configured startTime — simulating how the final video reveals title,
@@ -70,17 +70,18 @@ function VisualSlidePreview({ composition, template = 'modern', elements = null,
     )
   }
 
+  // GVSU palette — keep in step with slideRenderer.ts THEMES.
   const themes = {
-    modern: { bg: '#0B1220', accent: '#3B82F6', text: '#F8FAFC' },
-    minimal: { bg: '#FAFAFA', accent: '#6B7280', text: '#111827' },
-    vibrant: { bg: '#2A0A1A', accent: '#EC4899', text: '#FFF5F7' },
-    corporate: { bg: '#111827', accent: '#F59E0B', text: '#F9FAFB' },
-    ocean: { bg: '#041A2E', accent: '#06B6D4', text: '#F0FDFF' },
-    forest: { bg: '#08170D', accent: '#16A34A', text: '#F0FDF4' },
-    sunset: { bg: '#1F1408', accent: '#F97316', text: '#FFFBEB' },
-    elegant: { bg: '#0D0D0D', accent: '#D97706', text: '#F5F5F5' },
-    academic: { bg: '#0A1A0A', accent: '#10B981', text: '#F0FDF4' },
-    startup: { bg: '#05070D', accent: '#58A6FF', text: '#F0F6FC' },
+    modern: { bg: '#001A5C', accent: '#0ECBF0', text: '#FFFFFF' },
+    minimal: { bg: '#FFFFFF', accent: '#13155C', text: '#0B1220' },
+    vibrant: { bg: '#1E052C', accent: '#0ECBF0', text: '#FFFFFF' },
+    corporate: { bg: '#0B0B0D', accent: '#DEC197', text: '#FFFFFF' },
+    ocean: { bg: '#04182E', accent: '#0ECBF0', text: '#FFFFFF' },
+    forest: { bg: '#080F26', accent: '#DEC197', text: '#FFFFFF' },
+    sunset: { bg: '#2F1C13', accent: '#DEC197', text: '#FFFFFF' },
+    elegant: { bg: '#000000', accent: '#DEC197', text: '#FFFFFF' },
+    academic: { bg: '#FBF8F1', accent: '#0032A0', text: '#1A1206' },
+    startup: { bg: '#050A24', accent: '#0ECBF0', text: '#FFFFFF' },
   }
   const theme = themes[template] || themes.modern
 
@@ -269,19 +270,30 @@ function VisualSlidePreview({ composition, template = 'modern', elements = null,
             box regardless of mode was misleading. */}
         {useAvatar && (
           <div
-            className="absolute flex items-center justify-center bg-indigo-500/20 border-2 border-indigo-400 rounded-lg"
+            className={`absolute rounded-lg overflow-hidden border border-white/30 shadow-lg ${avatarAnimating ? 'pa-avatar-speaking' : ''}`}
             style={{
               left: `${composition.avatarX}%`,
               top: `${composition.avatarY}%`,
               width: `${composition.avatarWidth}%`,
               aspectRatio: '9/16',
               transform: 'translate(-50%, -50%)',
+              background: avatarImageUrl ? '#0f172a' : 'rgba(99,102,241,0.2)',
             }}
           >
-            <div className="text-center pointer-events-none">
-              <div className="text-xs font-bold text-indigo-600 dark:text-indigo-300">AVATAR</div>
-              <div className="w-3 h-3 text-indigo-400 mx-auto mt-1">⋮⋮</div>
-            </div>
+            {avatarImageUrl ? (
+              // The real presenter photo — same avatar that's composited into
+              // the rendered video, so the preview actually shows who's talking
+              // instead of an empty "AVATAR" placeholder box. While playing it
+              // gets a subtle speaking bob (pa-avatar-speaking) so it feels alive.
+              <img src={avatarImageUrl} alt="Presenter" className="w-full h-full object-cover pointer-events-none" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-center pointer-events-none">
+                <div>
+                  <div className="text-xs font-bold text-indigo-600 dark:text-indigo-300">AVATAR</div>
+                  <div className="text-[9px] text-indigo-400 mt-0.5">pick one in Casting</div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -296,51 +308,64 @@ function VisualSlidePreview({ composition, template = 'modern', elements = null,
 function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlayStateChange }) {
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
+  // Which PART's audio is currently playing. A scene is several parts (hook,
+  // content, …); playing the whole scene means playing each part's audio
+  // back-to-back so the total time matches the full scene, not just part 1.
+  const [partIndex, setPartIndex] = useState(0)
   const audioRef = useRef(null)
 
-  // Report play/pause + live time up to the parent so the slide preview and
-  // element timeline above can reveal/scrub in sync with what's actually
-  // playing, instead of only this waveform bar reacting to playback.
   useEffect(() => { onPlayStateChange?.(playing) }, [playing, onPlayStateChange])
   useEffect(() => { onTick?.(currentTime) }, [currentTime, onTick])
 
-  // Calculate total time from segments, fall back to prop
-  // Use durationSeconds field (from API) or duration (legacy)
-  const totalTime = segments.length > 0 
+  // Ordered list of each part's audio + its duration.
+  const parts = segments
+    .map(seg => ({ url: seg.audioUrl || seg.ttsAudioUrl, dur: seg.durationSeconds || seg.duration || 0 }))
+    .filter(p => p.url)
+
+  const totalTime = segments.length > 0
     ? segments.reduce((sum, seg) => sum + (seg.durationSeconds || seg.duration || 0), 0)
     : totalDuration
 
-  // Fallback: if no segments or zero duration, show default message
-  const hasSegments = segments.length > 0 && totalTime > 0
+  // Global time elapsed BEFORE the given part starts.
+  const durBefore = (idx) => parts.slice(0, idx).reduce((s, p) => s + p.dur, 0)
+
+  const hasSegments = parts.length > 0 && totalTime > 0
+  const currentUrl = parts[partIndex]?.url || null
 
   useEffect(() => {
     if (!audioRef.current) return
-    
+    const el = audioRef.current
+
     if (playing) {
-      audioRef.current.play().catch(err => console.error('Playback error:', err))
+      el.play().catch(err => console.error('Playback error:', err))
     } else {
-      audioRef.current.pause()
+      el.pause()
     }
 
     const handleTimeUpdate = () => {
-      if (audioRef.current) {
-        setCurrentTime(audioRef.current.currentTime)
-      }
+      // Global scene time = time already spent on earlier parts + this part's.
+      setCurrentTime(durBefore(partIndex) + (el.currentTime || 0))
     }
 
     const handleEnded = () => {
-      setPlaying(false)
-      setCurrentTime(0)
+      // Chain to the next part; when the last part ends, the whole scene is done.
+      if (partIndex < parts.length - 1) {
+        setPartIndex(i => i + 1)
+      } else {
+        setPlaying(false)
+        setCurrentTime(0)
+        setPartIndex(0)
+      }
     }
 
-    audioRef.current.addEventListener('timeupdate', handleTimeUpdate)
-    audioRef.current.addEventListener('ended', handleEnded)
+    el.addEventListener('timeupdate', handleTimeUpdate)
+    el.addEventListener('ended', handleEnded)
 
     return () => {
-      audioRef.current?.removeEventListener('timeupdate', handleTimeUpdate)
-      audioRef.current?.removeEventListener('ended', handleEnded)
+      el.removeEventListener('timeupdate', handleTimeUpdate)
+      el.removeEventListener('ended', handleEnded)
     }
-  }, [playing])
+  }, [playing, partIndex, parts.length])
 
   if (!hasSegments) {
     return (
@@ -352,46 +377,36 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
     )
   }
 
-  // Get the first segment's audio URL
-  const audioUrl = segments[0]?.audioUrl || segments[0]?.ttsAudioUrl
-
-  let currentTimePos = 0
-  const bars = segments.map((seg, idx) => {
-    const start = currentTimePos
-    const end = currentTimePos + (seg.durationSeconds || seg.duration || 0)
-    const percent = ((seg.durationSeconds || seg.duration || 0) / totalTime) * 100
-    const isActive = currentTime >= start && currentTime < end
-    currentTimePos = end
-
-    return (
-      <div
-        key={seg.id || idx}
-        className={`relative flex items-center justify-center overflow-hidden transition-all cursor-pointer ${
-          isActive
-            ? 'bg-indigo-600/70 border-indigo-500'
-            : 'bg-indigo-500/40 border-indigo-500/60 hover:bg-indigo-500/60'
-        } border-r border-indigo-500/60`}
-        style={{ flex: `${percent} 0 0` }}
-        title={`${start.toFixed(1)}s - ${end.toFixed(1)}s: ${seg.text?.substring(0, 50) || 'Segment ' + (idx + 1)}`}
-      >
-        {percent > 12 && (
-          <span className="text-[9px] font-bold text-indigo-900 dark:text-indigo-100 text-center px-1 line-clamp-1">
-            {(seg.durationSeconds || seg.duration || 0)?.toFixed(1)}s
-          </span>
-        )}
-      </div>
-    )
-  })
+  // Seek to a global scene time — find which part it lands in, switch to that
+  // part's audio, and offset within it.
+  const seekTo = (globalTime) => {
+    const t = Math.max(0, Math.min(globalTime, totalTime))
+    let idx = 0
+    let acc = 0
+    for (let i = 0; i < parts.length; i++) {
+      if (t < acc + parts[i].dur || i === parts.length - 1) { idx = i; break }
+      acc += parts[i].dur
+    }
+    setPartIndex(idx)
+    setCurrentTime(t)
+    // Apply the within-part offset once the (possibly new) source is ready.
+    const within = t - durBefore(idx)
+    setTimeout(() => { if (audioRef.current) { try { audioRef.current.currentTime = within } catch {} } }, 0)
+  }
 
   return (
     <div className="w-full space-y-2">
       {/* Audio Player Controls */}
       <div className="flex items-center gap-2">
         <button
-          onClick={() => setPlaying(!playing)}
-          disabled={!audioUrl}
+          onClick={() => {
+            // Starting fresh from the end/stopped → restart at part 1.
+            if (!playing && currentTime >= totalTime - 0.05) { setPartIndex(0); setCurrentTime(0) }
+            setPlaying(p => !p)
+          }}
+          disabled={!currentUrl}
           className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 disabled:cursor-not-allowed text-white transition-colors"
-          title={playing ? 'Pause' : 'Play'}
+          title={playing ? 'Pause' : 'Play whole scene'}
         >
           {playing ? (
             <Pause className="w-4 h-4" />
@@ -400,29 +415,28 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
           )}
         </button>
         <span className="text-xs font-mono text-slate-600 dark:text-slate-400 min-w-16">
-          {Math.floor(currentTime)}s / {totalTime.toFixed(0)}s
+          {Math.min(Math.floor(currentTime), Math.round(totalTime))}s / {totalTime.toFixed(0)}s
         </span>
-        <div className="flex-1 h-1 bg-slate-300 dark:bg-slate-700 rounded-full cursor-pointer" onClick={(e) => {
-          if (audioRef.current) {
-            const rect = e.currentTarget.getBoundingClientRect()
-            const percent = (e.clientX - rect.left) / rect.width
-            audioRef.current.currentTime = percent * totalTime
-          }
+        <div className="flex-1 h-1 bg-slate-300 dark:bg-slate-700 rounded-full cursor-pointer overflow-hidden" onClick={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          const percent = (e.clientX - rect.left) / rect.width
+          seekTo(percent * totalTime)
         }}>
-          <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${(currentTime / totalTime) * 100}%` }} />
+          {/* Clamp to 100% — the real audio can run a bit longer than the
+              estimated total, which would otherwise push the fill past the bar. */}
+          <div className="h-full bg-indigo-600 rounded-full" style={{ width: `${Math.min(100, (currentTime / totalTime) * 100)}%` }} />
         </div>
       </div>
 
-      {/* Waveform-like visualization */}
-      <div className="w-full h-10 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden flex shadow-sm">
-        {bars}
-      </div>
-
-      {/* Hidden audio element */}
-      {audioUrl && (
+      {/* Hidden audio element — src is the CURRENT part; changing part swaps it
+          and the play effect resumes on the new part. autoPlay keeps a chained
+          part playing when the previous one ended mid-scene. */}
+      {currentUrl && (
         <audio
           ref={audioRef}
-          src={audioUrl}
+          key={partIndex}
+          src={currentUrl}
+          autoPlay={playing}
           onError={(e) => console.error('Audio error:', e)}
         />
       )}
@@ -434,7 +448,7 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
 // ELEMENT TIMELINE TRACKS — Automatically extracted from slide design
 // ═══════════════════════════════════════════════════════════════════════════
 
-function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadTime = null }) {
+function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadTime = null, onSelect }) {
   const [dragging, setDragging] = useState(null)
   const [selected, setSelected] = useState(null)
   const containerRef = useRef(null)
@@ -453,7 +467,10 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
     e.stopPropagation()
     
     setSelected(el.id)
-    
+    // Tell the preview which element was picked so it can jump to that moment
+    // and show that point on the slide.
+    onSelect?.(el)
+
     if (!containerRef.current) return
     const rect = containerRef.current.getBoundingClientRect()
     
@@ -564,7 +581,10 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
           {typeof playheadTime === 'number' && (
             <div
               className="absolute top-0 bottom-0 w-px bg-red-500 z-20 pointer-events-none"
-              style={{ left: `calc(9rem + ${timeToPixel(playheadTime)}px)`, boxShadow: '0 0 4px rgba(239,68,68,0.6)' }}
+              // Clamp to the track's end — the real audio can run slightly past
+              // the estimated total, which would otherwise send the playhead
+              // out beyond the timeline.
+              style={{ left: `calc(9rem + ${timeToPixel(Math.min(playheadTime, totalTime))}px)`, boxShadow: '0 0 4px rgba(239,68,68,0.6)' }}
             >
               <div className="absolute -top-1 -left-1 w-2 h-2 rounded-full bg-red-500" />
             </div>
@@ -603,8 +623,10 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
               {/* Draggable element block */}
               <div
                 className={`absolute top-1 bottom-1 rounded border-2 flex items-center px-1.5 gap-1 transition-all cursor-grab active:cursor-grabbing ${
-                  dragging === el.id 
-                    ? 'opacity-100 ring-2 ring-offset-1 ring-indigo-400 shadow-md' 
+                  dragging === el.id
+                    ? 'opacity-100 ring-2 ring-offset-1 ring-indigo-400 shadow-md'
+                    : selected === el.id
+                    ? 'opacity-100 ring-2 ring-indigo-400'
                     : 'opacity-85 hover:opacity-100'
                 } ${typeColors[el.type] || typeColors.content} text-white`}
                 style={{
@@ -634,7 +656,7 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
 
-export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true }) {
+export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true, avatarImageUrl = null, hidePreview = false, onPlayingChange, onTick, onTimelineReady, onElementSelect }) {
   const queryClient = useQueryClient()
   const [elements, setElements] = useState([])
   const [composition, setComposition] = useState(null)
@@ -646,6 +668,15 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true 
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackTime, setPlaybackTime] = useState(0)
   const [generatingSlide, setGeneratingSlide] = useState(false)
+
+  // Feed the parent (Video Editing) everything it needs to render the ONE
+  // preview up top as the play surface: whether we're playing, the current
+  // playback time, and the composition + element timing. That way the reveal
+  // (and the animated avatar) happen in the existing top preview instead of a
+  // second preview appearing down here.
+  useEffect(() => { onPlayingChange?.(isPlaying) }, [isPlaying, onPlayingChange])
+  useEffect(() => { onTick?.(playbackTime) }, [playbackTime, onTick])
+  useEffect(() => { onTimelineReady?.({ composition, elements }) }, [composition, elements, onTimelineReady])
 
   // Lets the user get the REAL generated slide image without leaving Video
   // Editing to go find the "Generate" button back in Visual Designer. Until
@@ -858,6 +889,10 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true 
           while Play is running we switch to the reconstructed preview —
           it's the only way to actually show title/key-insight/points
           appearing in sync with the Element Timeline below. */}
+      {/* Slide-design preview — hidden when the parent already shows a preview
+          (Video Editing renders the ONE preview up top, including the play/reveal
+          simulation, so nothing extra appears down here). */}
+      {!hidePreview && (
       <div>
         <div className="flex items-center justify-between mb-2">
           <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Slide Design</p>
@@ -875,14 +910,31 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true 
               elements={elements}
               revealAt={playbackTime}
               useAvatar={useAvatar}
+              avatarImageUrl={avatarImageUrl}
             />
             <p className="text-[10px] text-indigo-600 dark:text-indigo-400 mt-1.5">
               Simulating reveal timing from the Element Timing track below — pause to see the actual generated design.
             </p>
           </>
         ) : scene?.visualAssetUrl ? (
-          <div className="w-full aspect-video rounded-xl border-2 border-slate-300 dark:border-slate-600 shadow-lg overflow-hidden bg-slate-900">
+          // The saved slide snapshot EXCLUDES the avatar (it's a separate
+          // overlay in the render), so overlay the real presenter photo on top
+          // at its designed position — otherwise the avatar "disappears" here.
+          <div className="relative w-full aspect-video rounded-xl border-2 border-slate-300 dark:border-slate-600 shadow-lg overflow-hidden bg-slate-900">
             <img src={scene.visualAssetUrl} alt="Generated slide" className="w-full h-full object-contain" />
+            {useAvatar && avatarImageUrl && (
+              <div className="absolute rounded-lg overflow-hidden border border-white/30 shadow-lg"
+                style={{
+                  left: `${composition?.avatarX ?? 85}%`,
+                  top: `${composition?.avatarY ?? 50}%`,
+                  width: `${composition?.avatarWidth ?? 22}%`,
+                  aspectRatio: '9/16',
+                  transform: 'translate(-50%, -50%)',
+                  background: '#0f172a',
+                }}>
+                <img src={avatarImageUrl} alt="Presenter" className="w-full h-full object-cover" />
+              </div>
+            )}
           </div>
         ) : (
           <>
@@ -904,6 +956,7 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true 
           </>
         )}
       </div>
+      )}
 
       {/* VOICE NARRATION TIMELINE */}
       <div>
@@ -949,6 +1002,7 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true 
             elements={elements}
             onElementUpdate={handleUpdate}
             playheadTime={isPlaying ? playbackTime : null}
+            onSelect={onElementSelect}
           />
         )}
       </div>

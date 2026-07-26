@@ -151,7 +151,7 @@ export default function SourcesPanel({ project, onStageChange }) {
   const libraryComplete = sources.length > 0 && scripts.length > 0
 
   return (
-    <div className="p-6 max-w-2xl">
+    <div className="p-6 max-w-6xl mx-auto">
       <StageHeader
         icon={Library}
         title="1. Library"
@@ -177,10 +177,14 @@ export default function SourcesPanel({ project, onStageChange }) {
         </div>
       )}
 
-      {/* Upload area */}
-      <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 mb-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex gap-2">
+      {/* Two-column layout — the panel used to be capped at max-w-2xl, leaving
+          the whole right half of the screen empty. Add sources on the LEFT,
+          the growing source list on the RIGHT, so the width is actually used. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-5 items-start">
+
+        {/* LEFT: add a source */}
+        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 lg:sticky lg:top-6">
+          <div className="flex gap-2 mb-4">
             {['file', 'url'].map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tab === t ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
@@ -188,78 +192,102 @@ export default function SourcesPanel({ project, onStageChange }) {
               </button>
             ))}
           </div>
-          {sources.length > 0 && (
-            <Button onClick={handleGenerate} disabled={generating} size="sm" className="gap-2">
-              {generating
-                ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing…</>
-                : <><Sparkles className="w-4 h-4" />Generate Journey</>}
-            </Button>
+
+          {tab === 'file' ? (
+            <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-8 cursor-pointer hover:border-indigo-500/50 transition-colors">
+              {uploading
+                ? <Loader2 className="w-10 h-10 text-indigo-500 dark:text-indigo-400 animate-spin mb-3" />
+                : <Upload className="w-10 h-10 text-slate-400 dark:text-slate-600 mb-3" />}
+              <p className="text-sm text-slate-500 dark:text-slate-400">{uploading ? 'Uploading…' : 'Click to upload'}</p>
+              <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">PDF, DOCX, XLSX, TXT · Max 50 MB</p>
+              <input
+                type="file"
+                className="hidden"
+                accept=".pdf,.docx,.xlsx,.txt"
+                onChange={handleFileChange}
+                disabled={uploading}
+              />
+            </label>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="https://example.com/article"
+                className="flex-1"
+                onKeyDown={(e) => e.key === 'Enter' && handleUrlAdd()}
+              />
+              <Button onClick={handleUrlAdd} disabled={!urlInput.trim() || createMutation.isPending} variant="secondary">
+                <Link className="w-4 h-4" />
+                Add
+              </Button>
+            </div>
+          )}
+
+          {/* Generate Journey — the primary action, given room on the left card */}
+          <Button
+            onClick={handleGenerate}
+            disabled={generating || sources.length === 0}
+            className="w-full gap-2 mt-4 justify-center"
+          >
+            {generating
+              ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing…</>
+              : <><Sparkles className="w-4 h-4" />Generate Journey</>}
+          </Button>
+          {sources.length === 0 && (
+            <p className="text-[11px] text-slate-400 dark:text-slate-600 text-center mt-2">
+              Add at least one source to generate.
+            </p>
           )}
         </div>
 
-        {tab === 'file' ? (
-          <label className="flex flex-col items-center justify-center border-2 border-dashed border-slate-700 rounded-xl p-8 cursor-pointer hover:border-indigo-500/50 transition-colors">
-            {uploading
-              ? <Loader2 className="w-10 h-10 text-indigo-500 dark:text-indigo-400 animate-spin mb-3" />
-              : <Upload className="w-10 h-10 text-slate-400 dark:text-slate-600 mb-3" />}
-            <p className="text-sm text-slate-500 dark:text-slate-400">{uploading ? 'Uploading…' : 'Click to upload'}</p>
-            <p className="text-xs text-slate-400 dark:text-slate-600 mt-1">PDF, DOCX, XLSX, TXT · Max 50 MB</p>
-            <input
-              type="file"
-              className="hidden"
-              accept=".pdf,.docx,.xlsx,.txt"
-              onChange={handleFileChange}
-              disabled={uploading}
-            />
-          </label>
-        ) : (
-          <div className="flex gap-2">
-            <Input
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              placeholder="https://example.com/article"
-              className="flex-1"
-              onKeyDown={(e) => e.key === 'Enter' && handleUrlAdd()}
-            />
-            <Button onClick={handleUrlAdd} disabled={!urlInput.trim() || createMutation.isPending} variant="secondary">
-              <Link className="w-4 h-4" />
-              Add
-            </Button>
+        {/* RIGHT: the sources you've added */}
+        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 min-h-[16rem]">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">Sources</p>
+            <span className="text-xs text-slate-400 dark:text-slate-600 tabular-nums">
+              {sources.length} {sources.length === 1 ? 'file' : 'files'}
+            </span>
           </div>
-        )}
+
+          {sources.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center py-14 text-slate-400 dark:text-slate-600">
+              <Library className="w-9 h-9 mb-3 opacity-40" />
+              <p className="text-sm">No sources yet</p>
+              <p className="text-xs mt-1">Upload a file or add a URL to get started.</p>
+            </div>
+          ) : (
+            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {sources.map((src) => {
+                const Icon = TYPE_ICON[src.fileType] || DEFAULT_ICON
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === src.id
+                return (
+                  <li key={src.id}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-white/[0.06] group transition-opacity ${isDeleting ? 'opacity-40' : ''}`}>
+                    <Icon className="w-4 h-4 text-indigo-500 dark:text-indigo-400 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-slate-900 dark:text-white truncate">{src.fileName}</p>
+                      <p className="text-xs text-slate-400 dark:text-slate-600 capitalize">{src.fileType}</p>
+                    </div>
+                    <button
+                      onClick={() => setDeleteConfirm({ id: src.id, fileName: src.fileName })}
+                      disabled={isDeleting}
+                      className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all disabled:cursor-not-allowed flex-shrink-0"
+                    >
+                      {isDeleting
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Trash2 className="w-4 h-4" />}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
       </div>
 
-      {/* File list */}
-      {sources.length > 0 && (
-        <ul className="space-y-2">
-          {sources.map((src) => {
-            const Icon = TYPE_ICON[src.fileType] || DEFAULT_ICON
-            const isDeleting = deleteMutation.isPending && deleteMutation.variables === src.id
-            return (
-              <li key={src.id}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06] group transition-opacity ${isDeleting ? 'opacity-40' : ''}`}>
-                <Icon className="w-4 h-4 text-indigo-500 dark:text-indigo-400 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-slate-900 dark:text-white truncate">{src.fileName}</p>
-                  <p className="text-xs text-slate-400 dark:text-slate-600 capitalize">{src.fileType}</p>
-                </div>
-                <button
-                  onClick={() => setDeleteConfirm({ id: src.id, fileName: src.fileName })}
-                  disabled={isDeleting}
-                  className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all disabled:cursor-not-allowed"
-                >
-                  {isDeleting
-                    ? <Loader2 className="w-4 h-4 animate-spin" />
-                    : <Trash2 className="w-4 h-4" />}
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-
       {/* Step Progression Navigation */}
-      <div className="mt-4 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
+      <div className="mt-5 p-4 rounded-xl bg-white dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
             <span className="font-medium">1. Library</span>

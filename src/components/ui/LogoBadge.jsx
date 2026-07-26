@@ -13,8 +13,9 @@ import logoImg from '@/assets/profai-logo-icon.png'
  * `tone`:
  *   - 'auto'  (default) — follows the app's light/dark theme: the mark's
  *     natural dark-navy on light surfaces, inverted to white on dark ones.
- *   - 'white' — always white, for surfaces that are dark regardless of the
- *     app theme (e.g. the sidebar, which never lightens).
+ *   - 'white' — always white, for surfaces that stay dark regardless of the
+ *     app theme (e.g. a slide preview on a dark theme). NOTE: the sidebar no
+ *     longer qualifies — it follows the app theme now, so it uses 'auto'.
  *   - 'dark'  — always the mark's natural navy color.
  */
 export default function LogoBadge({

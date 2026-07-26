@@ -62,6 +62,24 @@ export interface SlideContent {
   imageX?: number
   imageY?: number
   imageHeight?: number
+  // Free-position content points, straight from the Visual Designer's own
+  // contentBlocks (#see EditorContentBlock below) — each point keeps its
+  // OWN x/y/cadreStyle/showDetails instead of being flattened into one
+  // auto-flowing bullet list. THIS is what the WYSIWYG canvas actually
+  // renders (every layout, not just 'bullets' — layout only changes text
+  // alignment there), so when present it takes priority over the legacy
+  // `blocks`-based renderers below, which drop each point's individual
+  // position/frame and is why generated slides/video used to not match
+  // what was actually designed on the canvas.
+  positionedBlocks?: Array<{
+    text?: string
+    keyPoints?: string[]
+    x?: number
+    y?: number
+    cadreStyle?: string
+    showDetails?: boolean
+    visible?: boolean
+  }>
 }
 
 // Visual Designer content blocks — the WYSIWYG editor's per-point shape —
@@ -128,80 +146,82 @@ export const THEMES: Record<string, {
   title: string; body: string; muted: string
   glow: string
 }> = {
-  'dark-navy': {
-    bg1: '#020C1B', bg2: '#0A1628', bg3: '#0F1F3D',
-    accent: '#3B82F6', accentLight: '#3B82F620',
-    title: '#F8FAFC', body: '#CBD5E1', muted: '#64748B',
-    glow: '#3B82F6',
+  // GVSU palette (https://www.gvsu.edu/identity/color-2). GVSU Blue leads;
+  // Link Blue / Archway / Midnight / Arboretum / Carillon accent it. Big Lake
+  // is deliberately unused — it reads green. Keep in step with the frontend
+  // THEMES in VisualDesignerPanel.jsx and the preview tables in
+  // SceneTimelineEditor.jsx / VideoCanvasEditor.jsx.
+  'light': {
+    bg1: '#FFFFFF', bg2: '#F7FAFE', bg3: '#F1F5FD',
+    accent: '#0032A0', accentLight: '#0032A020',
+    title: '#0B1220', body: '#334155', muted: '#7A8BA8',
+    glow: '#0032A0',
   },
-  'ocean': {
-    bg1: '#041A2E', bg2: '#062D4F', bg3: '#083B66',
-    accent: '#06B6D4', accentLight: '#06B6D420',
-    title: '#F0FDFF', body: '#BAE6FD', muted: '#7DD3FC',
-    glow: '#06B6D4',
+  'dark-navy': {
+    bg1: '#050A24', bg2: '#0C1140', bg3: '#13155C',
+    accent: '#0ECBF0', accentLight: '#0ECBF020',
+    title: '#FFFFFF', body: '#AFC2E4', muted: '#7E93BC',
+    glow: '#0ECBF0',
   },
   'academic': {
-    bg1: '#0A1A0A', bg2: '#0D2B0D', bg3: '#133913',
-    accent: '#10B981', accentLight: '#10B98120',
-    title: '#F0FDF4', body: '#BBF7D0', muted: '#6EE7B7',
-    glow: '#10B981',
+    bg1: '#FBF8F1', bg2: '#F7F1E4', bg3: '#F2E9D8',
+    accent: '#0032A0', accentLight: '#0032A020',
+    title: '#1A1206', body: '#5A4A32', muted: '#9A876A',
+    glow: '#BA6F4C',
   },
-  'light': {
-    bg1: '#F8FAFC', bg2: '#F1F5F9', bg3: '#E2E8F0',
-    accent: '#6366F1', accentLight: '#6366F120',
-    title: '#0F172A', body: '#334155', muted: '#94A3B8',
-    glow: '#6366F1',
+  'ocean': {
+    bg1: '#04182E', bg2: '#072843', bg3: '#0A3358',
+    accent: '#0ECBF0', accentLight: '#0ECBF020',
+    title: '#FFFFFF', body: '#A9CBEC', muted: '#7BA3CC',
+    glow: '#0ECBF0',
   },
   'corporate': {
-    bg1: '#111827', bg2: '#1F2937', bg3: '#374151',
-    accent: '#F59E0B', accentLight: '#F59E0B20',
-    title: '#F9FAFB', body: '#D1D5DB', muted: '#6B7280',
-    glow: '#F59E0B',
+    bg1: '#0B0B0D', bg2: '#151310', bg3: '#1C1A17',
+    accent: '#DEC197', accentLight: '#DEC19720',
+    title: '#FFFFFF', body: '#C4B49A', muted: '#8E8069',
+    glow: '#BA6F4C',
   },
-  // ── Visual Designer template library (#1) — each of the 10 frontend
-  // template ids maps 1:1 to a theme here, so choosing a template actually
-  // changes how the rendered/exported video looks, not just the editor UI.
   'modern': {
-    bg1: '#0B1220', bg2: '#111C33', bg3: '#152246',
-    accent: '#3B82F6', accentLight: '#3B82F620',
-    title: '#F8FAFC', body: '#CBD5E1', muted: '#64748B',
-    glow: '#3B82F6',
+    bg1: '#001A5C', bg2: '#002678', bg3: '#0032A0',
+    accent: '#0ECBF0', accentLight: '#0ECBF020',
+    title: '#FFFFFF', body: '#C6D6F5', muted: '#93AEE0',
+    glow: '#0ECBF0',
   },
   'minimal': {
-    bg1: '#FAFAFA', bg2: '#F3F4F6', bg3: '#E5E7EB',
-    accent: '#6B7280', accentLight: '#6B728020',
-    title: '#111827', body: '#374151', muted: '#9CA3AF',
-    glow: '#6B7280',
+    bg1: '#FFFFFF', bg2: '#FAFBFD', bg3: '#F1F3F6',
+    accent: '#13155C', accentLight: '#13155C20',
+    title: '#0B1220', body: '#3F4A5C', muted: '#8B95A6',
+    glow: '#13155C',
   },
   'vibrant': {
-    bg1: '#2A0A1A', bg2: '#3D0F28', bg3: '#4F1436',
-    accent: '#EC4899', accentLight: '#EC489920',
-    title: '#FFF5F7', body: '#FBCFE8', muted: '#F472B6',
-    glow: '#EC4899',
+    bg1: '#1E052C', bg2: '#340851', bg3: '#4A0C6E',
+    accent: '#0ECBF0', accentLight: '#0ECBF020',
+    title: '#FFFFFF', body: '#DCC3EA', muted: '#B08FC4',
+    glow: '#0ECBF0',
   },
   'forest': {
-    bg1: '#08170D', bg2: '#0D2416', bg3: '#123420',
-    accent: '#16A34A', accentLight: '#16A34A20',
-    title: '#F0FDF4', body: '#BBF7D0', muted: '#4ADE80',
-    glow: '#16A34A',
+    bg1: '#080F26', bg2: '#0E1240', bg3: '#13155C',
+    accent: '#DEC197', accentLight: '#DEC19720',
+    title: '#FFFFFF', body: '#CBD6EC', muted: '#8FA0C2',
+    glow: '#DEC197',
   },
   'sunset': {
-    bg1: '#1F1408', bg2: '#331F0C', bg3: '#4A2C10',
-    accent: '#F97316', accentLight: '#F9731620',
-    title: '#FFFBEB', body: '#FED7AA', muted: '#FB923C',
-    glow: '#F97316',
+    bg1: '#2F1C13', bg2: '#472A1C', bg3: '#6C402C',
+    accent: '#DEC197', accentLight: '#DEC19720',
+    title: '#FFFFFF', body: '#E8D3B8', muted: '#B39877',
+    glow: '#BA6F4C',
   },
   'elegant': {
-    bg1: '#0D0D0D', bg2: '#1A1A1A', bg3: '#262626',
-    accent: '#D97706', accentLight: '#D9770620',
-    title: '#F5F5F5', body: '#D4D4D4', muted: '#A3A3A3',
-    glow: '#D97706',
+    bg1: '#000000', bg2: '#0A0A0A', bg3: '#161616',
+    accent: '#DEC197', accentLight: '#DEC19720',
+    title: '#FFFFFF', body: '#D5C4A8', muted: '#8F8069',
+    glow: '#DEC197',
   },
   'startup': {
-    bg1: '#05070D', bg2: '#0D1117', bg3: '#161B22',
-    accent: '#58A6FF', accentLight: '#58A6FF20',
-    title: '#F0F6FC', body: '#C9D1D9', muted: '#8B949E',
-    glow: '#58A6FF',
+    bg1: '#050A24', bg2: '#0B2177', bg3: '#0032A0',
+    accent: '#0ECBF0', accentLight: '#0ECBF020',
+    title: '#FFFFFF', body: '#BDCAE6', muted: '#8FA5D5',
+    glow: '#0ECBF0',
   },
 }
 
@@ -332,6 +352,90 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
     if (y > 980) break // safety net only — scaling above should prevent this
   }
 
+  return svg
+}
+
+/**
+ * Renders each content point at its OWN x/y position (matching the Visual
+ * Designer canvas's getContentBlockStyle/getBlockPosition math exactly —
+ * same contentBaseLeftPct/contentMaxWidthPct/hero-centering rules), instead
+ * of auto-flowing everything into one generic top-to-bottom bullet list.
+ * This is the actual shape of what the editor lets you build (any number of
+ * independently-placed points, each with its own frame + nested key
+ * points), so it's used for every layout when the composition has it —
+ * 'layout' only ever changed text alignment/centering in the editor, never
+ * the underlying per-point positioning.
+ */
+function renderPositionedBlocks(
+  blocks: NonNullable<SlideContent['positionedBlocks']>,
+  t: typeof THEMES['dark-navy'],
+  isHeroLayout: boolean,
+  contentBaseLeftPct: number,
+  contentMaxWidthPct: number,
+): string {
+  const W = 1920, H = 1080
+  const MAIN_FONT = 32, MAIN_LINE_H = 40
+  const SUB_FONT = 24, SUB_LINE_H = 32
+  const wrapChars = Math.max(18, Math.round(contentMaxWidthPct * 0.85))
+  const subWrapChars = Math.max(16, Math.round(wrapChars * 1.05))
+
+  let svg = ''
+  for (const block of blocks) {
+    if (!block || block.visible === false) continue
+    const text = (block.text || '').trim()
+    const keyPoints = (block.keyPoints || []).filter((kp) => !!kp?.trim())
+    if (!text && !keyPoints.length) continue
+
+    const xPct = isHeroLayout ? 50 + (block.x || 0) : contentBaseLeftPct + (block.x || 0)
+    const yPct = block.y ?? 0
+    const centerXPx = (W * xPct) / 100
+    const boxWPx = (W * contentMaxWidthPct) / 100
+    const boxYPx = (H * yPct) / 100
+    // Hero blocks are center-anchored (mirrors the canvas's translate(-50%,0)),
+    // everything else is left-anchored at its own box edge.
+    const textAnchor = isHeroLayout ? 'middle' : 'start'
+    const textX = isHeroLayout ? centerXPx : centerXPx + 24
+    const kpX = isHeroLayout ? centerXPx : centerXPx + 40
+
+    const mainLines = text ? wrap(esc(text), wrapChars) : []
+    const showDetails = block.showDetails !== false
+    const kpLineGroups = showDetails ? keyPoints.map((kp) => wrap(esc(kp), subWrapChars)) : []
+
+    // Frame background (cadreStyle) — estimate the box height up front so
+    // the tint/border rect fully covers the wrapped text instead of a
+    // fixed guess that clips multi-line points.
+    const applyFrame = !!block.cadreStyle && block.cadreStyle !== 'none'
+    if (applyFrame) {
+      const totalLines = mainLines.length + kpLineGroups.reduce((n, g) => n + g.length, 0)
+      const frameH = Math.max(60, mainLines.length * MAIN_LINE_H + kpLineGroups.reduce((n, g) => n + g.length * SUB_LINE_H, 0) + 24)
+      const frameX = isHeroLayout ? centerXPx - boxWPx / 2 : centerXPx
+      const rounded = block.cadreStyle === 'rounded' ? 24 : 8
+      svg += `<rect x="${frameX}" y="${boxYPx - 14}" width="${boxWPx}" height="${frameH}" rx="${rounded}"
+        fill="${t.title}" opacity="0.05"/>`
+      if (block.cadreStyle === 'bold') {
+        svg += `<rect x="${frameX}" y="${boxYPx - 14}" width="${boxWPx}" height="${frameH}" rx="${rounded}"
+          fill="none" stroke="${t.accent}" stroke-width="2.5"/>`
+      } else if (!isHeroLayout) {
+        svg += `<rect x="${frameX}" y="${boxYPx - 14}" width="4" height="${frameH}" fill="${t.accent}"/>`
+      }
+      void totalLines // (kept for future finer-grained sizing if needed)
+    }
+
+    let y = boxYPx + 22
+    for (const line of mainLines) {
+      svg += `<text x="${textX}" y="${y}" font-family="Arial,sans-serif" font-size="${MAIN_FONT}"
+        text-anchor="${textAnchor}" fill="${t.title}" font-weight="700">${line}</text>`
+      y += MAIN_LINE_H
+    }
+    for (const lines of kpLineGroups) {
+      for (let i = 0; i < lines.length; i++) {
+        const prefix = i === 0 ? '– ' : ''
+        svg += `<text x="${kpX}" y="${y}" font-family="Arial,sans-serif" font-size="${SUB_FONT}"
+          text-anchor="${textAnchor}" fill="${t.body}" opacity="0.85">${prefix}${lines[i]}</text>`
+        y += SUB_LINE_H
+      }
+    }
+  }
   return svg
 }
 
@@ -518,7 +622,15 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const titleY = (layout === 'title-hero' ? 440 : TITLE_BASE_Y) + titleOffsetY
   const titleFontSize = (layout === 'title-hero' ? 84 : 64) * (titlePos.scale || 1)
   const titleText = esc((slide.title || '').slice(0, 90))
-  const subtitleText = esc((slide.subtitle || '').slice(0, 90))
+  // Subtitle ("Key Insight") is no longer shown on slides at all — removed
+  // from the Visual Designer editor/canvas per request, and forced empty
+  // here too so this server-side fallback renderer (only used for scenes
+  // that have never been opened/saved in the editor yet, i.e. have no
+  // WYSIWYG snapshot) stays visually consistent with it. Left as an empty
+  // string rather than deleting the surrounding position math below, since
+  // that math is still relied on by other layout calculations even when
+  // there's no subtitle text to actually draw.
+  const subtitleText = ''
 
   // Text position synced with the avatar placeholder (#layout fluidity):
   // wherever the avatar sits, the title/content wrap width narrows so text
@@ -533,6 +645,20 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const availableWidthPct = Math.max(35, Math.min(72, avatarLeftEdgePct - 4))
   const titleWrapChars = Math.max(22, Math.round(42 * (availableWidthPct / 72)))
   const titleLines = layout === 'title-hero' ? [titleText] : wrap(titleText, titleWrapChars)
+
+  // Same contentBaseLeftPct/contentMaxWidthPct math as the Visual Designer
+  // canvas (VisualDesignerPanel.jsx's own avatarOnLeft/contentBaseLeftPct/
+  // contentMaxWidthPct) — needed so renderPositionedBlocks places each point
+  // exactly where the canvas does, including which side of the avatar the
+  // text column starts on.
+  const avatarXForContent = typeof slide.avatarX === 'number' ? slide.avatarX : 84
+  const avatarWidthForContent = typeof slide.avatarWidth === 'number' ? slide.avatarWidth : 32
+  const avatarRightEdgePctFull = avatarXForContent + avatarWidthForContent / 2
+  const avatarOnLeft = avatarXForContent < 50
+  const contentBaseLeftPct = avatarOnLeft ? Math.min(60, avatarRightEdgePctFull + 3) : 0
+  const contentMaxWidthPct = avatarOnLeft
+    ? Math.max(30, Math.min(90, 96 - contentBaseLeftPct))
+    : Math.max(40, Math.min(90, avatarLeftEdgePct - 2))
   
   // Calculate subtitle Y based on number of title lines to avoid overlap
   // If title is multi-line, push subtitle down further
@@ -543,40 +669,59 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   let contentSvg = ''
   const blocks = slide.blocks || []
 
-  switch (layout) {
-    case 'title-hero':
-      contentSvg = `
+  // Title text itself is always drawn from the shared title/subtitle SVG
+  // below for non-hero layouts; title-hero draws its own centered title
+  // right here since it's visually a different composition entirely.
+  const heroTitleSvg = layout === 'title-hero' ? `
       <text x="${960 + titleOffsetX}" y="${titleY}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
         fill="${t.title}" font-weight="800" text-anchor="middle">${titleText}</text>
       ${subtitleText ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 100}" font-family="Arial,sans-serif" font-size="${40 * (subtitlePos.scale || 1)}"
         fill="${t.accent}" text-anchor="middle" font-weight="500">${subtitleText}</text>` : ''}
       <rect x="${760 + subtitleOffsetX}" y="${titleY + 140}" width="400" height="3" rx="2" fill="${t.accent}" opacity="0.6"/>
-      ${blocks[0]?.items?.[0] ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 230}" font-family="Arial,sans-serif" font-size="34"
-        fill="${t.body}" text-anchor="middle" opacity="0.9">${esc(blocks[0].items[0].text)}</text>` : ''}
-      `
-      break
-    case 'definition':
-      contentSvg = renderDefinition(blocks, t)
-      break
-    case 'quote':
-      contentSvg = renderQuote(blocks, t)
-      break
-    case 'split':
-      contentSvg = renderSplit(blocks, t)
-      break
-    case 'summary':
-      contentSvg = renderSummary(blocks, t)
-      break
-    case 'roadmap':
-      contentSvg = renderRoadmap(blocks, t, (slide as any).segments)
-      break
-    default:
-      // Content block position now responds to the user's own drag offset
-      // (positions.content), same as title/subtitle — previously this was
-      // hardcoded to CONTENT_Y and ignored contentOffsetX/contentOffsetY.
-      // wrapChars narrows the same way titleWrapChars does, so bullets never
-      // run under the avatar placeholder either.
-      contentSvg = renderBullets(blocks, t, CONTENT_Y + contentOffsetY, contentOffsetX, titleWrapChars)
+  ` : ''
+
+  if (slide.positionedBlocks && slide.positionedBlocks.length > 0) {
+    // Modern path: every point keeps the EXACT position it has on the
+    // Visual Designer canvas, regardless of which "layout" preset is
+    // selected — the editor itself only ever varied title alignment
+    // between layouts, never the underlying per-point placement, so this
+    // is what actually matches what was designed (#the original bug: the
+    // old per-layout switch below flattened all points into one generic
+    // list/definition/quote/etc, silently discarding where each one was
+    // actually dragged to).
+    contentSvg = heroTitleSvg + renderPositionedBlocks(slide.positionedBlocks, t, layout === 'title-hero', contentBaseLeftPct, contentMaxWidthPct)
+  } else {
+    // Legacy fallback — pre-WYSIWYG content that never had per-point x/y
+    // saved (or content from very old scenes). Keeps working exactly as
+    // before instead of rendering blank.
+    switch (layout) {
+      case 'title-hero':
+        contentSvg = heroTitleSvg + (blocks[0]?.items?.[0] ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 230}" font-family="Arial,sans-serif" font-size="34"
+          fill="${t.body}" text-anchor="middle" opacity="0.9">${esc(blocks[0].items[0].text)}</text>` : '')
+        break
+      case 'definition':
+        contentSvg = renderDefinition(blocks, t)
+        break
+      case 'quote':
+        contentSvg = renderQuote(blocks, t)
+        break
+      case 'split':
+        contentSvg = renderSplit(blocks, t)
+        break
+      case 'summary':
+        contentSvg = renderSummary(blocks, t)
+        break
+      case 'roadmap':
+        contentSvg = renderRoadmap(blocks, t, (slide as any).segments)
+        break
+      default:
+        // Content block position now responds to the user's own drag offset
+        // (positions.content), same as title/subtitle — previously this was
+        // hardcoded to CONTENT_Y and ignored contentOffsetX/contentOffsetY.
+        // wrapChars narrows the same way titleWrapChars does, so bullets never
+        // run under the avatar placeholder either.
+        contentSvg = renderBullets(blocks, t, CONTENT_Y + contentOffsetY, contentOffsetX, titleWrapChars)
+    }
   }
 
   const total = Math.max(totalScenes, 1)

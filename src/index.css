@@ -1,6 +1,142 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ──────────────────────────────────────────────────────────────────────────
+   GVSU brand palette — https://www.gvsu.edu/identity/color-2
+
+   Primary:   GVSU Blue #0032A0 · Black · White
+   Secondary: Link Blue #0ECBF0 · Midnight #13155C · Arboretum #4A0C6E
+              Carillon Brick #BA6F4C · Archway #DEC197
+
+   Tailwind's colour scales are remapped here, so every existing `indigo-*` /
+   `blue-*` class renders GVSU Blue without rewriting ~360 utility classes.
+
+   TWO RULES LEARNED THE HARD WAY:
+
+   1. #0032A0 is a DEEP navy — far darker than the indigo this app was built
+      around. Putting it everywhere made the whole interface heavy. So it is
+      used at 600 ONLY, which is what solid primary buttons use. The working
+      tints (400/500 — the shades used most across the UI) sit at the SAME
+      lightness as the old indigo, so the interface stays light and airy while
+      the brand colour still leads on every primary action.
+
+   2. NOTHING GREEN. Big Lake (#3DD1CC) is part of GVSU's secondary palette but
+      reads green, so it is deliberately unused. `teal-*` is mapped onto Link
+      Blue instead, so no green enters the UI from these scales.
+
+   Contrast (GVSU requires WCAG 2.1 AA):
+     600 #0032A0 → 10.69:1 on white, 10.69:1 for white text on it
+     500 #4975D4 →  4.39:1 on white — better than the old indigo-500 it replaces
+     400 #7395DE →  6.49:1 on the dark theme background
+
+   Status colours (red / emerald / amber) are NOT rebranded — they carry
+   meaning, and GVSU guidance is never to tie meaning to colour alone.
+   ────────────────────────────────────────────────────────────────────────── */
+@theme {
+  --color-gvsu-blue: #0032A0;
+  --color-link-blue: #0ECBF0;
+  --color-midnight: #13155C;
+  --color-arboretum: #4A0C6E;
+  --color-carillon: #BA6F4C;
+  --color-archway: #DEC197;
+
+  --color-blue-50: #F1F5FE;
+  --color-blue-100: #DEE8FC;
+  --color-blue-200: #BFD1F7;
+  --color-blue-300: #99B3EA;
+  --color-blue-400: #7395DE;
+  --color-blue-500: #4975D4;
+  --color-blue-600: #0032A0;
+  --color-blue-700: #002A85;
+  --color-blue-800: #00226B;
+  --color-blue-900: #13155C;
+  --color-blue-950: #0B0F2D;
+
+  --color-indigo-50: #F1F5FE;
+  --color-indigo-100: #DEE8FC;
+  --color-indigo-200: #BFD1F7;
+  --color-indigo-300: #99B3EA;
+  --color-indigo-400: #7395DE;
+  --color-indigo-500: #4975D4;
+  --color-indigo-600: #0032A0;
+  --color-indigo-700: #002A85;
+  --color-indigo-800: #00226B;
+  --color-indigo-900: #13155C;
+  --color-indigo-950: #0B0F2D;
+
+  --color-sky-50: #F2FBFD;
+  --color-sky-100: #E0F6FB;
+  --color-sky-200: #C0EDF6;
+  --color-sky-300: #94E1F0;
+  --color-sky-400: #67D4E9;
+  --color-sky-500: #3AC8E3;
+  --color-sky-600: #0ECBF0;
+  --color-sky-700: #1892AA;
+  --color-sky-800: #137386;
+  --color-sky-900: #0F5C6B;
+  --color-sky-950: #093A43;
+
+  --color-cyan-50: #F2FBFD;
+  --color-cyan-100: #E0F6FB;
+  --color-cyan-200: #C0EDF6;
+  --color-cyan-300: #94E1F0;
+  --color-cyan-400: #67D4E9;
+  --color-cyan-500: #3AC8E3;
+  --color-cyan-600: #0ECBF0;
+  --color-cyan-700: #1892AA;
+  --color-cyan-800: #137386;
+  --color-cyan-900: #0F5C6B;
+  --color-cyan-950: #093A43;
+
+  --color-teal-50: #F2FBFD;
+  --color-teal-100: #E0F6FB;
+  --color-teal-200: #C0EDF6;
+  --color-teal-300: #94E1F0;
+  --color-teal-400: #67D4E9;
+  --color-teal-500: #3AC8E3;
+  --color-teal-600: #0ECBF0;
+  --color-teal-700: #1892AA;
+  --color-teal-800: #137386;
+  --color-teal-900: #0F5C6B;
+  --color-teal-950: #093A43;
+
+  --color-violet-50: #F9F2FD;
+  --color-violet-100: #F0E1F9;
+  --color-violet-200: #E2C3F4;
+  --color-violet-300: #CD98EC;
+  --color-violet-400: #B86DE3;
+  --color-violet-500: #A342DB;
+  --color-violet-600: #8E26CA;
+  --color-violet-700: #721FA3;
+  --color-violet-800: #5A1881;
+  --color-violet-900: #4A0C6E;
+  --color-violet-950: #2D0C40;
+
+  --color-purple-50: #F9F2FD;
+  --color-purple-100: #F0E1F9;
+  --color-purple-200: #E2C3F4;
+  --color-purple-300: #CD98EC;
+  --color-purple-400: #B86DE3;
+  --color-purple-500: #A342DB;
+  --color-purple-600: #8E26CA;
+  --color-purple-700: #721FA3;
+  --color-purple-800: #5A1881;
+  --color-purple-900: #4A0C6E;
+  --color-purple-950: #2D0C40;
+
+  --color-orange-50: #FAF6F4;
+  --color-orange-100: #F4EBE6;
+  --color-orange-200: #E9D6CD;
+  --color-orange-300: #DAB9AA;
+  --color-orange-400: #CB9C86;
+  --color-orange-500: #BA6F4C;
+  --color-orange-600: #A76749;
+  --color-orange-700: #87533B;
+  --color-orange-800: #6B422E;
+  --color-orange-900: #553425;
+  --color-orange-950: #352117;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
@@ -22,4 +158,19 @@
   #root {
     min-height: 100vh;
   }
+}
+
+/* Presenter avatar "speaking" motion — a subtle bob + micro-scale applied in
+   the Video Editing playback preview so the avatar feels alive while the
+   narration plays (it can't lip-sync a still photo, but it stops looking
+   frozen). Keeps the wrapper's translate(-50%,-50%) centering. */
+@keyframes pa-avatar-speaking-kf {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  25%      { transform: translate(-50%, -50.8%) scale(1.012); }
+  50%      { transform: translate(-50%, -50%) scale(1.006); }
+  75%      { transform: translate(-50%, -50.5%) scale(1.014); }
+}
+.pa-avatar-speaking {
+  animation: pa-avatar-speaking-kf 0.9s ease-in-out infinite;
+  transform-origin: center bottom;
 }

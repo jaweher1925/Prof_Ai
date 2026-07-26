@@ -49,9 +49,12 @@ export const agentsService = {
 
   // Stage 3: Visual (Generate Images)
 
-  /** Generate Image AI background image for a single scene */
-  runGenerateAsset: (sceneId) =>
-    apiClient.post('/generateSceneAsset', { scene_id: sceneId }),
+  /** Generate Image AI background image for a single scene (or one specific
+   *  segment of it — a scene built from multiple parts, e.g. hook/content/
+   *  content/recap, needs segment_id so this regenerates the part actually
+   *  being edited instead of always defaulting to the first one). */
+  runGenerateAsset: (sceneId, segmentId) =>
+    apiClient.post('/generateSceneAsset', { scene_id: sceneId, segment_id: segmentId || undefined }),
 
   // Storyboard
 
@@ -65,13 +68,17 @@ export const agentsService = {
   // Stage 4: Video (Voice to Video)
 
   /** Generate Video AI avatar video for a single scene.
-   *  Pass useAvatar=false to render voice-only (no HeyGen call, no avatar). */
-  runHeyGenAvatar: (sceneId, avatarId, voiceId, useAvatar = true) =>
+   *  Pass useAvatar=false to render voice-only (no HeyGen call, no avatar).
+   *  Pass segmentId to render ONLY that narrated part — the Visual Designer
+   *  treats each part as its own scene row, so generating there must not
+   *  concatenate every sibling part into one clip. */
+  runHeyGenAvatar: (sceneId, avatarId, voiceId, useAvatar = true, segmentId) =>
     apiClient.post('/generateHeyGenAvatar', {
       scene_id: sceneId,
       avatar_id: avatarId || undefined,
       voice_id: voiceId || undefined,
       use_avatar: useAvatar,
+      segment_id: segmentId || undefined,
     }),
 
   /** Check Video AI video render status */

@@ -77,7 +77,12 @@ model Scene {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
   segments          SceneSegment[]
-  composition       SlideComposition?
+  // One composition PER SEGMENT now (#40 — per-part slides in Visual
+  // Design), not one per scene — see SlideComposition below. Kept as a
+  // plain one-to-many (not @unique on the FK) so a multi-segment scene
+  // (e.g. a 4-part welcome scene) can have up to one composition per
+  // segment simultaneously.
+  compositions      SlideComposition[]
 
   @@map("scenes")
 }
@@ -115,6 +120,16 @@ model SceneSegment {
   textAnimationTimings String? @map("text_animation_timings")
   ttsAudioUrl     String?   @map("tts_audio_url")
   durationSeconds Float?    @map("duration_seconds")
+  // Generated slide preview image for THIS segment alone (#40 — per-part
+  // slides in Visual Design). Mirrors Scene.visualAssetUrl but scoped to one
+  // segment, so a 4-part welcome scene can show/generate 4 independent
+  // thumbnails instead of all four sharing the scene's single slot. The
+  // primary segment (orderIndex 0) still also mirrors into
+  // Scene.visualAssetUrl for back-compat with the HeyGen/avatar-video
+  // pipeline (generateHyperFramesSlide.ts, pollHeyGenVideo.ts), which reads
+  // only the scene-level field.
+  visualAssetUrl  String?   @map("visual_asset_url")
+  composition     SlideComposition?
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -159,15 +174,29 @@ model SourceFile {
 }
 
 /// WYSIWYG Canvas Composition — Visual Designer slide data.
-/// Single source of truth for the Visual Designer canvas. On every save this
-/// is also synced into the scene's first SceneSegment.slideDesign (see
-/// compositions.ts#syncCompositionToSegment) so the actual render pipeline
+/// Single source of truth for the Visual Designer canvas — one row PER
+/// SEGMENT (#40), not per scene, so a multi-part scene (e.g. a 4-part
+/// welcome scene: hook/content/content/recap) gets 4 independently editable
+/// slides instead of sharing one. On every save this is also synced into
+/// ITS OWN SceneSegment.slideDesign (see compositions.ts#syncCompositionToSegment)
+/// so the actual render pipeline
 /// (slideRenderer.ts + ffmpegVideo.ts) always matches what's shown here.
 model SlideComposition {
   id              String   @id @default(uuid())
-  sceneId         String   @unique @map("scene_id")
+  // scene_id is kept (non-unique) for convenient "all slides in this scene"
+  // queries (e.g. getModuleCompositions) — the real 1:1 key is segment_id
+  // below. Before #40, this was `@unique`, meaning only ONE composition
+  // could exist per scene at all — that's the exact bug that made a 4-part
+  // welcome scene (hook/content/content/recap) show only its first part as
+  // an editable slide in Visual Design, while Script Generation/Voice
+  // already treated all 4 as separate narrated parts.
+  sceneId         String   @map("scene_id")
   scene           Scene    @relation(fields: [sceneId], references: [id], onDelete: Cascade)
-  
+  // The true 1:1 key (#40) — one composition per SceneSegment, so each
+  // narrated part of a scene gets its own independently editable slide.
+  segmentId       String   @unique @map("segment_id")
+  segment         SceneSegment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
   // Template & Styling — maps 1:1 to a slideRenderer.ts THEMES key
   templateId      String   @default("modern") @map("template_id")
 
@@ -254,5 +283,6 @@ model SlideComposition {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
+  @@index([sceneId])
   @@map("slide_compositions")
 }

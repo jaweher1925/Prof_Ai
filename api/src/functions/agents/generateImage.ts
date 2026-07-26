@@ -15,6 +15,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { getUser } from '../../lib/auth'
 import { uploadBuffer } from '../../lib/storage'
+import { chromaKeyToTransparent, CHROMA_KEY_HEX } from '../../lib/chromaKey'
 
 const DEFAULT_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image'
 // Older preview model kept as a fallback in case the account doesn't have
@@ -61,7 +62,7 @@ app.http('generateImage', {
     if (!getUser(req)) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
 
     try {
-      const body = (await req.json()) as { prompt?: string }
+      const body = (await req.json()) as { prompt?: string; imageType?: string }
       const prompt = body?.prompt?.trim()
       if (!prompt) return { status: 400, jsonBody: { error: 'prompt is required' } }
       if (prompt.length > 2000) {
@@ -73,15 +74,46 @@ app.http('generateImage', {
         return { status: 500, jsonBody: { error: 'Image generation not configured (missing API key)' } }
       }
 
+      // Diagrams/schemas/architecture figures get overlaid directly on the
+      // slide's own themed background, so a rectangular opaque illustration
+      // looks like a sticker slapped on top. The frontend now lets the user
+      // pick the type explicitly (imageType) so detection isn't a guess —
+      // fall back to sniffing the prompt text for callers that don't send it.
+      const KNOWN_DIAGRAM_TYPES = ['schema', 'diagram', 'architecture', 'flowchart', 'system design', 'wireframe']
+      const explicitType = body?.imageType?.trim().toLowerCase()
+      const isDiagramLike = explicitType
+        ? KNOWN_DIAGRAM_TYPES.includes(explicitType)
+        : /\b(schema|diagram|architecture|flowchart|flow chart|system design|wireframe)\b/i.test(prompt)
+
       // Nudge the model toward slide-friendly output without overriding the
       // user's own description.
-      const fullPrompt =
-        `${prompt}\n\n` +
-        `Style requirements: clean, high-quality illustration suitable for an ` +
-        `educational presentation slide. No watermarks, no text overlays unless ` +
-        `explicitly requested.`
+      //
+      // IMPORTANT: Gemini's image models don't actually output a real alpha
+      // channel — asking for "a transparent background" just makes the
+      // model DRAW a checkerboard pattern (the standard editor convention
+      // for depicting transparency) as literal opaque pixels, which then
+      // shows up baked into the slide instead of real transparency. Instead,
+      // ask for a solid, flat chroma-key backdrop color the model can render
+      // accurately and consistently, then key it out to real alpha ourselves
+      // afterward (see chromaKeyToTransparent below).
+      const diagramTypeLabel = (explicitType && KNOWN_DIAGRAM_TYPES.includes(explicitType)) ? explicitType : 'diagram'
+      const fullPrompt = isDiagramLike
+        ? `${prompt}\n\n` +
+          `Style requirements: clean, high-quality technical ${diagramTypeLabel} illustration ` +
+          `suitable for an educational presentation slide. Render ONLY the ${diagramTypeLabel} ` +
+          `elements (boxes, arrows, labels, icons) — and fill the ENTIRE background evenly with ` +
+          `a single, solid, flat chroma-key color: bright magenta ${CHROMA_KEY_HEX} (RGB 255,0,255). ` +
+          `The magenta must cover 100% of the background with no gradient, no shading, no texture, ` +
+          `and no drop shadow behind the whole image. Do NOT use this magenta color anywhere in the ` +
+          `${diagramTypeLabel} elements themselves (boxes, text, icons, arrows) — it must appear ` +
+          `ONLY as the flat backdrop, since it will be removed programmatically afterward. ` +
+          `No watermarks, no text overlays unless explicitly requested.`
+        : `${prompt}\n\n` +
+          `Style requirements: clean, high-quality illustration suitable for an ` +
+          `educational presentation slide. No watermarks, no text overlays unless ` +
+          `explicitly requested.`
 
-      ctx.log(`[generate-image] "${prompt.slice(0, 80)}" via ${DEFAULT_MODEL}`)
+      ctx.log(`[generate-image] "${prompt.slice(0, 80)}" via ${DEFAULT_MODEL}${isDiagramLike ? ' (chroma-key diagram)' : ''}`)
 
       let result = await callGeminiImage(apiKey, DEFAULT_MODEL, fullPrompt)
       if (!result.ok && (result.status === 404 || result.status === 400)) {
@@ -109,9 +141,24 @@ app.http('generateImage', {
       }
 
       const mime = imagePart.inlineData.mimeType || 'image/png'
-      const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png'
-      const buffer = Buffer.from(imagePart.inlineData.data, 'base64')
-      const file_url = await uploadBuffer(buffer, ext, mime)
+      let ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png'
+      let outMime = mime
+      let buffer: Buffer = Buffer.from(imagePart.inlineData.data, 'base64')
+
+      // Key out the magenta backdrop for diagram-like images so what actually
+      // gets stored/overlaid on the slide has real transparency instead of a
+      // flat magenta (or, previously, a literal checkerboard) rectangle.
+      if (isDiagramLike) {
+        try {
+          buffer = await chromaKeyToTransparent(buffer)
+          ext = 'png'
+          outMime = 'image/png'
+        } catch (e: any) {
+          ctx.warn(`[generate-image] chroma-key removal failed, using image as-is: ${e?.message}`)
+        }
+      }
+
+      const file_url = await uploadBuffer(buffer, ext, outMime)
 
       ctx.log(`[generate-image] saved ${buffer.length} bytes → ${file_url}`)
       return { status: 200, jsonBody: { file_url } }

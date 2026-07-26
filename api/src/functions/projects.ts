@@ -112,7 +112,16 @@ app.http('getProjectScripts', {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     if (!getUser(req)) return unauth()
     try {
-      const scripts = await prisma.script.findMany({ where: { projectId: req.params.id }, orderBy: { createdAt: 'asc' } })
+      // Order by the module's own orderIndex, not Script.createdAt — a
+      // re-analyzed/regenerated module gets a fresh Script row with a much
+      // later createdAt, which used to shuffle it to the bottom of this list
+      // even though Modules (and Visual Design's module picker) still show
+      // it in its original position. Ordering by module.orderIndex keeps
+      // Scripts/Voice/Visual Design all ranking modules the same way.
+      const scripts = await prisma.script.findMany({
+        where: { projectId: req.params.id },
+        orderBy: [{ module: { orderIndex: 'asc' } }, { createdAt: 'asc' }],
+      })
       return { status: 200, jsonBody: scripts }
     } catch (e) { ctx.error(e); return err500(e) }
   },

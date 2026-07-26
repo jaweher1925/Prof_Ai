@@ -38,16 +38,22 @@ async function addAvatarOrQueue(
   audioUrls: string[],
   moduleId: string,
   useAvatar: boolean,
-  avatarPosition?: { x: number; y: number; width: number } | null
-): Promise<{ pending: false; videoUrl: string } | { pending: true; heygenVideoId: string }> {
+  avatarPosition?: { x: number; y: number; width: number } | null,
+  // Single-part Visual Design PREVIEWs set this so the sidecar is tagged
+  // preview:true — pollHeyGenVideo then composites + returns the avatar clip
+  // WITHOUT writing Scene.avatarVideoUrl (which would clobber the full-scene
+  // video Video Editing assembles from). The preview just needs to SHOW the
+  // avatar once it's rendered.
+  preview?: boolean
+): Promise<{ pending: false; videoUrl: string; reason?: string } | { pending: true; heygenVideoId: string }> {
   try {
     if (!useAvatar) {
       context.log('[generateHeyGenAvatar] Voice-only mode requested — skipping avatar overlay')
-      return { pending: false, videoUrl: slideVideoUrl }
+      return { pending: false, videoUrl: slideVideoUrl } // intentional — no reason surfaced
     }
     if (!process.env.HEYGEN_API_KEY) {
       context.log('[generateHeyGenAvatar] No HEYGEN_API_KEY — skipping avatar overlay')
-      return { pending: false, videoUrl: slideVideoUrl }
+      return { pending: false, videoUrl: slideVideoUrl, reason: 'Speaking avatar is not configured on this server (missing HeyGen API key) — rendered voice-only.' }
     }
     const module_ = await prisma.module.findUnique({
       where: { id: moduleId },
@@ -56,13 +62,13 @@ async function addAvatarOrQueue(
     const project = module_?.project
     if (!project?.defaultAvatarId) {
       context.log('[generateHeyGenAvatar] No avatar selected on project — skipping avatar overlay')
-      return { pending: false, videoUrl: slideVideoUrl }
+      return { pending: false, videoUrl: slideVideoUrl, reason: 'No presenter avatar is selected for this project — rendered voice-only.' }
     }
 
     const basePath = localPathFromUploadUrl(slideVideoUrl)
     if (!basePath) {
       context.warn('[generateHeyGenAvatar] Slide video not found locally — skipping avatar overlay')
-      return { pending: false, videoUrl: slideVideoUrl }
+      return { pending: false, videoUrl: slideVideoUrl, reason: 'Could not locate the rendered slide video to overlay the avatar onto — rendered voice-only.' }
     }
 
     // Drive the avatar from the FINAL video's own audio track (not the raw
@@ -79,7 +85,7 @@ async function addAvatarOrQueue(
     }
     if (!audioPaths.length) {
       context.warn('[generateHeyGenAvatar] No audio available — skipping avatar overlay')
-      return { pending: false, videoUrl: slideVideoUrl }
+      return { pending: false, videoUrl: slideVideoUrl, reason: 'No narration audio was available to drive the avatar — rendered voice-only.' }
     }
 
     const job = await startAvatarClipJob({
@@ -104,13 +110,20 @@ async function addAvatarOrQueue(
     // Sidecar so pollHeyGenVideo can finish the job later
     writeFileSync(
       join(UPLOAD_DIR, `heygen_pending_${job.videoId}.json`),
-      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null })
+      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null, preview: !!preview })
     )
     context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
     return { pending: true, heygenVideoId: job.videoId }
   } catch (err: any) {
+    // Previously this silently fell back to the slide-only video with NO
+    // indication anywhere that the avatar failed — the request still
+    // returned 200/"completed", so the user just got a voice-only video and
+    // had no way to know why (reported as "no avatar in the vd"). Keep the
+    // resilient fallback (don't fail the whole render just because the
+    // avatar overlay broke) but surface WHY via `reason` so the frontend can
+    // actually tell the user instead of pretending nothing went wrong.
     context.warn(`[generateHeyGenAvatar] Avatar overlay failed — using slide-only video: ${err?.message}`)
-    return { pending: false, videoUrl: slideVideoUrl }
+    return { pending: false, videoUrl: slideVideoUrl, reason: `Speaking avatar rendering failed (${err?.message || 'unknown error'}) — rendered voice-only.` }
   }
 }
 
@@ -129,6 +142,10 @@ async function finishOrQueue(
   const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, useAvatar, avatarPosition)
 
   if (avatar.pending) {
+    // NOTE: avatarVideoUrl deliberately keeps the `heygen:<id>` sentinel —
+    // pollHeyGenVideo treats "avatarVideoUrl set and NOT heygen:-prefixed" as
+    // "already finalized" and would skip compositing entirely if we parked a
+    // real URL here.
     await prisma.scene.update({
       where: { id: sceneId },
       data: { avatarVideoUrl: `heygen:${avatar.heygenVideoId}`, status: 'rendering' },
@@ -140,6 +157,13 @@ async function finishOrQueue(
         scene_id: sceneId,
         video_id: avatar.heygenVideoId,
         status: 'rendering',
+        // The slide + narration cut is ALREADY rendered and watchable at this
+        // point — only the talking-avatar overlay is still queued at HeyGen,
+        // which is what takes minutes (it's their render queue, not ours).
+        // Hand it back so the user can watch/scrub the scene immediately
+        // instead of staring at a spinner until the avatar lands. The avatar
+        // is composited on top later by pollHeyGenVideo.
+        preview_video_url: slideVideoUrl,
       },
     }
   }
@@ -151,7 +175,10 @@ async function finishOrQueue(
   context.log(`[generateHeyGenAvatar] ✅ Completed: ${avatar.videoUrl}`)
   return {
     status: 200,
-    jsonBody: { success: true, scene_id: sceneId, video_url: avatar.videoUrl },
+    jsonBody: {
+      success: true, scene_id: sceneId, video_url: avatar.videoUrl,
+      ...(avatar.reason ? { avatar_warning: avatar.reason } : {}),
+    },
   }
 }
 
@@ -163,7 +190,7 @@ async function generateHeyGenAvatarHandler(
   if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
 
   try {
-    const body = (await request.json()) as { scene_id?: string; use_avatar?: boolean }
+    const body = (await request.json()) as { scene_id?: string; use_avatar?: boolean; segment_id?: string }
 
     if (!body.scene_id) {
       return { status: 400, jsonBody: { error: 'scene_id is required' } }
@@ -197,23 +224,61 @@ async function generateHeyGenAvatarHandler(
     const hasSegments = scene.segments.length > 0
 
     if (hasSegments) {
-      // Validate all segments have audio
-      const missingAudio = scene.segments.find(s => !s.ttsAudioUrl)
-      if (missingAudio) {
-        return { status: 400, jsonBody: { error: `Segment ${missingAudio.id}: No TTS audio. Run TTS generation first.` } }
+      // Resolve each segment's audio before validating. Scene.ttsAudioUrl is
+      // a mirror of the FIRST segment's clip (see generateTTS.ts), and some
+      // segment rows were created retroactively without ever backfilling
+      // their OWN ttsAudioUrl column — so the audio genuinely exists (voice
+      // really was generated), it's just not copied onto that row. Checking
+      // segment.ttsAudioUrl alone was rejecting real, already-voiced scenes
+      // with a false "No TTS audio" error. Only the primary segment (the
+      // first one, or the only one) gets this fallback — a LATER part
+      // (2nd/3rd content, recap) genuinely missing its own audio must still
+      // be treated as missing, not silently reuse segment 0's clip.
+      const resolvedAudio = scene.segments.map((s, i) =>
+        s.ttsAudioUrl || ((i === 0 || scene.segments.length === 1) ? scene.ttsAudioUrl : null)
+      )
+      const missingIndex = resolvedAudio.findIndex(url => !url)
+      if (missingIndex !== -1) {
+        return { status: 400, jsonBody: { error: `Segment ${scene.segments[missingIndex].id}: No TTS audio. Run TTS generation first.` } }
       }
-      
+
       // Cast segments to RenderableSegment format
-      const segments = scene.segments.map(s => ({
+      const allSegments = scene.segments.map((s, i) => ({
         id: s.id,
         text: s.text,
         slideDesign: s.slideDesign || '{}',
-        ttsAudioUrl: s.ttsAudioUrl || '',
+        ttsAudioUrl: resolvedAudio[i] || '',
         textAnimationTimings: s.textAnimationTimings || null,
         motionId: scene.textAnimationType || 'word-by-word',
       }))
 
-      context.log(`[generateHeyGenAvatar] Rendering ${segments.length} segments for scene ${body.scene_id}`)
+      // SCENE-BY-SCENE (#Visual Design): each narrated part is its own row in
+      // the designer's menu, so "generate" there must render just THAT part —
+      // not silently concatenate every sibling part into one clip. Passing
+      // segment_id scopes the render to one segment: independent of its
+      // siblings, and proportionally faster (one clip instead of four).
+      //
+      // Without segment_id the whole scene renders as before — that's the
+      // module-level assembly Video Editing relies on, so it stays intact.
+      //
+      // IMPORTANT: only treat this as a non-persisting PREVIEW when the scene
+      // genuinely has MULTIPLE parts. For a single-segment scene, that one
+      // segment IS the whole scene — so it must render+persist normally (write
+      // Scene.avatarVideoUrl), or generating the first scene never marks it
+      // "ready" and Video Editing stays locked ("I generated the scene but the
+      // Video Editing step didn't open").
+      const isSinglePart = !!body.segment_id && allSegments.length > 1
+      const segments = isSinglePart
+        ? allSegments.filter(sg => sg.id === body.segment_id)
+        : allSegments
+      if (isSinglePart && !segments.length) {
+        return { status: 404, jsonBody: { error: 'Segment not found on this scene' } }
+      }
+
+      context.log(
+        `[generateHeyGenAvatar] Rendering ${segments.length}/${allSegments.length} segment(s) for scene ${body.scene_id}` +
+        (isSinglePart ? ` (single part ${body.segment_id})` : '')
+      )
 
       try {
         const videoUrl = await renderSegmentsToVideo({
@@ -221,10 +286,67 @@ async function generateHeyGenAvatarHandler(
           moduleTitle: scene.module?.title,
         })
 
-        // Avatar placeholder position/size from the Visual Designer (#3, #4)
-        // — read from the first segment's slideDesign, synced there by
-        // compositions.ts#syncCompositionToSegment on every canvas edit.
-        const avatarPosition = extractAvatarPosition(scene.segments[0]?.slideDesign)
+        // Avatar placeholder position/size from the Visual Designer (#3, #4).
+        // For a single-part render use THAT part's own placement, not the
+        // first segment's — each part positions its avatar independently.
+        const avatarPosition = extractAvatarPosition(
+          isSinglePart
+            ? scene.segments.find(sg => sg.id === body.segment_id)?.slideDesign
+            : scene.segments[0]?.slideDesign
+        )
+
+        // A single-part render is a Visual Design PREVIEW of one row. There's
+        // no per-segment video column, and writing to Scene.avatarVideoUrl
+        // would replace the full-scene video Video Editing assembles from — so
+        // it must NOT go through finishOrQueue's scene-level DB write.
+        //
+        // But the preview still has to SHOW the presenter, or the avatar
+        // "disappears" in Visual Design. So composite the avatar here directly
+        // via addAvatarOrQueue (no DB write): the avatar clip is cached per its
+        // narration audio, so once it exists — after the first full render or
+        // an earlier preview — it composites INSTANTLY. Only the very first
+        // ever render of a part is slow (HeyGen's queue); in that case we
+        // return the slide+voice cut immediately so the user isn't blocked, and
+        // the avatar shows on the next preview once its clip is cached.
+        if (isSinglePart) {
+          if (!useAvatar) {
+            return {
+              status: 200,
+              jsonBody: { success: true, scene_id: body.scene_id, segment_id: body.segment_id, video_url: videoUrl, single_part: true },
+            }
+          }
+          const av = await addAvatarOrQueue(
+            context, videoUrl, segments.map(s => s.ttsAudioUrl),
+            scene.moduleId, true, avatarPosition, /* preview */ true
+          )
+          if (!av.pending) {
+            // Avatar clip was cached (or overlay done) — the preview already
+            // HAS the presenter.
+            context.log(`[generateHeyGenAvatar] ✅ Single-part preview with avatar: ${av.videoUrl}`)
+            return {
+              status: 200,
+              jsonBody: {
+                success: true, scene_id: body.scene_id, segment_id: body.segment_id,
+                video_url: av.videoUrl, single_part: true,
+                ...(av.reason ? { avatar_warning: av.reason } : {}),
+              },
+            }
+          }
+          // First-ever render of this part: HeyGen is queued. Return the job id
+          // so the frontend POLLS and swaps in the avatar the moment it's ready
+          // — plus the slide+voice cut to watch in the meantime. No permanent
+          // voice-only fallback. The scene's own video is untouched (preview
+          // sidecar is tagged so poll won't write it).
+          context.log(`[generateHeyGenAvatar] Single-part preview: avatar job ${av.heygenVideoId} queued`)
+          return {
+            status: 200,
+            jsonBody: {
+              success: true, scene_id: body.scene_id, segment_id: body.segment_id,
+              video_id: av.heygenVideoId, status: 'rendering', single_part: true,
+              preview_video_url: videoUrl,
+            },
+          }
+        }
 
         // Talking-avatar overlay (#40) — async when not cached
         return await finishOrQueue(

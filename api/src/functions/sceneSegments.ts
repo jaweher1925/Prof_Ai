@@ -47,6 +47,9 @@ app.http('updateSceneSegment', {
           // content, interaction, ...) keep its own slide instead of sharing
           // the whole scene's one design. See slideRenderer.ts + ffmpegVideo.ts.
           ...(body.slide_design !== undefined && { slideDesign: typeof body.slide_design === 'string' ? body.slide_design : JSON.stringify(body.slide_design) }),
+          // Per-segment WYSIWYG snapshot set straight from Visual Designer on
+          // save — makes this part "ready" without a separate generate step.
+          ...(body.visual_asset_url !== undefined && { visualAssetUrl: body.visual_asset_url }),
           ...(body.image_prompt !== undefined && { imagePrompt: body.image_prompt }),
           ...(body.animation !== undefined && { animation: body.animation }),
           // Clear stale audio whenever the narration text changes so the UI can

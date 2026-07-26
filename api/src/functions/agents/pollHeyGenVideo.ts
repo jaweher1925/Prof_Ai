@@ -62,6 +62,11 @@ async function pollHeyGenVideoHandler(
     // Tracks what we actually save/return — the raw HeyGen clip unless/until
     // it gets composited onto the slide below.
     let finalVideoUrl = videoUrl
+    // Surfaced to the frontend when compositing silently degrades to a
+    // voice-only (or raw-clip) result — previously only logged via
+    // context.warn, so the user had zero indication anything was off with
+    // the avatar (reported as "no avatar in the vd").
+    let avatarWarning: string | undefined
 
     // If completed and we have a scene_id: HeyGen's clip is just the raw
     // talking-head avatar on a solid background. Composite it locally with
@@ -108,6 +113,7 @@ async function pollHeyGenVideoHandler(
           const meta = JSON.parse(readFileSync(sidecarPath, 'utf8')) as {
             slideVideoUrl: string; cachePath?: string; createdAt?: number
             avatarPosition?: { x: number; y: number; width: number } | null
+            preview?: boolean
           }
           
           // Check if this job has been pending for too long (>30 min indicates a problem)
@@ -123,6 +129,11 @@ async function pollHeyGenVideoHandler(
           }
 
           let finalUrl = meta.slideVideoUrl // fallback: slide-only video
+          // Surfaced to the frontend when compositing fails so the user
+          // actually finds out the video came back voice-only instead of
+          // silently getting a video with no avatar and no explanation
+          // (previously only logged server-side via context.warn).
+          let avatarWarning: string | undefined
           const basePath = localPathFromUploadUrl(meta.slideVideoUrl)
           if (basePath) {
             try {
@@ -131,13 +142,23 @@ async function pollHeyGenVideoHandler(
               context.log(`Scene ${body.scene_id}: async avatar composited onto slide video after ${elapsedMin}min`)
             } catch (e: any) {
               context.warn(`Scene ${body.scene_id}: overlay failed, keeping slide-only video — ${e?.message}`)
+              avatarWarning = `Speaking avatar rendering failed (${e?.message || 'unknown error'}) — rendered voice-only.`
             }
+          } else {
+            avatarWarning = 'Could not locate the rendered slide video to overlay the avatar onto — rendered voice-only.'
           }
 
-          await prisma.scene.update({
-            where: { id: body.scene_id },
-            data: { avatarVideoUrl: finalUrl, status: 'completed' },
-          })
+          // A single-part Visual Design PREVIEW must NOT be written to
+          // Scene.avatarVideoUrl — that field is the full-scene video Video
+          // Editing assembles from, and one part isn't the whole scene. Just
+          // return the composited preview clip; the scene's own video is
+          // produced by the normal (non-preview) full-scene render.
+          if (!meta.preview) {
+            await prisma.scene.update({
+              where: { id: body.scene_id },
+              data: { avatarVideoUrl: finalUrl, status: 'completed' },
+            })
+          }
           try { unlinkSync(sidecarPath) } catch { /* best-effort cleanup */ }
 
           return {
@@ -148,6 +169,8 @@ async function pollHeyGenVideoHandler(
               video_url: finalUrl,
               thumbnail_url: thumbnailUrl || null,
               completed: true,
+              ...(meta.preview ? { single_part: true } : {}),
+              ...(avatarWarning ? { avatar_warning: avatarWarning } : {}),
             },
           }
         } finally {
@@ -195,9 +218,11 @@ async function pollHeyGenVideoHandler(
           // merged in. Logged so it's visible this path was hit.
           context.warn(`Scene ${body.scene_id}: local avatar composite failed, falling back to raw HeyGen clip — ${compositeErr?.message}`)
           finalVideoUrl = videoUrl
+          avatarWarning = `Speaking avatar rendering failed (${compositeErr?.message || 'unknown error'}) — kept the raw avatar clip without the slide merged in.`
         }
       } else {
         context.warn(`Scene ${body.scene_id}: no ttsAudioUrl found, cannot composite — saving raw HeyGen clip`)
+        avatarWarning = 'No narration audio was found for this scene, so the avatar could not be composited onto the slide — saved the raw avatar clip instead.'
       }
 
       await prisma.scene.update({
@@ -237,6 +262,7 @@ async function pollHeyGenVideoHandler(
         video_url: finalVideoUrl || null,
         thumbnail_url: thumbnailUrl || null,
         completed: status === 'completed',
+        ...(avatarWarning ? { avatar_warning: avatarWarning } : {}),
       },
     }
   } catch (error: any) {

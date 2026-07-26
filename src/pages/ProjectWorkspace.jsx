@@ -18,7 +18,6 @@ import SourcesPanel from '@/components/workspace/SourcesPanel'
 import ScriptsPanel from '@/components/workspace/ScriptsPanel'
 import VoicePanel from '@/components/workspace/VoicePanel'
 import VisualDesignerPanel from '@/components/workspace/VisualDesignerPanel'
-import AvatarStudioPanel from '@/components/workspace/AvatarStudioPanel'
 import VideoPanel from '@/components/workspace/VideoPanel'
 import CastingSettings from '@/components/workspace/CastingSettings'
 
@@ -84,27 +83,15 @@ const STAGES = [
     icon: Mic2,
     desc: 'Voice casting & settings',
   },
-  { 
+  {
     id: 'visual-design',
     label: '4. Visual Design',
     icon: Image,
-    desc: 'Templates & WYSIWYG canvas',
+    desc: 'Design, timeline & video editing',
   },
-  { 
-    id: 'video-editing',
-    label: '5. Video Editing',
-    icon: Video,
-    desc: 'Timeline & motion graphics',
-  },
-  { 
-    id: 'avatar-studio',
-    label: '6. Avatar Studio',
-    icon: Wand2,
-    desc: 'Avatar rendering & styling',
-  },
-  { 
+  {
     id: 'final-video',
-    label: '7. Final Video',
+    label: '5. Final Video',
     icon: Video,
     desc: 'Compilation & export',
   },
@@ -239,7 +226,7 @@ export default function ProjectWorkspace() {
 
   const isLocked = (stageId) => {
     // Stages unlock only when previous stage is complete
-    const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'video-editing', 'avatar-studio', 'final-video']
+    const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'final-video']
     const currentIndex = stageOrder.indexOf(stageId)
     
     // Library is always unlocked
@@ -301,13 +288,17 @@ export default function ProjectWorkspace() {
         )
         
       case 'visual-design':
-        // DONE when: at least one module has all scenes generated
+        // "Complete enough to move on" = AT LEAST ONE scene anywhere is
+        // designed or generated. This is what unlocks the Video Editing stage,
+        // and the user wants that as soon as a single scene is ready — not
+        // after every scene in a module is finished. A scene counts if it has
+        // a saved design snapshot (visualAssetUrl) OR a rendered video
+        // (avatarVideoUrl past the pending heygen: sentinel).
         if (!modules.length) return false
-        return modules.some(mod => {
-          const moduleScenes = scenes.filter(s => s.moduleId === mod.id)
-          return moduleScenes.length > 0 && 
-                 moduleScenes.every(s => !!s.visualAssetUrl)
-        })
+        return scenes.some(s =>
+          !!s.visualAssetUrl ||
+          (!!s.avatarVideoUrl && !s.avatarVideoUrl.startsWith('heygen:'))
+        )
         
       case 'video-editing':
         // DONE when: at least one module has all scenes with avatarVideoUrl (HeyGen videos) OR timeline edited
@@ -352,7 +343,7 @@ export default function ProjectWorkspace() {
           <p className="text-slate-500 dark:text-slate-400 text-sm">
             {activeStage === 'scripts'
               ? 'Upload at least one source file in the Library first.'
-              : ['voices', 'visual-design', 'video-editing', 'avatar-studio', 'final-video'].includes(activeStage)
+              : ['voices', 'visual-design', 'final-video'].includes(activeStage)
               ? 'Generate and approve scripts first.'
               : 'Complete the previous stages first.'}
           </p>
@@ -365,8 +356,6 @@ export default function ProjectWorkspace() {
       case 'scripts':         return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
       case 'voices':          return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
       case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
-      case 'video-editing':   return <VideoPanel project={project} onUpdate={invalidate} />
-      case 'avatar-studio':   return <AvatarStudioPanel project={project} onUpdate={invalidate} onContinue={() => setActiveStage('final-video')} />
       case 'final-video':     return <VideoPanel project={project} onUpdate={invalidate} />
       default:                return null
     }
@@ -393,15 +382,13 @@ export default function ProjectWorkspace() {
 
   return (
     <div className="flex h-full bg-[#f5f7fb] dark:bg-[#0a0e1a] overflow-hidden">
-      {/* Stage Rail — always starts icon-only, single column, at every
-          screen size (no more lg:-breakpoint-only expansion), and expands
-          to show labels only while actually hovered. "group/rail" scopes
-          the hover so nothing outside this rail reacts to it. */}
-      <div className="group/rail w-16 hover:w-80 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 border-r border-slate-100 dark:border-white/10 flex flex-col flex-shrink-0 overflow-hidden transition-all duration-200">
+      {/* Stage Rail — icon-only on narrow screens, expanded with labels on
+          lg+ screens. Fixed per breakpoint, no hover-to-expand interaction. */}
+      <div className="w-16 lg:w-72 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 border-r border-slate-100 dark:border-white/10 flex flex-col flex-shrink-0 overflow-hidden transition-all duration-200">
 
         {/* Header */}
-        <div className="px-2 group-hover/rail:px-6 py-4 border-b border-slate-100 dark:border-white/10 transition-all duration-200">
-          <div className="flex items-center justify-center group-hover/rail:justify-start gap-2 mb-0 group-hover/rail:mb-3">
+        <div className="px-2 lg:px-6 py-4 border-b border-slate-100 dark:border-white/10 transition-all duration-200">
+          <div className="flex items-center justify-center lg:justify-start gap-2 mb-0 lg:mb-3">
             <button
               onClick={() => navigate('/dashboard')}
               className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-white/5 transition-colors text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-white flex-shrink-0"
@@ -409,7 +396,7 @@ export default function ProjectWorkspace() {
             >
               <ArrowLeft className="w-4 h-4" />
             </button>
-            <div className="flex-1 min-w-0 hidden group-hover/rail:block">
+            <div className="flex-1 min-w-0 hidden lg:block">
               <h2 className="text-sm font-bold text-slate-900 dark:text-white truncate">{project?.title}</h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 capitalize">{project?.status?.replace(/_/g, ' ')}</p>
             </div>
@@ -417,7 +404,7 @@ export default function ProjectWorkspace() {
         </div>
 
         {/* Pipeline stages - Scrollable */}
-        <nav className="flex-1 overflow-y-auto px-1.5 group-hover/rail:px-6 py-6 space-y-3 transition-all duration-200">
+        <nav className="flex-1 overflow-y-auto px-1.5 lg:px-6 py-6 space-y-3 transition-all duration-200">
           {STAGES.map(({ id, label, icon: Icon, desc }) => {
             const locked = isLocked(id)
             const active = activeStage === id && !showCasting
@@ -434,7 +421,7 @@ export default function ProjectWorkspace() {
                 title={label}
                 className={`w-full group text-left transition-all duration-200 ${locked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               >
-                <div className={`p-2 group-hover/rail:p-4 rounded-2xl border-2 transition-all ${
+                <div className={`p-2 lg:p-4 rounded-2xl border-2 transition-all ${
                   active
                     ? 'bg-gradient-to-br from-blue-600 to-blue-700 border-transparent shadow-lg shadow-opacity-20'
                     : completed
@@ -443,13 +430,13 @@ export default function ProjectWorkspace() {
                     ? 'bg-slate-50 dark:bg-white/5 border-slate-100 dark:border-white/10 group-hover:border-slate-200 dark:group-hover:border-white/20'
                     : 'bg-white dark:bg-slate-800/30 border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20 hover:shadow-md'
                 }`}>
-                  <div className="flex items-center justify-center group-hover/rail:justify-start group-hover/rail:items-start gap-3">
+                  <div className="flex items-center justify-center lg:justify-start lg:items-start gap-3">
                     <IconChip active={active} locked={locked} completed={completed} />
-                    <div className="flex-1 min-w-0 hidden group-hover/rail:block">
+                    <div className="flex-1 min-w-0 hidden lg:block">
                       <p className={`text-sm font-semibold ${active ? 'text-white' : completed ? 'text-green-700 dark:text-green-300' : 'text-slate-900 dark:text-white'}`}>{label}</p>
                       <p className={`text-xs ${active ? 'text-white/80' : completed ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'}`}>{desc}</p>
                     </div>
-                    <div className="hidden group-hover/rail:flex flex-shrink-0 mt-0.5">
+                    <div className="hidden lg:flex flex-shrink-0 mt-0.5">
                       {active && <CheckCircle className="w-4 h-4 text-white" />}
                       {completed && <CheckCircle className="w-4 h-4 text-green-600 dark:text-green-400" />}
                       {!locked && !active && !completed && <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-300" />}
@@ -463,18 +450,18 @@ export default function ProjectWorkspace() {
         </nav>
 
         {/* Casting settings button */}
-        <div className="p-2 group-hover/rail:p-6 border-t border-slate-100 dark:border-white/10 bg-gradient-to-b from-transparent to-slate-50 dark:to-slate-900/50 transition-all duration-200">
+        <div className="p-2 lg:p-6 border-t border-slate-100 dark:border-white/10 bg-gradient-to-b from-transparent to-slate-50 dark:to-slate-900/50 transition-all duration-200">
           <button
             onClick={() => setShowCasting(v => !v)}
             title="Configure avatar, voice, and styling"
-            className={`w-full flex items-center justify-center group-hover/rail:justify-start gap-3 px-2 group-hover/rail:px-4 py-3 rounded-xl font-medium text-sm transition-all ${
+            className={`w-full flex items-center justify-center lg:justify-start gap-3 px-2 lg:px-4 py-3 rounded-xl font-medium text-sm transition-all ${
               showCasting
                 ? 'bg-gradient-to-r from-indigo-600 to-indigo-700 text-white shadow-lg shadow-indigo-500/30'
                 : 'bg-white dark:bg-slate-800/40 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/20 hover:shadow-md'
             }`}
           >
             <Settings className="w-4 h-4 flex-shrink-0" />
-            <span className="hidden group-hover/rail:inline">Casting Settings</span>
+            <span className="hidden lg:inline">Casting Settings</span>
           </button>
         </div>
       </div>

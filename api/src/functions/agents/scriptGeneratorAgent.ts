@@ -189,9 +189,13 @@ async function ensureSlideBullets(scene: ContentSceneOutput): Promise<ContentSce
   const bullets = await extractBullets(fallbackText, 3)
   if (!bullets.length) return scene // genuinely nothing to extract from — leave as-is rather than fabricate
 
+  // These are independently-extracted facts with no real hierarchy between
+  // them (unlike the LLM's own slide_content.blocks, where level reflects an
+  // actual main-point/sub-point relationship) — treat them all as main points
+  // rather than arbitrarily demoting everything after the first to level 2.
   const bulletsBlock: SlideBlock = {
     type:  'bullets',
-    items: bullets.map((text, i) => ({ text, level: (i === 0 ? 1 : 2) as 1 | 2 })),
+    items: bullets.map((text): SlideBullet => ({ text, level: 1 })),
   }
   return {
     ...scene,
@@ -249,7 +253,9 @@ function quizLegacySlide(quiz: QuizSceneOutput): SlideContent {
     theme:  'corporate',
     blocks: [{
       type:  'bullets',
-      items: quiz.questions.slice(0, 5).map((q, i) => ({ text: q.question, level: (i === 0 ? 1 : 2) as 1 | 2 })),
+      // Each question is its own independent point, not a sub-detail of the
+      // one before it — all level 1.
+      items: quiz.questions.slice(0, 5).map((q): SlideBullet => ({ text: q.question, level: 1 })),
     }],
   }
 }
@@ -320,7 +326,10 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
         items: segment.elements?.length
           ? segment.elements
               .filter(el => el.type === 'bullet' && el.text)
-              .map((el, i) => ({ text: el.text || '', level: i === 0 ? 1 : 2 }))
+              // Each generated bullet is its own point, not a sub-detail of
+              // whichever one happens to come first — all level 1, matching
+              // the recap/interaction/question cases below.
+              .map((el): SlideBullet => ({ text: el.text || '', level: 1 }))
           : [{text: segment.text || 'Key learning points', level: 1}]
       }],
       imagePrompt: segment.image_prompt,
@@ -681,7 +690,12 @@ Return this exact JSON shape:
               subtitle: s.slide_content?.subtitle || '',
               blocks: [{
                 type: 'bullets',
-                items: (bulletsBlock?.items ?? []).map((it, i) => ({ text: it.text, level: i === 0 ? 1 : 2 }))
+                // Keep the LLM's own level (it already distinguishes main
+                // points from supporting details per the generation prompt —
+                // see the "level": 1/2 examples above). Forcing every item
+                // after the first to level 2 by index was flattening
+                // legitimate main points into sub-points.
+                items: (bulletsBlock?.items ?? []).map((it): SlideBullet => ({ text: it.text, level: it.level === 2 ? 2 : 1 }))
               }],
               imagePrompt: s.slide_content?.imagePrompt,
             }),
