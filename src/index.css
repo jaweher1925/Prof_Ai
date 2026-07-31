@@ -174,3 +174,10 @@
   animation: pa-avatar-speaking-kf 0.9s ease-in-out infinite;
   transform-origin: center bottom;
 }
+
+/* Final Video — mini looping previews so the user can SEE each module-to-module
+   transition (a second panel entering over the first). */
+@keyframes pa-tr-fade     { 0%,12%{opacity:0} 44%,56%{opacity:1} 88%,100%{opacity:0} }
+@keyframes pa-tr-dissolve { 0%,12%{opacity:0;filter:blur(3px)} 44%,56%{opacity:1;filter:blur(0)} 88%,100%{opacity:0;filter:blur(3px)} }
+@keyframes pa-tr-slide    { 0%,12%{transform:translateX(101%)} 44%,56%{transform:translateX(0)} 88%,100%{transform:translateX(101%)} }
+@keyframes pa-tr-cut      { 0%,49%{opacity:0} 50%,99%{opacity:1} 100%{opacity:0} }

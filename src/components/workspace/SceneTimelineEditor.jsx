@@ -477,10 +477,33 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
     dragStartRef.current = {
       elementId: el.id,
       initialTime: el.startTime,
+      initialDuration: el.duration,
       mouseDownX: e.clientX,
       trackRect: rect,
+      mode: 'move',
     }
-    
+
+    setDragging(el.id)
+  }
+
+  // Resize from the RIGHT edge — changes how long the point stays on screen
+  // (its end time), without moving its start.
+  const handleResizeMouseDown = (el, e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    setSelected(el.id)
+    onSelect?.(el)
+    if (!containerRef.current) return
+    const rect = containerRef.current.getBoundingClientRect()
+    dragStartRef.current = {
+      elementId: el.id,
+      initialTime: el.startTime,
+      initialDuration: el.duration,
+      mouseDownX: e.clientX,
+      trackRect: rect,
+      mode: 'resize',
+    }
     setDragging(el.id)
   }
 
@@ -505,18 +528,24 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
       return
     }
 
-    const { mouseDownX, initialTime } = dragStartRef.current
-    const deltaPixels = e.clientX - mouseDownX
-    const deltaTime = pixelToTime(deltaPixels)
-    const newTime = Math.max(0, Math.min(initialTime + deltaTime, totalTime - 0.1))
-
+    const { mouseDownX, initialTime, initialDuration, mode } = dragStartRef.current
+    const deltaTime = pixelToTime(e.clientX - mouseDownX)
     const element = elements.find(el => el.id === dragging)
-    if (element && Math.abs(newTime - initialTime) > 0.01) {
-      onElementUpdate({
-        id: dragging,
-        startTime: newTime,
-        duration: element.duration,
-      })
+
+    if (element && mode === 'resize') {
+      // Change the END (duration) — keep at least 0.5s, and don't run past the
+      // scene's total length.
+      const maxDur = Math.max(0.5, totalTime - initialTime)
+      const newDuration = Math.max(0.5, Math.min((initialDuration || 0) + deltaTime, maxDur))
+      if (Math.abs(newDuration - (initialDuration || 0)) > 0.01) {
+        onElementUpdate({ id: dragging, startTime: initialTime, duration: newDuration })
+      }
+    } else if (element) {
+      // Move the START — the point still lasts the same amount of time.
+      const newTime = Math.max(0, Math.min(initialTime + deltaTime, totalTime - 0.1))
+      if (Math.abs(newTime - initialTime) > 0.01) {
+        onElementUpdate({ id: dragging, startTime: newTime, duration: element.duration })
+      }
     }
 
     setDragging(null)
@@ -620,7 +649,8 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
                 style={{ pointerEvents: dragging === el.id ? 'none' : 'auto' }}
               />
 
-              {/* Draggable element block */}
+              {/* Element block — drag the body to move the START, drag the
+                  right edge (handle) to change the END (how long it stays). */}
               <div
                 className={`absolute top-1 bottom-1 rounded border-2 flex items-center px-1.5 gap-1 transition-all cursor-grab active:cursor-grabbing ${
                   dragging === el.id
@@ -635,14 +665,22 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
                   userSelect: 'none',
                 }}
                 onMouseDown={(e) => handleMouseDown(el, e)}
-                title={`Drag to set timing. Currently: ${el.startTime.toFixed(2)}s`}
+                title={`${el.label.split(':')[0]}: ${el.startTime.toFixed(2)}s → ${(el.startTime + el.duration).toFixed(2)}s\nDrag the bar to move the start, drag the right edge to change the end.`}
               >
                 <GripHorizontal className="w-2.5 h-2.5 opacity-80 flex-shrink-0" />
+                {/* Right-edge resize handle — sets the END time (duration). */}
+                <div
+                  onMouseDown={(e) => handleResizeMouseDown(el, e)}
+                  title="Drag to set when this point disappears (end time)"
+                  className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize flex items-center justify-center rounded-r hover:bg-white/25"
+                >
+                  <div className="w-0.5 h-3 bg-white/70 rounded-full" />
+                </div>
               </div>
 
-              {/* Time display on right */}
-              <div className="absolute right-1 top-0 h-9 flex items-center text-[10px] text-slate-600 dark:text-slate-400 font-mono z-10 pointer-events-none bg-gradient-to-l from-white dark:from-slate-900 px-2">
-                {el.startTime.toFixed(2)}s
+              {/* Start → end times on the right */}
+              <div className="absolute right-1 top-0 h-9 flex items-center text-[10px] text-slate-600 dark:text-slate-400 font-mono z-10 pointer-events-none bg-gradient-to-l from-white dark:from-slate-900 px-2 whitespace-nowrap">
+                {el.startTime.toFixed(1)}s → {(el.startTime + el.duration).toFixed(1)}s
               </div>
             </div>
           ))}

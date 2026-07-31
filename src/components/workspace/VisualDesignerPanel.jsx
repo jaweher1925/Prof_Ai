@@ -873,10 +873,12 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
 
   const hasSelected = scenes.some(s => s.id === selectedId)
   // Each module is its own collapsible card so the list isn't one long scroll.
-  // Default: first module open, the rest collapsed. The module that holds the
-  // currently-selected scene always stays open.
-  const [collapsed, setCollapsed] = useState(videoIndex !== 0)
-  const open = !collapsed || hasSelected
+  // Default: the module that holds the currently-selected scene (or the first
+  // module) starts open, the rest collapsed. After that the toggle is fully
+  // manual — even the module you're editing can be collapsed (was previously
+  // forced open by hasSelected, so Module 1 could never be closed).
+  const [collapsed, setCollapsed] = useState(!hasSelected && videoIndex !== 0)
+  const open = !collapsed
 
   return (
     <div className="mx-2 my-2 rounded-xl border border-slate-200 dark:border-white/10 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
@@ -2889,12 +2891,6 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
           {activeTab === 'videoedit' && (
             <div className="space-y-4">
-              <div>
-                <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1">Video Editing</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Press Play below — the preview at the top plays your scene, revealing each content point at the time you set on the timeline.
-                </p>
-              </div>
               {/* Remotion timeline — voice bar + per-point element timing. The
                   preview lives at the TOP of the page (one preview only). */}
               <SceneTimelineEditor

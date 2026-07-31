@@ -18,7 +18,7 @@ import SourcesPanel from '@/components/workspace/SourcesPanel'
 import ScriptsPanel from '@/components/workspace/ScriptsPanel'
 import VoicePanel from '@/components/workspace/VoicePanel'
 import VisualDesignerPanel from '@/components/workspace/VisualDesignerPanel'
-import VideoPanel from '@/components/workspace/VideoPanel'
+import FinalVideoPanel from '@/components/workspace/FinalVideoPanel'
 import CastingSettings from '@/components/workspace/CastingSettings'
 
 /**
@@ -356,7 +356,7 @@ export default function ProjectWorkspace() {
       case 'scripts':         return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
       case 'voices':          return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
       case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
-      case 'final-video':     return <VideoPanel project={project} onUpdate={invalidate} />
+      case 'final-video':     return <FinalVideoPanel project={project} onUpdate={invalidate} />
       default:                return null
     }
   }
