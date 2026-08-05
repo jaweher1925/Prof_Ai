@@ -37,14 +37,20 @@ async function addAvatarOrQueue(
   slideVideoUrl: string,
   audioUrls: string[],
   moduleId: string,
+  // sceneId is written into the pending-job sidecar so pollHeyGenVideo.ts AND
+  // heygenWebhook.ts (added in the v3 migration) can both identify which scene
+  // to finalize without needing it passed back in on every request — the
+  // webhook in particular gets nothing from HeyGen except the video_id.
+  sceneId: string,
   useAvatar: boolean,
   avatarPosition?: { x: number; y: number; width: number } | null,
   // Single-part Visual Design PREVIEWs set this so the sidecar is tagged
-  // preview:true — pollHeyGenVideo then composites + returns the avatar clip
+  // preview:true — finalizeHeyGenJob then composites + returns the avatar clip
   // WITHOUT writing Scene.avatarVideoUrl (which would clobber the full-scene
   // video Video Editing assembles from). The preview just needs to SHOW the
   // avatar once it's rendered.
-  preview?: boolean
+  preview?: boolean,
+  segmentId?: string
 ): Promise<{ pending: false; videoUrl: string; reason?: string } | { pending: true; heygenVideoId: string }> {
   try {
     if (!useAvatar) {
@@ -98,6 +104,10 @@ async function addAvatarOrQueue(
       cacheKeyFiles: audioUrls
         .map(u => localPathFromUploadUrl(u))
         .filter((p): p is string => !!p),
+      // Echoed back in the HeyGen webhook payload for traceability in the
+      // HeyGen dashboard — not load-bearing, the sidecar below is what
+      // finalizeHeyGenJob actually reads.
+      callbackId: preview && segmentId ? `${sceneId}:${segmentId}` : sceneId,
     })
 
     if (job.cached) {
@@ -107,10 +117,12 @@ async function addAvatarOrQueue(
       return { pending: false, videoUrl: finalUrl }
     }
 
-    // Sidecar so pollHeyGenVideo can finish the job later
+    // Sidecar so pollHeyGenVideo.ts / heygenWebhook.ts can finish the job later.
+    // sceneId is required here (added in the v3 migration) — the webhook has no
+    // other way to know which scene a bare video_id belongs to.
     writeFileSync(
       join(UPLOAD_DIR, `heygen_pending_${job.videoId}.json`),
-      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null, preview: !!preview })
+      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null, preview: !!preview, sceneId })
     )
     context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
     return { pending: true, heygenVideoId: job.videoId }
@@ -139,7 +151,7 @@ async function finishOrQueue(
   useAvatar: boolean,
   avatarPosition?: { x: number; y: number; width: number } | null
 ): Promise<HttpResponseInit> {
-  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, useAvatar, avatarPosition)
+  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, sceneId, useAvatar, avatarPosition)
 
   if (avatar.pending) {
     // NOTE: avatarVideoUrl deliberately keeps the `heygen:<id>` sentinel —
@@ -317,7 +329,7 @@ async function generateHeyGenAvatarHandler(
           }
           const av = await addAvatarOrQueue(
             context, videoUrl, segments.map(s => s.ttsAudioUrl),
-            scene.moduleId, true, avatarPosition, /* preview */ true
+            scene.moduleId, body.scene_id, true, avatarPosition, /* preview */ true, body.segment_id
           )
           if (!av.pending) {
             // Avatar clip was cached (or overlay done) — the preview already
