@@ -39,6 +39,13 @@ export const agentsService = {
   updateSceneSegment: (segmentId, fields) =>
     apiClient.patch(`/sceneSegments/${segmentId}`, fields),
 
+  /** Delete ONE part (hook/content/recap/question) from a multi-part scene,
+   *  leaving its siblings untouched. Rejected by the server if it's the
+   *  scene's only remaining part — delete the whole scene instead in that
+   *  case (scenesService has no per-segment equivalent). */
+  deleteSceneSegment: (segmentId) =>
+    apiClient.delete(`/sceneSegments/${segmentId}`),
+
   /** Generate a short TTS sample without changing any scene */
   runPreviewTTS: (voiceId, text, voiceSettings) =>
     apiClient.post('/previewTTS', {

@@ -7,9 +7,11 @@
  * have a rendered video (avatar or voice-only — either is fine).
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
+import { parse } from 'path'
 import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { concatVideos, localVideoPathFromUploadUrl } from '../../lib/ffmpegVideo'
+import { deleteOldUpload } from '../../lib/uploadCleanup'
 
 async function mergeModuleVideoHandler(
   request: HttpRequest,
@@ -46,12 +48,27 @@ async function mergeModuleVideoHandler(
     const localPaths = scenes.map((s) => localVideoPathFromUploadUrl(s.avatarVideoUrl) as string)
 
     context.log(`Merging ${localPaths.length} scene videos for module ${body.module_id}`)
-    const fullVideoUrl = await concatVideos(localPaths)
+    // concatVideos() always returns a local disk path (e.g.
+    // C:\...\api\uploads\xxx_scene.mp4 or /home/site/wwwroot/uploads/xxx_scene.mp4
+    // inside the container) — it's meant for ffmpeg's own use, never for a browser.
+    // Saving that raw path directly into Module.fullVideoUrl (as this used to do)
+    // made every finished module show a black, unplayable video: browsers refuse
+    // to load file:///C:/... URLs for security. Every other place in this codebase
+    // converts to the web-servable /api/uploads/{filename} form before persisting
+    // or returning a video URL — this was the one spot that didn't.
+    const localFullVideoPath = await concatVideos(localPaths)
+    const fullVideoUrl = `/api/uploads/${parse(localFullVideoPath).base}`
+
+    // Re-merging a module (e.g. after editing/regenerating one scene) always
+    // produces a brand new concatenated file — without this, the PREVIOUS
+    // full module video was never deleted and just sat in uploads/ forever.
+    const previousModule = await prisma.module.findUnique({ where: { id: body.module_id }, select: { fullVideoUrl: true } })
 
     await prisma.module.update({
       where: { id: body.module_id },
       data: { fullVideoUrl },
     })
+    deleteOldUpload(previousModule?.fullVideoUrl, fullVideoUrl)
 
     return { status: 200, jsonBody: { success: true, module_id: body.module_id, full_video_url: fullVideoUrl } }
   } catch (error: any) {

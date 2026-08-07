@@ -15,6 +15,7 @@ import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { uploadBuffer } from '../../lib/storage'
 import { buildSlide, SlideContent, toSlideBlocks } from '../../lib/slideRenderer'
+import { deleteOldUpload } from '../../lib/uploadCleanup'
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
 
@@ -138,12 +139,14 @@ async function generateSceneAssetHandler(
     // (and the video) pixel-for-pixel instead of rebuilding a drifting SVG.
     if (slideContent.renderedSlideUrl) {
       if (targetSegment) {
+        deleteOldUpload(targetSegment.visualAssetUrl, slideContent.renderedSlideUrl)
         await prisma.sceneSegment.update({
           where: { id: targetSegment.id },
           data: { visualAssetUrl: slideContent.renderedSlideUrl },
         })
       }
       if (isPrimarySegment) {
+        deleteOldUpload(scene.visualAssetUrl, slideContent.renderedSlideUrl)
         await prisma.scene.update({
           where: { id: body.scene_id },
           data: { visualAssetUrl: slideContent.renderedSlideUrl },
@@ -203,9 +206,11 @@ async function generateSceneAssetHandler(
     const savedUrl = await uploadBuffer(finalBuffer, ext, ext === 'png' ? 'image/png' : 'image/svg+xml')
 
     if (targetSegment) {
+      deleteOldUpload(targetSegment.visualAssetUrl, savedUrl)
       await prisma.sceneSegment.update({ where: { id: targetSegment.id }, data: { visualAssetUrl: savedUrl } })
     }
     if (isPrimarySegment) {
+      deleteOldUpload(scene.visualAssetUrl, savedUrl)
       await prisma.scene.update({ where: { id: body.scene_id }, data: { visualAssetUrl: savedUrl } })
     }
 

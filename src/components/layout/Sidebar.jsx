@@ -5,9 +5,11 @@ import {
   BookOpen,
   Sun,
   Moon,
+  LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/ThemeContext'
+import { useAuth } from '@/lib/AuthContext'
 import LogoBadge from '@/components/ui/LogoBadge'
 
 const navItems = [
@@ -35,9 +37,15 @@ const navItems = [
  */
 export default function Sidebar() {
   const { theme, toggleTheme } = useTheme()
+  const { user, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const isDark = theme === 'dark'
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/login', { replace: true })
+  }
 
   // Icons-only rail while inside a workspace/project, where horizontal space
   // belongs to the editor.
@@ -121,12 +129,19 @@ export default function Sidebar() {
       {/* ── 4. Profile ──────────────────────────────────────────────────── */}
       {showLabels && (
         <div className="hidden lg:block border-t border-slate-200 dark:border-white/[0.06] p-3">
-          <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-transparent">
+          <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-transparent">
             <LogoBadge size="w-7 h-7" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">Professor</p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">Educator</p>
+              <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">{user?.name || user?.email || 'Professor'}</p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{user?.name ? user.email : 'Educator'}</p>
             </div>
+            <button
+              onClick={handleLogout}
+              title="Sign out"
+              className="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400 transition-colors opacity-0 group-hover:opacity-100"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       )}

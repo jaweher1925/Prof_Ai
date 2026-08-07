@@ -14,7 +14,7 @@ import { join } from 'path'
 config({ path: join(__dirname, '..', '..', '..', '.env') })
 
 // Validate required keys are present
-const REQUIRED = ['DATABASE_URL', 'OPENAI_API_KEY', 'HEYGEN_API_KEY', 'ELEVENLABS_API_KEY']
+const REQUIRED = ['DATABASE_URL', 'OPENAI_API_KEY', 'HEYGEN_API_KEY', 'ELEVENLABS_API_KEY', 'JWT_SECRET']
 const missing = REQUIRED.filter(k => !process.env[k])
 
 if (missing.length > 0) {
@@ -35,4 +35,9 @@ export const env = {
   HYPERFRAMES_API_KEY: process.env.HYPERFRAMES_API_KEY || '',
   AZURE_STORAGE_CONNECTION_STRING: process.env.AZURE_STORAGE_CONNECTION_STRING || '',
   AZURE_STORAGE_CONTAINER:         process.env.AZURE_STORAGE_CONTAINER || 'uploads',
+  // Signs the session cookie issued by /api/auth/login and /api/auth/signup
+  // (see api/src/lib/authTokens.ts). Falls back to a fixed dev-only value so
+  // local auth still works before .env is filled in — DO NOT rely on the
+  // fallback in production; set a real random JWT_SECRET there.
+  JWT_SECRET: process.env.JWT_SECRET || 'insecure-dev-only-secret-change-me',
 }

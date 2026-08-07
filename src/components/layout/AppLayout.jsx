@@ -7,7 +7,7 @@ export default function AppLayout({ children }) {
   const isWorkspace = location.pathname === '/workspace'
 
   return (
-    <div className="flex h-screen bg-[#f5f7fb] dark:bg-[#0a0e1a] overflow-hidden transition-colors">
+    <div className="flex h-screen overflow-hidden">
       <Sidebar compactMode={isWorkspace} />
       {/* min-w-0 so this pane can actually shrink below its content's
           intrinsic width instead of overflowing the viewport on narrower

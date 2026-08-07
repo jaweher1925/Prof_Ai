@@ -21,6 +21,7 @@ import {
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
 import SceneTimelineEditor from '@/components/workspace/SceneTimelineEditor'
+import StageHeader from '@/components/workspace/StageHeader'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -75,15 +76,15 @@ const THEMES = [
 // subtitle→content so a realistic 2-line wrap at either level still clears
 // the block below it instead of overlapping it.
 const DEFAULT_POSITIONS = {
-  'bullets':    { logo:{x:82,y:4}, title:{x:7,y:10}, subtitle:{x:7,y:29}, content:{x:7,y:41}, image:{x:56,y:10} },
-  'title-hero': { logo:{x:82,y:4}, title:{x:10,y:20},subtitle:{x:10,y:46},content:{x:10,y:64},image:{x:56,y:12} },
-  'two-column': { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:25}, content:{x:7,y:37}, image:{x:57,y:6}  },
-  'icon-grid':  { logo:{x:82,y:4}, title:{x:7,y:5},  subtitle:{x:7,y:24}, content:{x:7,y:36}, image:{x:57,y:5}  },
-  'key-stats':  { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:25}, content:{x:7,y:37}, image:{x:57,y:6}  },
-  'chart':      { logo:{x:82,y:4}, title:{x:7,y:5},  subtitle:{x:7,y:24}, content:{x:7,y:36}, image:{x:57,y:5}  },
-  'definition': { logo:{x:82,y:4}, title:{x:7,y:8},  subtitle:{x:7,y:27}, content:{x:7,y:46}, image:{x:57,y:8}  },
-  'quote':      { logo:{x:82,y:4}, title:{x:12,y:8}, subtitle:{x:12,y:82},content:{x:12,y:22}, image:{x:57,y:8}  },
-  'summary':    { logo:{x:82,y:4}, title:{x:7,y:6},  subtitle:{x:7,y:25}, content:{x:7,y:37}, image:{x:57,y:6}  },
+  'bullets':    { logo:{x:82,y:4}, title:{x:7,y:15}, subtitle:{x:7,y:32}, content:{x:7,y:44}, image:{x:56,y:12} },
+  'title-hero': { logo:{x:82,y:4}, title:{x:10,y:24},subtitle:{x:10,y:48},content:{x:10,y:66},image:{x:56,y:14} },
+  'two-column': { logo:{x:82,y:4}, title:{x:7,y:11}, subtitle:{x:7,y:28}, content:{x:7,y:40}, image:{x:57,y:9}  },
+  'icon-grid':  { logo:{x:82,y:4}, title:{x:7,y:10}, subtitle:{x:7,y:27}, content:{x:7,y:39}, image:{x:57,y:9}  },
+  'key-stats':  { logo:{x:82,y:4}, title:{x:7,y:11}, subtitle:{x:7,y:28}, content:{x:7,y:40}, image:{x:57,y:9}  },
+  'chart':      { logo:{x:82,y:4}, title:{x:7,y:10}, subtitle:{x:7,y:27}, content:{x:7,y:39}, image:{x:57,y:9}  },
+  'definition': { logo:{x:82,y:4}, title:{x:7,y:12}, subtitle:{x:7,y:30}, content:{x:7,y:48}, image:{x:57,y:11} },
+  'quote':      { logo:{x:82,y:4}, title:{x:12,y:12},subtitle:{x:12,y:82},content:{x:12,y:26}, image:{x:57,y:11} },
+  'summary':    { logo:{x:82,y:4}, title:{x:7,y:11}, subtitle:{x:7,y:28}, content:{x:7,y:40}, image:{x:57,y:9}  },
 }
 
 // Width of each draggable layer (% of slide). Text layers are capped at 65%
@@ -143,8 +144,12 @@ function clampAvatarBox(x, y, width) {
 // Returns a style object to spread straight onto the text element: just
 // `{ whiteSpace }` when clear, or `{ whiteSpace: 'normal', maxWidth }` (a %
 // of the text's OWN box, not the slide) when the avatar is in the way.
-const CONTENT_AVOID_GAP = 5 // % of slide kept clear between the two boxes
-const MIN_WRAP_WIDTH_CQW = 22 // never narrow the text column below this much of the SLIDE width
+const CONTENT_AVOID_GAP = 6 // % of slide kept clear between the two boxes
+// Let the text column narrow further before we stop shrinking it, so a big
+// avatar doesn't force the text back under itself via the floor. Below this the
+// text is genuinely too cramped, so we hide it behind the avatar's own gap
+// rather than overlapping (computeWrapStyle clamps to the real available room).
+const MIN_WRAP_WIDTH_CQW = 16 // never narrow the text column below this much of the SLIDE width
 // Reflow text around the presenter avatar on WHICHEVER side it currently sits.
 // `avatar` = { left, right, bottom } as % of the slide. Returns a style spread
 // onto the text element, in cqw units (% of the slide width — the slide is an
@@ -154,8 +159,17 @@ const MIN_WRAP_WIDTH_CQW = 22 // never narrow the text column below this much of
 //     edge (marginLeft) and narrowed to fit the remaining room
 // Previously this only handled the right-side case, so dragging the avatar to
 // the left left the text sitting underneath it, un-reflowed.
-function computeWrapStyle(pos, widthPct, avatar, textWrap) {
-  const base = { whiteSpace: textWrap ? 'normal' : 'nowrap' }
+//
+// Always wraps (#15) — there used to be a manual "One line" (nowrap) option,
+// but nowrap lets text overflow past its declared box width with no upper
+// bound, while the avatar-avoidance check below only knows about that
+// declared width. Long "one line" text could silently overflow UNDER the
+// avatar with no clash ever detected, since the overflow itself was
+// invisible to this math. Always wrapping keeps the text's actual rendered
+// extent equal to its known box, so it reliably reflows around wherever the
+// avatar placeholder currently sits instead of occasionally overlapping it.
+function computeWrapStyle(pos, widthPct, avatar) {
+  const base = { whiteSpace: 'normal' }
   if (!pos || !avatar) return base
   if (avatar.bottom <= pos.y) return base            // avatar entirely above this box — no clash
   const boxWidth = widthPct * (pos.scale ?? 1)        // % of slide
@@ -243,7 +257,6 @@ export function SlidePlaybackPreview({ design, revealCount = null, avatarImageUr
       imageUrl={parsed.imageUrl || ''}
       imageWidth={parsed.imageWidth || 36}
       imageShape={parsed.imageShape || 'rounded'}
-      textWrap={parsed.textWrap === true}
       moduleTitle={''}
       sceneIndex={0}
       totalScenes={1}
@@ -420,6 +433,23 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
   const [autoAvatarGate,    setAutoAvatarGate]    = useState(false)
   const avatarPromptedKey = project?.id ? `pa-vd-avatar-prompted-${project.id}` : null
 
+  // Per-module "every scene approved" status, reported up by each
+  // SceneGroupList (same pattern as VoicePanel's moduleVoiceStatus) so the
+  // top bar can show the same green "Continue" treatment used on
+  // Scripts/Voice once every module in this project is fully approved,
+  // instead of the Continue button always looking the same regardless of
+  // progress.
+  const [moduleApprovalStatus, setModuleApprovalStatus] = useState({})
+
+  // First-time PROJECT-WIDE theme gate — prompts once, the very first time
+  // Visual Design is opened for this project, to pick one theme applied to
+  // every module at once (instead of leaving each module to prompt
+  // individually via ModuleThemeGate below). Same one-time persisted-flag
+  // pattern as the avatar gate. Shown before the avatar gate if both would
+  // fire on the same first visit (see render below).
+  const [autoProjectThemeGate, setAutoProjectThemeGate] = useState(false)
+  const themePromptedKey = project?.id ? `pa-vd-theme-prompted-${project.id}` : null
+
   // The avatar picker should offer only presenters that MATCH the voice chosen
   // in the Voice stage — a female voice → female avatars, a male voice → male
   // avatars. Resolve the selected voice's gender here and hand it to the
@@ -469,6 +499,42 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
     queryFn:  () => scriptsService.listByProject(project.id),
     enabled:  !!project?.id,
   })
+
+  useEffect(() => {
+    if (!themePromptedKey || typeof localStorage === 'undefined') return
+    if (localStorage.getItem(themePromptedKey)) return   // already prompted once
+    if (!scripts.length) return                          // wait until modules are loaded
+    setAutoProjectThemeGate(true)
+    localStorage.setItem(themePromptedKey, '1')           // make it strictly one-time
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themePromptedKey, scripts.length])
+
+  const handleChooseProjectTheme = async (themeId) => {
+    setAutoProjectThemeGate(false)
+    try {
+      // Applies to every scene in every module, not just the current one —
+      // this is what makes it "project-wide" instead of the per-module gate.
+      await Promise.all(scripts.map(async (script) => {
+        if (!script.moduleId) return
+        const scenesRes = await fetch(`/api/modules/${script.moduleId}/scenes`)
+        const moduleScenes = scenesRes.ok ? await scenesRes.json() : []
+        await Promise.all(moduleScenes.map(s =>
+          fetch(`/api/scenes/${s.id}/apply-theme-to-segments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ theme: themeId }),
+          }).catch(() => {})
+        ))
+        // Mark this module's theme as resolved so the per-module gate
+        // (needsThemeGate/ModuleThemeGate) doesn't also prompt for it right after.
+        setModuleThemes(p => ({ ...p, [script.moduleId]: themeId }))
+      }))
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (e) { console.error('Failed to apply project-wide theme:', e) }
+  }
+  const handleSkipProjectThemeGate = () => {
+    setAutoProjectThemeGate(false)   // one-time flag already stamped; per-module gate is still available later
+  }
 
   // Auto-select the first scene of the first module on entry — this is what
   // makes clicking "Continue to Visual Designer" immediately surface the
@@ -552,34 +618,46 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
     </div>
   )
 
+  // Every module reported fully-approved → same "done" signal Scripts/Voice
+  // use to turn their Continue button green.
+  const allModulesApproved = scripts.length > 0 && scripts.every(s => moduleApprovalStatus[s.moduleId] === true)
+
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/[0.06] flex-shrink-0">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-400" /> Visual Designer
-          </h2>
-         
-        </div>
-        <button onClick={() => onContinue?.('final-video')}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-xl transition-colors">
-          <Sparkles className="w-4 h-4" /> Continue to Final Video <ArrowRight className="w-4 h-4" />
-        </button>
+      {/* Full-width stage header — sits above BOTH the modules list and the
+          editor pane, same as every other workspace stage, instead of being
+          scoped to just the right column. */}
+      <div className="px-3 pt-3 flex-shrink-0">
+        <StageHeader
+          icon={Layers}
+          title="4. Visual Design"
+          subtitle="Design and approve the slide for every scene."
+          complete={allModulesApproved}
+          onContinue={() => onContinue?.('video-editing')}
+          continueLabel="Continue to Module Editing"
+          compact
+        />
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left: scene list - Clean inline layout */}
-        <div className="w-56 flex-shrink-0 border-r border-slate-200 dark:border-gray-700 overflow-y-auto bg-slate-50 dark:bg-slate-950">
+      <div className="flex-1 flex overflow-hidden gap-3 px-3 pb-3">
+        {/* Left: scene list — own rounded card, separated from the editor by
+            real gap instead of a thin border line. */}
+        <div className="w-56 flex-shrink-0 rounded-xl border border-slate-200 dark:border-gray-700 overflow-y-auto bg-slate-50 dark:bg-slate-950">
           {scripts.map((script, vi) => (
             <SceneGroupList key={script.id} script={script} videoIndex={vi}
               selectedId={selected?.scene?.id} selectedSegmentId={selected?.segmentId} generating={generating}
               onSelect={(scene, totalScenes, segmentId) => setSelected({ scene, script, totalScenes, segmentId })}
-              onDeleted={(sceneId) => setSelected(prev => prev?.scene?.id === sceneId ? null : prev)} />
+              onDeleted={(sceneId) => setSelected(prev => prev?.scene?.id === sceneId ? null : prev)}
+              onApprovedChange={(approved) => {
+                setModuleApprovalStatus(prev =>
+                  prev[script.moduleId] === approved ? prev : { ...prev, [script.moduleId]: approved }
+                )
+              }} />
           ))}
         </div>
 
         {/* Right: editor */}
-        <div className="flex-1 overflow-y-auto bg-slate-100 dark:bg-slate-950">
+        <div className="flex-1 rounded-xl overflow-y-auto bg-slate-100 dark:bg-slate-950">
           {needsThemeGate ? (
             <ModuleThemeGate moduleTitle={selected.script.title}
               onChoose={(themeId) => resolveModuleTheme(themeId)} />
@@ -610,7 +688,13 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
         </div>
       </div>
 
-      {showAvatarGate && (
+      {autoProjectThemeGate ? (
+        <ProjectThemeGatePopup
+          onChoose={handleChooseProjectTheme}
+          onSkip={handleSkipProjectThemeGate}
+          onClose={() => setAutoProjectThemeGate(false)}
+        />
+      ) : showAvatarGate && (
         <AvatarGatePopup
           voiceGender={voiceGender}
           onChoose={handleChooseAvatar}
@@ -777,6 +861,56 @@ function AvatarGatePopup({ onChoose, onSkip, onClose, voiceGender = null }) {
   )
 }
 
+// ─── First-time PROJECT-WIDE theme gate ──────────────────────────────────────
+// True modal (same createPortal pattern as AvatarGatePopup above), shown once
+// per project the first time Visual Design opens. Applying a theme here
+// themes every scene in every module at once, so individual modules don't
+// each separately hit the per-module ModuleThemeGate below.
+function ProjectThemeGatePopup({ onChoose, onSkip, onClose }) {
+  const [applying, setApplying] = useState(false)
+  const pick = async (themeId) => {
+    setApplying(true)
+    await onChoose(themeId)
+    setApplying(false)
+  }
+  return createPortal(
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto p-6 pt-16">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+        <div className="relative p-6 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 mx-auto">
+            <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />
+          </div>
+          <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this project</p>
+          <p className="text-slate-500 text-sm mb-5">
+            Applies to every scene in every module right away — you can still change any scene individually later.
+          </p>
+          {applying ? (
+            <div className="py-10 flex justify-center"><Spinner size="sm" /></div>
+          ) : (
+            <div className="space-y-1.5">
+              {THEMES.map(th => (
+                <button key={th.id} onClick={() => pick(th.id)}
+                  className="w-full flex items-center gap-3 px-3 py-2 rounded border border-slate-200 dark:border-white/[0.10] hover:border-indigo-400/40 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all text-left"
+                  style={{ background: th.isDark ? 'transparent' : 'rgba(248,250,252,0.05)' }}>
+                  <div className="w-3 h-3 rounded-full flex-shrink-0 border border-slate-300 dark:border-white/20" style={{ background: th.accent }} />
+                  <span className="text-sm font-medium text-slate-900 dark:text-white">{th.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={onSkip} className="mt-5 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
+            Skip for now — I'll choose a theme per module instead
+          </button>
+          {onClose && (
+            <button onClick={onClose} className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 // ─── Per-module theme gate ────────────────────────────────────────────────────
 // Shown once per module, before any of its (fresh, never-customized) scenes
 // can be edited — either right after "Continue to Visual Designer" (for the
@@ -810,7 +944,7 @@ function ModuleThemeGate({ moduleTitle, onChoose }) {
 
 // ─── Left: scene group list ───────────────────────────────────────────────────
 
-function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, generating, onSelect, onDeleted }) {
+function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, generating, onSelect, onDeleted, onApprovedChange }) {
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
   const { data: scenes = [], isLoading } = useQuery({
@@ -856,6 +990,31 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
     } catch {}
   }
 
+  // Delete ONE part (hook/content/recap/question) from a multi-part scene,
+  // without touching its siblings. Previously the only trash icon here
+  // deleted the WHOLE scene (all parts) — so removing e.g. the first quiz
+  // question wiped out every other question too, since there was no way to
+  // target a single part on its own.
+  const [deletingSegmentId, setDeletingSegmentId] = useState(null)
+  const handleDeleteSegment = async (e, segmentId, label) => {
+    e.stopPropagation()
+    if (!window.confirm(`Delete this ${label}?\n\nOnly this part is removed — the rest of the scene stays intact. This cannot be undone.`)) return
+    setDeletingSegmentId(segmentId)
+    try {
+      await agentsService.deleteSceneSegment(segmentId)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['scenes', script.moduleId] }),
+        queryClient.invalidateQueries({ queryKey: ['scenes'] }),
+        queryClient.invalidateQueries({ queryKey: ['scripts'] }),
+      ])
+    } catch (err) {
+      console.error('Failed to delete segment:', err)
+      window.alert(err?.response?.data?.error || 'Could not delete this part.')
+    } finally {
+      setDeletingSegmentId(null)
+    }
+  }
+
   const [resettingSceneId, setResettingSceneId] = useState(null)
   const handleResetSceneDesign = async (e, sceneId) => {
     e.stopPropagation()
@@ -871,6 +1030,66 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
     }
   }
 
+  // "Generate & approve all" for THIS module only — renders every part's slide
+  // asset and stamps each part approved (green ✓), so the user doesn't have to
+  // open and approve each scene one by one.
+  const [genAllBusy, setGenAllBusy] = useState(false)
+  const [genAllStatus, setGenAllStatus] = useState(null)
+  const handleGenerateApproveAll = async (e) => {
+    e.stopPropagation()
+    if (genAllBusy || !scenes.length) return
+    setGenAllBusy(true)
+    const now = new Date().toISOString()
+    let done = 0
+    const total = scenes.reduce((n, sc) => n + ((sc.segments && sc.segments.length) ? sc.segments.length : 1), 0)
+    try {
+      for (const sc of scenes) {
+        const segs = (sc.segments && sc.segments.length) ? sc.segments : [null]
+        for (const seg of segs) {
+          setGenAllStatus(`Generating ${done + 1}/${total}…`)
+          try { await agentsService.runGenerateAsset(sc.id, seg?.id) } catch (err) { console.error('gen asset failed', sc.id, seg?.id, err) }
+          if (seg) {
+            let design = {}
+            try { design = JSON.parse(seg.slideDesign || '{}') } catch {}
+            design.approvedAt = now
+            try { await agentsService.updateSceneSegment(seg.id, { slide_design: JSON.stringify(design) }) } catch (err) { console.error('approve part failed', seg.id, err) }
+          }
+          done++
+        }
+        if (!(sc.segments && sc.segments.length)) {
+          try { await scenesService.update(sc.id, { approved_at: now }) } catch (err) { console.error('approve scene failed', sc.id, err) }
+        }
+      }
+      setGenAllStatus(`Done — ${total} approved ✓`)
+      // Invalidate ALL scene queries (module-level AND the project-level
+      // ['scenes', projectId] the left nav reads) so the Visual Design step
+      // turns green the moment every module is approved.
+      await queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (err) {
+      console.error('Generate & approve all failed', err)
+      setGenAllStatus('Some parts failed — see console.')
+    } finally {
+      setGenAllBusy(false)
+      setTimeout(() => setGenAllStatus(null), 4000)
+    }
+  }
+  // Whole module approved → green ✓ on the module header.
+  const moduleApproved = scenes.length > 0 && scenes.every(sc => {
+    const segs = (sc.segments && sc.segments.length) ? sc.segments : [null]
+    return segs.every(seg => {
+      if (seg) { try { return !!JSON.parse(seg.slideDesign || '{}').approvedAt } catch { return false } }
+      return !!sc.approvedAt
+    })
+  })
+
+  // Report this module's approval state up to the panel (same pattern as
+  // VoicePanel's per-module status reporting) so the top bar can turn green
+  // once every module across the whole project is approved.
+  useEffect(() => {
+    onApprovedChange?.(moduleApproved)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moduleApproved])
+
   const hasSelected = scenes.some(s => s.id === selectedId)
   // Each module is its own collapsible card so the list isn't one long scroll.
   // Default: the module that holds the currently-selected scene (or the first
@@ -881,16 +1100,26 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
   const open = !collapsed
 
   return (
-    <div className="mx-2 my-2 rounded-xl border border-slate-200 dark:border-white/10 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
+    <div className={`mx-1.5 my-1 rounded-lg overflow-hidden bg-white dark:bg-slate-900 border transition-colors ${
+      open ? 'border-indigo-300/70 dark:border-indigo-500/30 shadow-sm' : 'border-slate-200 dark:border-white/10'
+    }`}>
       <button onClick={() => setCollapsed(c => !c)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
+        className="w-full flex items-center gap-2 px-2.5 py-2 text-left hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
         <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
-          <p className="text-xs text-slate-900 dark:text-white font-medium truncate mt-0.5">{script.title}</p>
+          <p className="text-[9px] font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
+          <p className="text-xs text-slate-900 dark:text-white font-medium truncate">{script.title}</p>
         </div>
+        {moduleApproved && <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 text-emerald-600 dark:text-emerald-400" title="All scenes approved" />}
       </button>
       {open && (<>
+      {/* Generate the slide for every part of THIS module and mark them all
+          approved in one click — the green ✓ then shows on every row. */}
+      <button onClick={handleGenerateApproveAll} disabled={genAllBusy || !scenes.length}
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50/70 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 border-b border-slate-100 dark:border-white/[0.05] transition-colors disabled:opacity-50">
+        {genAllBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+        {genAllStatus || 'Generate & approve all'}
+      </button>
       {isLoading
         ? <div className="py-3 flex justify-center"><Spinner size="sm" /></div>
         // Each narrated part (hook/content/content/recap, or one per quiz
@@ -961,23 +1190,46 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
                         that's the signal it's locked for the next steps. Other
                         parts of the same scene are unaffected. */}
                     {rowApproved && !isGen && <CheckCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />}
-                    {/* Per-scene actions — reset design & delete. Only on the
+                    {/* Per-scene actions — reset design & delete. Reset (and
+                        the "delete whole scene" option) only show on the
                         scene's first row so they aren't misread as per-part.
-                        Reset rebuilds THIS scene's design from its script. */}
-                    {si === 0 && (
-                      <div className="flex items-center gap-1 flex-shrink-0">
+                        Reset rebuilds THIS scene's design from its script.
+                        A multi-part scene (welcome's hook/content/content/
+                        recap, or a quiz's questions) ALSO gets a per-row
+                        "delete this part" icon on every row — previously the
+                        only delete here removed the WHOLE scene, so deleting
+                        e.g. the first quiz question wiped out every other
+                        question too (there was no way to remove just one
+                        part). */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {si === 0 && (
                         <div onClick={(e) => handleResetSceneDesign(e, scene.id)} title="Reset this scene's design (rebuild from its script)"
                           className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-indigo-500 dark:hover:text-indigo-400 transition-all cursor-pointer">
                           {resettingSceneId === scene.id
                             ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             : <RotateCcw className="w-3.5 h-3.5" />}
                         </div>
-                        <div onClick={(e) => handleDeleteScene(e, scene.id)} title={rows.length > 1 ? 'Delete scene (all parts)' : 'Delete scene'}
+                      )}
+                      {rows.length > 1 && seg && (
+                        <div
+                          onClick={(e) => handleDeleteSegment(e, seg.id, seg.segmentType || 'part')}
+                          title={`Delete this part only (${seg.segmentType || 'part'}) — the rest of the scene stays`}
                           className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-600 hover:text-red-400 transition-all cursor-pointer">
-                          <Trash2 className="w-3.5 h-3.5" />
+                          {deletingSegmentId === seg.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Trash2 className="w-3.5 h-3.5" />}
                         </div>
-                      </div>
-                    )}
+                      )}
+                      {si === 0 && (
+                        <div onClick={(e) => handleDeleteScene(e, scene.id)}
+                          title={rows.length > 1 ? 'Delete whole scene (ALL parts)' : 'Delete scene'}
+                          className={`opacity-0 group-hover:opacity-100 transition-all cursor-pointer ${
+                            rows.length > 1 ? 'text-slate-400 dark:text-slate-600 hover:text-red-600' : 'text-slate-400 dark:text-slate-600 hover:text-red-400'
+                          }`}>
+                          {rows.length > 1 ? <Ban className="w-3.5 h-3.5" /> : <Trash2 className="w-3.5 h-3.5" />}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </button>
               )
@@ -1097,11 +1349,6 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     }), {})
   })
   const [showLogo,    setShowLogo]    = useState(parsed.showLogo !== false)
-  // Title/content text no longer force-wraps to a second line by default
-  // (nowrap — short text stays one line, long text overflows). This lets
-  // the user flip that back to normal wrapping per-slide when they'd rather
-  // have long text wrap than spill past the box edge.
-  const [textWrap,    setTextWrap]    = useState(parsed.textWrap === true)
   // Decorative annotation layers the user can drop on the slide (divider line,
   // highlight box, callout/comment, marker). Because the video render reuses
   // the WYSIWYG snapshot of the slide canvas, these show up in the exported
@@ -1154,6 +1401,12 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   // The timeline element the user last clicked — the top preview jumps to that
   // moment so the picked point is shown on the slide.
   const [veSelected,     setVeSelected]     = useState(null)
+  // Incrementing this tells the (currently mounted) SceneTimelineEditor to
+  // start playback itself — used by the top preview Play button below so
+  // clicking it actually shows the synced slide reveal + moving timeline
+  // playhead, instead of just playing narration audio with nothing visible
+  // changing on screen.
+  const [vePlayToken,    setVePlayToken]    = useState(0)
   // "Preview before generate" — shows the freshly generated slide image right
   // here after clicking Generate/Regenerate, instead of the user having to
   // leave Visual Design (e.g. to Video Editing) to find out whether it
@@ -1276,6 +1529,19 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   // part by loadDesignIntoState.
   const [approvedAt, setApprovedAt] = useState(parsed.approvedAt || null)
   const [approving, setApproving] = useState(false)
+  // Signature of the design content AT THE MOMENT IT WAS APPROVED. Approval only
+  // clears when the content actually changes vs this — so benign saves (switching
+  // parts, snapshot refreshes, reopening the scene) keep the green ✓, while a real
+  // edit removes it. Set on approve and on load (see saveContent/loadDesignIntoState).
+  const approvedSigRef = useRef(null)
+  const contentSig = (f) => JSON.stringify({
+    t: f.title || '',
+    b: (f.bullets || []).map(x => `${x.level || 1}:${(x.text || '').trim()}`),
+    p: f.positions,
+    a: [Math.round(f.avatarX ?? 0), Math.round(f.avatarY ?? 0), Math.round(f.avatarWidth ?? 0)],
+    l: f.layout, th: f.theme, img: f.imageUrl || '',
+    an: (f.annotations || []).map(x => `${x.type}:${Math.round(x.x)}:${Math.round(x.y)}`),
+  })
   const [avatarGenerating, setAvatarGenerating] = useState(false)
   const [avatarGenError,  setAvatarGenError]  = useState(null)
   // A render can "succeed" (video_url comes back, status completed) while
@@ -1330,7 +1596,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   // Always-fresh ref so async callbacks see latest state
   const stateRef = useRef({})
   useEffect(() => {
-    stateRef.current = { title, subtitle, layout, theme, bullets, positions, showLogo, motionId: motion.id, imageUrl, imageWidth, imageShape, textWrap, avatarX, avatarY, avatarWidth, annotations }
+    stateRef.current = { title, subtitle, layout, theme, bullets, positions, showLogo, motionId: motion.id, imageUrl, imageWidth, imageShape, avatarX, avatarY, avatarWidth, annotations }
   })
 
   const themeObj = THEMES.find(t => t.id === theme) || THEMES[0]
@@ -1384,10 +1650,22 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const saveContent = async (opts = {}) => {
     const s = stateRef.current
     setSaving(true)
-    // Approval is PER PART, saved on this part's own design. Approving keeps
-    // the flag; any ordinary edit-save (no approve flag) drops it — so editing
-    // an approved part un-approves it, and other parts are never touched.
-    const nextApprovedAt = opts.approve ? new Date().toISOString() : null
+    // Approval is PER PART, saved on this part's own design. It survives benign
+    // saves (switching parts, snapshot refreshes, reopening) and only clears
+    // when the CONTENT actually changed since it was approved.
+    const sig = contentSig({ title: s.title, bullets: s.bullets, positions: s.positions, avatarX: s.avatarX, avatarY: s.avatarY, avatarWidth: s.avatarWidth, layout: s.layout, theme: s.theme, imageUrl: s.imageUrl, annotations: s.annotations })
+    let nextApprovedAt
+    if (opts.approve === true) {
+      nextApprovedAt = new Date().toISOString(); approvedSigRef.current = sig
+    } else if (opts.approve === false) {
+      nextApprovedAt = null; approvedSigRef.current = null
+    } else if (approvedAt) {
+      const changed = approvedSigRef.current != null && sig !== approvedSigRef.current
+      nextApprovedAt = changed ? null : approvedAt
+      approvedSigRef.current = changed ? null : (approvedSigRef.current ?? sig)
+    } else {
+      nextApprovedAt = null
+    }
     // Every save is a design edit — if a speaking avatar video already
     // exists, it was rendered from whatever the design looked like BEFORE
     // this save, so it's now out of date. Flip the flag the Preview button
@@ -1407,7 +1685,6 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       blocks: [{ type: 'bullets', items: s.bullets }],
       positions: s.positions, showLogo: s.showLogo,
       imageUrl: s.imageUrl, imageWidth: s.imageWidth, imageShape: s.imageShape,
-      textWrap: s.textWrap,
       motionId: s.motionId,
       // Presenter avatar box — CENTER x/y + width, % of slide. These exact
       // field names are what api/src/lib/ffmpegVideo.ts's extractAvatarPosition
@@ -1726,28 +2003,33 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
   const loadDesignIntoState = (design) => {
     const layoutKey = design.layout || 'bullets'
+    const themeVal  = design.positions ? (design.theme || defaultTheme) : defaultTheme
+    const loadedBullets = bulletsFromDesign(design)
     setLayout(layoutKey)
-    setTheme(design.positions ? (design.theme || defaultTheme) : defaultTheme)
+    setTheme(themeVal)
     setTitle(design.title || '')
     setSubtitle(design.subtitle || '')
-    setBullets(bulletsFromDesign(design))
+    setBullets(loadedBullets)
     const defaults = DEFAULT_POSITIONS[layoutKey] || DEFAULT_POSITIONS.bullets
     const saved = design.positions || {}
-    setPositions(Object.keys(defaults).reduce((acc, k) => ({
+    const mergedPositions = Object.keys(defaults).reduce((acc, k) => ({
       ...acc,
       [k]: { scale: 1, ...defaults[k], ...(saved[k] || {}) },
-    }), {}))
+    }), {})
+    setPositions(mergedPositions)
     setShowLogo(design.showLogo !== false)
     setImageUrl(design.imageUrl || '')
     setImageWidth(design.imageWidth || 36)
     setImageShape(design.imageShape || 'rounded')
-    setTextWrap(design.textWrap === true)
     setAnnotations(Array.isArray(design.annotations) ? design.annotations : [])
-    {
-      const w = Math.min(design.avatarWidth ?? DEFAULT_AVATAR.width, MAX_AVATAR_WIDTH)
-      const { x, y } = clampAvatarBox(design.avatarX ?? DEFAULT_AVATAR.x, design.avatarY ?? DEFAULT_AVATAR.y, w)
-      setAvatarX(x); setAvatarY(y); setAvatarWidth(w)
-    }
+    const loadedW = Math.min(design.avatarWidth ?? DEFAULT_AVATAR.width, MAX_AVATAR_WIDTH)
+    const loadedAv = clampAvatarBox(design.avatarX ?? DEFAULT_AVATAR.x, design.avatarY ?? DEFAULT_AVATAR.y, loadedW)
+    setAvatarX(loadedAv.x); setAvatarY(loadedAv.y); setAvatarWidth(loadedW)
+    // Seed the approval signature to THIS loaded design so a later edit is
+    // detected (and clears approval), while reopening/switching keeps it.
+    approvedSigRef.current = design.approvedAt
+      ? contentSig({ title: design.title || '', bullets: loadedBullets, positions: mergedPositions, avatarX: loadedAv.x, avatarY: loadedAv.y, avatarWidth: loadedW, layout: layoutKey, theme: themeVal, imageUrl: design.imageUrl || '', annotations: Array.isArray(design.annotations) ? design.annotations : [] })
+      : null
     // Restore motion type from saved design
     if (design.motionId) {
       const motionObj = MOTION_STYLES.find(m => m.id === design.motionId)
@@ -2022,7 +2304,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const liveDesign = {
     title, subtitle, layout, theme,
     blocks: [{ type: 'bullets', items: bullets }],
-    positions, showLogo, imageUrl, imageWidth, imageShape, textWrap,
+    positions, showLogo, imageUrl, imageWidth, imageShape,
     motionId: motion.id, avatarX, avatarY, avatarWidth,
     annotations: annotations || [],
   }
@@ -2051,67 +2333,26 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 (the GVSU logo, avatar, text, etc.) no matter where those are
                 positioned or dragged to. */}
             <div className="flex items-center gap-1.5 normal-case tracking-normal">
-              {/* Preview design — silent, fast: just replays the slide's own
-                  entrance animations in sync with the narration audio. Split
-                  back out from the speaking-avatar button below since they're
-                  different-weight actions (instant vs. a multi-minute render)
-                  and combining them made it unclear which one a click would
-                  trigger. */}
+              {/* Preview design — jumps into the Video Editing tab and starts
+                  its timeline playing there, so the slide's progressive
+                  reveal AND the moving element-timeline playhead are both
+                  visible in sync with the narration audio — not just audio
+                  playing with nothing changing on screen. Used to play the
+                  narration silently in place via a separate <audio> element
+                  with a caption-reveal calc that nothing ever rendered; this
+                  reuses the Video Editing tab's already-working synced
+                  preview instead of maintaining a second, invisible one. */}
               {narrationAudioUrl && (
-                <button onClick={toggleNarration}
-                  title={narrationPlaying ? 'Stop preview' : 'Preview: play narration with synced captions + animations'}
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-                    narrationPlaying ? 'bg-red-500/15 text-red-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-400'}`}>
-                  {narrationPlaying ? <Square className="w-3 h-3" /> : <Play className="w-3.5 h-3.5" />}
+                <button onClick={() => { setActiveTab('videoedit'); setVePlayToken(t => t + 1) }}
+                  title="Preview: play narration with the synced slide reveal + timeline"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-400">
+                  <Play className="w-3.5 h-3.5" />
                 </button>
               )}
-              {/* Speaking avatar video — watches the last render, regenerates
-                  it if the design changed since, or generates the first one.
-                  Disabled until a presenter avatar is chosen (Avatar tab). */}
-              {(scene.ttsAudioUrl || hasRealAvatarVideo) && (
-                <button
-                  disabled={avatarGenerating || (!avatarId && !hasRealAvatarVideo)}
-                  onClick={() => {
-                    if (avatarGenerating) return
-                    if (hasRealAvatarVideo) {
-                      // The rendered video only ever reflects the design as
-                      // it was at the moment it was generated. If anything
-                      // has been dragged/edited since (position, theme,
-                      // content, avatar), that video is stale — regenerate
-                      // instead of silently playing something that no longer
-                      // matches what's on the canvas. This is the fix for
-                      // "I click play and it's not the same as what I built."
-                      if (designDirtySinceVideo) { handleGenerateAvatarVideo(); return }
-                      setShowAvatarVideoModal(true)
-                      return
-                    }
-                    if (avatarId) handleGenerateAvatarVideo()
-                  }}
-                  title={
-                    avatarGenerating ? 'Generating speaking avatar video — this can take a few minutes…'
-                    : avatarGenError ? `Speaking avatar video failed: ${avatarGenError}`
-                    : hasRealAvatarVideo && designDirtySinceVideo ? 'Your design changed since this video was rendered — click to regenerate it'
-                    : hasRealAvatarVideo ? 'Watch speaking avatar video'
-                    : avatarId ? 'Generate speaking avatar video — lip-synced to your narration'
-                    : 'Choose a presenter avatar first (Avatar tab)'
-                  }
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors disabled:opacity-40 ${
-                    avatarGenError
-                      ? 'bg-red-500/15 text-red-500'
-                      : hasRealAvatarVideo && designDirtySinceVideo
-                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-indigo-500/10 hover:text-indigo-600 dark:hover:text-indigo-400'}`}>
-                  {avatarGenerating
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : avatarGenError
-                    ? <AlertCircle className="w-3.5 h-3.5" />
-                    : hasRealAvatarVideo && designDirtySinceVideo
-                    ? <RotateCcw className="w-3.5 h-3.5" />
-                    : hasRealAvatarVideo
-                    ? <Video className="w-3.5 h-3.5" />
-                    : <Sparkles className="w-3.5 h-3.5" />}
-                </button>
-              )}
+              {/* Speaking-avatar-video generation was removed per request — the
+                  presenter is now a STATIC image placed on the slide (no motion,
+                  no lip-sync, no generate step). handleGenerateAvatarVideo and
+                  the video modal are kept but no longer triggered from here. */}
               {/* The old "Generate slide image" button was removed — the
                   editor now captures a pixel-perfect WYSIWYG snapshot on every
                   save (see saveContent) and writes it straight to
@@ -2186,7 +2427,6 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
             layout={layout} theme={themeObj} motionCls={motion.cls}
             positions={positions} showLogo={showLogo}
             imageUrl={imageUrl} imageWidth={imageWidth} imageShape={imageShape}
-            textWrap={textWrap}
             moduleTitle={moduleTitle} sceneIndex={scene.orderIndex ?? 0} totalScenes={totalScenes}
             onPositionChange={handlePositionChange}
             onDragEnd={saveContent}
@@ -2389,45 +2629,19 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 <div className="flex flex-wrap gap-2">
                   {THEMES.map(th => (
                     <button key={th.id} onClick={async () => {
+                      // Scoped to ONLY the part currently being edited (#21) —
+                      // this used to call apply-theme-to-segments, which pushes
+                      // the chosen theme onto EVERY part of the scene (all of a
+                      // welcome scene's hook/content/content/recap, or every
+                      // quiz question), so changing the theme on one part
+                      // always changed all its siblings too (reported: "the 4
+                      // first scenes are related... if I change theme in one
+                      // of them it changes all the others"). Every other
+                      // per-part property here (layout, image, bullets, ...)
+                      // already only ever saves to THIS segment via
+                      // saveContent's targetSegmentId — theme now matches that
+                      // same pattern instead of being the one exception.
                       setTheme(th.id)
-                      // Apply the theme (and clear every segment's now-stale
-                      // WYSIWYG snapshot + generated slide image — see
-                      // applyThemeToSegments in scenes.ts) BEFORE re-saving
-                      // this segment below. Order matters: apply-theme clears
-                      // renderedSlideUrl/visualAssetUrl on EVERY segment
-                      // unconditionally, including this one — so saving first
-                      // would just have its fresh new-theme snapshot wiped out
-                      // a moment later. Applying first and saving last means
-                      // the segment being edited ends up with the freshest,
-                      // correctly-themed snapshot instead of no snapshot at
-                      // all until the next unrelated edit.
-                      if (segments && segments.length > 0) {
-                        try {
-                          const themeRes = await fetch(`/api/scenes/${scene.id}/apply-theme-to-segments`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ theme: th.id }),
-                          })
-                          if (themeRes.ok) {
-                            // Reload this specific scene to get updated segment designs
-                            const moduleScenesRes = await fetch(`/api/modules/${moduleId}/scenes`)
-                            if (moduleScenesRes.ok) {
-                              const allScenes = await moduleScenesRes.json()
-                              const updatedScene = allScenes.find(s => s.id === scene.id)
-                              if (updatedScene?.segments) {
-                                setSegments(updatedScene.segments)
-                                if (activeSegmentId) {
-                                  const activeSegment = updatedScene.segments.find(s => s.id === activeSegmentId)
-                                  if (activeSegment) loadDesignIntoState(getSegmentDesign(activeSegment))
-                                }
-                              }
-                            }
-                          }
-                        } catch (e) { console.error('Failed to apply theme to segments:', e) }
-                      }
-                      // Now capture + persist a fresh snapshot for THIS
-                      // segment with the new theme actually applied — runs
-                      // last so apply-theme-to-segments above can't clobber it.
                       await saveContent()
                       setPreviewKey(k => k + 1)
                     }}
@@ -2469,30 +2683,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   directly on the slide/its corner above) — no separate card
                   duplicated here anymore. */}
 
-              <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
-                <div>
-                  <p className="text-xs font-semibold text-slate-900 dark:text-white">Text Wrapping</p>
-                  <p className="text-[10px] text-slate-500">
-                    {textWrap ? 'Long title/points wrap to a new line.' : 'Title/points stay one line and overflow if too long.'}
-                  </p>
-                </div>
-                <div className="flex gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-white/[0.06]">
-                  <button
-                    onClick={() => { setTextWrap(false); setTimeout(saveContent, 0) }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                      !textWrap ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}>
-                    One line
-                  </button>
-                  <button
-                    onClick={() => { setTextWrap(true); setTimeout(saveContent, 0) }}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                      textWrap ? 'bg-indigo-600 text-white' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}>
-                    Wrap
-                  </button>
-                </div>
-              </div>
+              {/* The old "Text Wrapping" One line/Wrap toggle was removed
+                  (#15) — text now always wraps and always reflows around
+                  wherever the avatar placeholder currently sits (see
+                  computeWrapStyle above), so there's nothing left to choose
+                  here. */}
             </div>
           )}
 
@@ -2854,13 +3049,21 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                           {seg.slideTitle}
                         </p>
                       )}
+                      {/* Kept compact by default (#19) — this used to always
+                          take up 4 rows regardless of how short the segment's
+                          narration was, pushing everything below it (and, on
+                          the Video Editing tab, the timeline bar) further down
+                          the page than it needed to be. Still resizable
+                          (resize-y, not resize-none) so a genuinely long
+                          narration can still be expanded to edit comfortably —
+                          just not tall by default. */}
                       <textarea
                         value={segmentDrafts[seg.id] ?? seg.text}
                         onChange={e => setSegmentDrafts(prev => ({ ...prev, [seg.id]: e.target.value }))}
                         onBlur={() => handleSaveSegmentText(seg.id)}
-                        rows={4}
+                        rows={2}
                         placeholder="What the presenter says during this segment…"
-                        className="w-full bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-2.5 text-xs text-slate-900 dark:text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
+                        className="w-full bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-2.5 text-xs text-slate-900 dark:text-white leading-relaxed resize-y focus:outline-none focus:border-indigo-500/50 transition-colors"
                       />
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         <button onClick={() => handleRegenerateSegmentVoice(seg.id)} disabled={!!segmentBusy[seg.id]}
@@ -2892,9 +3095,18 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           {activeTab === 'videoedit' && (
             <div className="space-y-4">
               {/* Remotion timeline — voice bar + per-point element timing. The
-                  preview lives at the TOP of the page (one preview only). */}
+                  preview lives at the TOP of the page (one preview only).
+                  Scoped to the ACTIVE segment only (mirrors the Narration &
+                  Motion tab's own `segments.filter(s => s.id ===
+                  activeSegmentId)` a few lines up) — passing every segment
+                  here meant VoiceTimelineBar always built its "whole scene"
+                  playlist starting at part index 0, so pressing Play always
+                  played Question 1's audio no matter which question was
+                  actually selected in the left menu. A single-part scene has
+                  no activeSegment to fall back to, so `segments` (unfiltered)
+                  still covers that case correctly. */}
               <SceneTimelineEditor
-                scene={{ ...scene, segments }}
+                scene={{ ...scene, segments: activeSegment ? [activeSegment] : segments }}
                 hidePreview
                 useAvatar={!!avatarImageUrl}
                 avatarImageUrl={avatarImageUrl}
@@ -2903,29 +3115,14 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 onTimelineReady={setVeData}
                 onElementSelect={setVeSelected}
                 onUpdate={() => {}}
+                playToken={vePlayToken}
               />
 
-              {/* ── Animation ────────────────────────────────────────────────
-                  How each point/caption enters as the narration reaches it. */}
-              <div className="pt-2 border-t border-slate-200 dark:border-white/[0.06]">
-                <p className="text-xs font-semibold text-slate-900 dark:text-white mb-1">Animation</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-2">How each point appears in step with the voice.</p>
-                <div className="grid grid-cols-3 gap-1.5 max-w-md">
-                  {MOTION_STYLES.map(m => (
-                    <button key={m.id}
-                      onClick={() => { setMotion(m); saveContent(); setPreviewKey(k=>k+1) }}
-                      title={m.desc}
-                      className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-lg text-xs font-medium border transition-all ${
-                        motion.id===m.id
-                          ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-700 dark:text-indigo-300 shadow-sm'
-                          : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20 hover:text-slate-900 dark:hover:text-white'
-                      }`}>
-                      <div className="text-lg">{m.icon}</div>
-                      <span className="text-[10px] leading-tight text-center">{m.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {/* The "Animation" (Text Motion) picker that used to be duplicated
+                  here was removed (#16) — it's a straight duplicate of the same
+                  MOTION_STYLES picker in the Narration & Motion tab (same
+                  `motion` state, same setMotion call), so this tab only ever
+                  needs the timeline itself. One control for it, not two. */}
             </div>
           )}
         </div>
@@ -2984,7 +3181,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
 // ─── Editable slide canvas (drag-to-reposition) ───────────────────────────────
 
-function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, textWrap = false, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, avatarX = DEFAULT_AVATAR.x, avatarY = DEFAULT_AVATAR.y, avatarWidth = DEFAULT_AVATAR.width, onDeleteLayer, segments = [], annotations = [], onAnnotationChange, onAnnotationDragEnd, onAnnotationDelete }) {
+function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, avatarX = DEFAULT_AVATAR.x, avatarY = DEFAULT_AVATAR.y, avatarWidth = DEFAULT_AVATAR.width, onDeleteLayer, segments = [], annotations = [], onAnnotationChange, onAnnotationDragEnd, onAnnotationDelete }) {
   const containerRef  = useRef(null)
   const [activeDrag, setActiveDrag] = useState(null)
   const [activeResize, setActiveResize] = useState(null)
@@ -3051,8 +3248,8 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
     right:  avatarX + avatarWidth / 2,
     bottom: avatarY + (avatarWidth * AVATAR_HEIGHT_RATIO) / 2,
   }
-  const titleWrapStyle   = computeWrapStyle(positions.title,   LAYER_WIDTHS.title,   avatarBox, textWrap)
-  const contentWrapStyle = computeWrapStyle(positions.content, LAYER_WIDTHS.content, avatarBox, textWrap)
+  const titleWrapStyle   = computeWrapStyle(positions.title,   LAYER_WIDTHS.title,   avatarBox)
+  const contentWrapStyle = computeWrapStyle(positions.content, LAYER_WIDTHS.content, avatarBox)
 
   const startDrag = (e, key) => {
     e.preventDefault()
@@ -3684,33 +3881,16 @@ function ContentLayer({ layout, bullets, subtitle, theme, segments, wrapStyle = 
 
 // ─── Layout content renderers ─────────────────────────────────────────────────
 
-function TitleHeroContent({ bullets = [], theme, wrapStyle = { whiteSpace: 'nowrap' } }) {
-  // Intro (title-hero) slides are a centered title/subtitle by default, but the
-  // user can add content points too — render them here (centered to match the
-  // hero style) so "Add point" actually shows on the intro layout instead of
-  // being silently dropped. When there are no points, just the accent flourish.
-  const validBullets = bullets.filter(b => b.text)
+function TitleHeroContent({ theme }) {
+  // Intro (title-hero) slides stay SIMPLE — just the centered title/subtitle and
+  // a small accent flourish. No content points here (per request), so the first
+  // scene of each module reads as a clean title card.
   return (
     <div className="flex flex-col items-center gap-[3%]">
       <div className="pa-icon flex items-center gap-[2%]">
         <div style={{ width:'6%', height:'2px', borderRadius:1, background:theme.accent }} />
         <div style={{ width:'4%', height:'2px', borderRadius:1, background:theme.accent, opacity:0.5 }} />
       </div>
-      {validBullets.length > 0 && (
-        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:'1.8%', maxWidth:'90%' }}>
-          {validBullets.slice(0, 6).map((b, i) => (
-            <p key={i} className={`pa-b${i}`} style={{
-              color:      b.level===2 ? theme.textSub : theme.text,
-              fontSize:   b.level===2 ? FS(7,1.05,14) : FS(8,1.25,17),
-              fontWeight: b.level===1 ? 600 : 400,
-              lineHeight: 1.5,
-              textAlign: 'center',
-              minWidth: 0,
-              ...wrapStyle,
-            }}>{b.text}</p>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
@@ -4016,7 +4196,7 @@ function RoadmapContent({ segments, theme, wrapStyle = { whiteSpace: 'nowrap' } 
               // Column flex + alignItems:'center' shrink-wraps children to
               // their content width by default, same wrapping-blocked issue
               // as elsewhere — stretch so there's an actual width to wrap
-              // against when textWrap is on.
+              // against (text always wraps now, see computeWrapStyle).
               alignSelf: 'stretch', minWidth: 0,
               ...wrapStyle,
             }}>

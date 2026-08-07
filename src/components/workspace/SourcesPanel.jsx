@@ -1,11 +1,11 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { sourceFilesService } from '@/services/sourceFiles'
 import { scriptsService } from '@/services/scripts'
 import { projectsService } from '@/services/projects'
 import { agentsService } from '@/services/agents'
 import { uploadFile } from '@/services/upload'
-import { Upload, Link, Trash2, FileText, Globe, Loader2, Sparkles, CheckCircle, AlertTriangle, Library, Eye, X, ArrowRight } from 'lucide-react'
+import { Upload, Link, Trash2, FileText, Globe, Loader2, Sparkles, CheckCircle, AlertTriangle, Library, Eye, X, ArrowRight, Circle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
 import Spinner from '@/components/ui/Spinner'
@@ -21,6 +21,20 @@ export default function SourcesPanel({ project, onStageChange }) {
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState(null)
   const [generateDone, setGenerateDone] = useState(false)
+  // Generate Journey is two blocking backend calls (Librarian, then Script
+  // Generator) with no built-in progress reporting — the button used to just
+  // say "Analyzing…" the whole time with no sense of which step it was on or
+  // how long to expect. Track which step is active plus how many modules
+  // Librarian created (so the script step can say "Writing scripts for N
+  // modules…" instead of staying vague) and an elapsed-time counter, so
+  // there's always something concrete on screen while this runs.
+  const [genStep, setGenStep] = useState(null) // 'librarian' | 'scripts' | null
+  const [genModulesCount, setGenModulesCount] = useState(null)
+  const [genElapsed, setGenElapsed] = useState(0)
+  // Optional guidance the user types to steer how the journey/scripts are made
+  // (tone, focus, audience, what to emphasize…). Passed straight to the script
+  // generator as special_instructions.
+  const [instructions, setInstructions] = useState('')
   const [tab, setTab] = useState('file')
   const [deleteConfirm, setDeleteConfirm] = useState(null) // { id, fileName }
 
@@ -111,28 +125,40 @@ export default function SourcesPanel({ project, onStageChange }) {
     setUrlInput('')
   }
 
+  // Elapsed-time ticker — runs only while generating, resets when it stops.
+  useEffect(() => {
+    if (!generating) { setGenElapsed(0); return }
+    const start = Date.now()
+    const id = setInterval(() => setGenElapsed(Math.round((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [generating])
+
   const handleGenerate = async () => {
     if (generating) return
     setGenerating(true)
     setGenerateError(null)
     setGenerateDone(false)
+    setGenModulesCount(null)
+    setGenStep('librarian')
     try {
       // Step 1: Run Librarian to create modules
-      await agentsService.runLibrarian(project.id)
-      
+      const libResult = await agentsService.runLibrarian(project.id)
+      setGenModulesCount(libResult?.modules_created ?? null)
+      setGenStep('scripts')
+
       // Step 2: Immediately run ScriptGenerator to create scripts
-      await agentsService.runScriptGenerator(project.id, undefined)
-      
+      await agentsService.runScriptGenerator(project.id, instructions.trim() || undefined)
+
       // Step 3: Refresh all queries to get the newly created scripts
-      await queryClient.invalidateQueries({ 
+      await queryClient.invalidateQueries({
         queryKey: ['project', project.id],
         refetchType: 'all',
       })
-      await queryClient.invalidateQueries({ 
+      await queryClient.invalidateQueries({
         queryKey: ['scripts', project.id],
         refetchType: 'all',
       })
-      
+
       setGenerateDone(true)
       // Auto-navigate to Script stage after 1.5 seconds
       setTimeout(() => {
@@ -142,6 +168,7 @@ export default function SourcesPanel({ project, onStageChange }) {
       setGenerateError(e.message || 'Generation failed. Please try again.')
     } finally {
       setGenerating(false)
+      setGenStep(null)
     }
   }
 
@@ -159,6 +186,7 @@ export default function SourcesPanel({ project, onStageChange }) {
         complete={libraryComplete}
         onContinue={() => onStageChange?.('scripts')}
         continueLabel="Continue to Scripts"
+        compact
       />
 
       {/* Error message */}
@@ -180,10 +208,10 @@ export default function SourcesPanel({ project, onStageChange }) {
       {/* Two-column layout — the panel used to be capped at max-w-2xl, leaving
           the whole right half of the screen empty. Add sources on the LEFT,
           the growing source list on the RIGHT, so the width is actually used. */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-5 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-5 items-stretch">
 
         {/* LEFT: add a source */}
-        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 lg:sticky lg:top-6">
+        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 flex flex-col">
           <div className="flex gap-2 mb-4">
             {['file', 'url'].map((t) => (
               <button key={t} onClick={() => setTab(t)}
@@ -224,25 +252,93 @@ export default function SourcesPanel({ project, onStageChange }) {
             </div>
           )}
 
-          {/* Generate Journey — the primary action, given room on the left card */}
-          <Button
-            onClick={handleGenerate}
-            disabled={generating || sources.length === 0}
-            className="w-full gap-2 mt-4 justify-center"
-          >
-            {generating
-              ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing…</>
-              : <><Sparkles className="w-4 h-4" />Generate Journey</>}
-          </Button>
-          {sources.length === 0 && (
-            <p className="text-[11px] text-slate-400 dark:text-slate-600 text-center mt-2">
-              Add at least one source to generate.
+          {/* Optional instructions / insight to steer the generation. */}
+          <div className="mt-4">
+            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+              Your instructions <span className="font-normal text-slate-400">(optional)</span>
+            </label>
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              rows={3}
+              placeholder="Add an insight or prompt to guide the AI — e.g. focus on chapter 3, keep it beginner-friendly, emphasize real-world examples, use a formal tone…"
+              className="w-full bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-white/10 rounded-lg p-2.5 text-xs text-slate-900 dark:text-white leading-relaxed resize-none focus:outline-none focus:border-indigo-500/50 transition-colors"
+            />
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
+              This guides how the modules and scripts are written.
             </p>
-          )}
+          </div>
+
+          {/* Generate Journey — the primary action, given room on the left card */}
+          <div className="mt-auto">
+            {generating && (
+              <div className="mb-3 rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3 space-y-2.5">
+                <div className="space-y-1.5">
+                  {[
+                    { key: 'librarian', label: 'Building your course structure' },
+                    {
+                      key: 'scripts',
+                      label: genModulesCount
+                        ? `Writing scripts for ${genModulesCount} module${genModulesCount === 1 ? '' : 's'}`
+                        : 'Writing scene scripts for every module',
+                    },
+                  ].map((step) => {
+                    const order = ['librarian', 'scripts']
+                    const currentIdx = order.indexOf(genStep)
+                    const stepIdx = order.indexOf(step.key)
+                    const done = currentIdx > stepIdx
+                    const active = currentIdx === stepIdx
+                    return (
+                      <div key={step.key} className="flex items-center gap-2">
+                        {done
+                          ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                          : active
+                            ? <Loader2 className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 animate-spin flex-shrink-0" />
+                            : <Circle className="w-3.5 h-3.5 text-slate-300 dark:text-slate-700 flex-shrink-0" />}
+                        <span className={`text-xs ${
+                          active ? 'text-slate-900 dark:text-white font-medium'
+                            : done ? 'text-slate-400 dark:text-slate-500'
+                              : 'text-slate-400 dark:text-slate-600'
+                        }`}>
+                          {step.label}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {/* No real percentage to report — both steps are single blocking
+                    AI calls with no progress callback — so this pulses to say
+                    "still working" rather than faking precision. */}
+                <div className="h-1 rounded-full bg-indigo-500/15 overflow-hidden">
+                  <div className="h-full w-full rounded-full bg-indigo-500 animate-pulse" />
+                </div>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                  Elapsed {Math.floor(genElapsed / 60)}:{String(genElapsed % 60).padStart(2, '0')} — usually takes 30s–2min depending on how much source material there is.
+                </p>
+              </div>
+            )}
+            <Button
+              onClick={handleGenerate}
+              disabled={generating || sources.length === 0}
+              className="w-full gap-2 justify-center"
+            >
+              {generating
+                ? <><Loader2 className="w-4 h-4 animate-spin" />{genStep === 'scripts' ? 'Writing scripts…' : 'Analyzing sources…'}</>
+                : <><Sparkles className="w-4 h-4" />Generate Journey</>}
+            </Button>
+            {sources.length === 0 && (
+              <p className="text-[11px] text-slate-400 dark:text-slate-600 text-center mt-2">
+                Add at least one source to generate.
+              </p>
+            )}
+          </div>
         </div>
 
-        {/* RIGHT: the sources you've added */}
-        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 min-h-[16rem]">
+        {/* RIGHT: the sources you've added. flex+h-full so `items-stretch` on the
+            grid actually matters here — the empty state then centers itself in
+            whatever height the left card ends up being, instead of the two
+            cards ending at different heights with a slab of dead space. */}
+        <div className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-slate-900/40 p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-4">
             <p className="text-sm font-semibold text-slate-900 dark:text-white">Sources</p>
             <span className="text-xs text-slate-400 dark:text-slate-600 tabular-nums">
@@ -251,7 +347,7 @@ export default function SourcesPanel({ project, onStageChange }) {
           </div>
 
           {sources.length === 0 ? (
-            <div className="flex flex-col items-center justify-center text-center py-14 text-slate-400 dark:text-slate-600">
+            <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-400 dark:text-slate-600">
               <Library className="w-9 h-9 mb-3 opacity-40" />
               <p className="text-sm">No sources yet</p>
               <p className="text-xs mt-1">Upload a file or add a URL to get started.</p>

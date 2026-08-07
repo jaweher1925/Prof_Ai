@@ -1,12 +1,19 @@
 /**
  * Stage 5 — Video Editing (Module-Level Editor with Unified Timeline)
- * 
- * Enhanced unified design:
- * - Left: Scene storyboard with drag-reorder, numbered, + generation indicators
- * - Center: Full canvas preview with timeline sync (avatar holder maintained)
+ *
+ * Mostly for arranging TIMING — scene order, transitions, per-scene
+ * approval — with the preview defaulting to the static designed slide +
+ * presenter placeholder (same visual as Visual Design's own editor canvas).
+ * A manual "Generate/Regenerate" is still available per scene so you can
+ * spot-check the real talking avatar without leaving this panel — it shares
+ * the same cached HeyGen clip as Final Video's batch render (keyed by
+ * audio+avatar+style), so testing here doesn't cost a duplicate render; Final
+ * Video just reuses whatever's already cached when it does the full
+ * generate-all-scenes-then-merge pass.
+ *
+ * - Left: Scene storyboard with drag-reorder, numbered, status indicators
+ * - Center: Full canvas preview with timeline sync (avatar placeholder shown)
  * - Bottom: Pro Remotion timeline showing ALL scenes in module as merged
- * - Video generation integrated per-scene with avatar support
- * - Avatar placeholder visible and adjustable across entire timeline
  */
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -14,7 +21,7 @@ import { scenesService } from '@/services/scenes'
 import { modulesService } from '@/services/modules'
 import { agentsService } from '@/services/agents'
 import { mediaService } from '@/services/media'
-import { Video, Loader2, CheckCircle, Sparkles, Download, Lock, RefreshCw } from 'lucide-react'
+import { Video, Loader2, CheckCircle, Sparkles, Download, Lock, RefreshCw, AlertCircle } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
 import StageHeader from '@/components/workspace/StageHeader'
@@ -34,7 +41,18 @@ export default function VideoPanel({ project, onUpdate }) {
   const [selectedSceneId, setSelectedSceneId] = useState(null)
   const [generating, setGenerating] = useState({})
   const [polling, setPolling] = useState({})
+  const [pollAttempt, setPollAttempt] = useState({})
   const [errors, setErrors] = useState({})
+  // Backend can render a scene's video without the avatar (no avatar/voice
+  // selected, missing HeyGen key, or the overlay itself failed) and still
+  // report success — it explains why via `avatar_warning` on the response.
+  const [avatarWarnings, setAvatarWarnings] = useState({})
+  // Whole-module batch regenerate — loops every scene in the currently open
+  // module through the same submit+poll flow as the per-scene button, so you
+  // don't have to click "Regenerate" one scene at a time to re-test a
+  // module-wide change (e.g. a new casting avatar).
+  const [moduleRegenBusy, setModuleRegenBusy] = useState(false)
+  const [moduleRegenStatus, setModuleRegenStatus] = useState(null)
   const [useAvatar, setUseAvatar] = useState(true)
   // Video Editing = one preview (above) + the remotion timeline/timing. Shown
   // by default; collapsible to reduce scroll when you just want to watch.
@@ -127,9 +145,11 @@ export default function VideoPanel({ project, onUpdate }) {
         return
       }
     }
-    
+
     setGenerating(prev => ({ ...prev, [scene.id]: true }))
     setErrors(prev => ({ ...prev, [scene.id]: null }))
+    setAvatarWarnings(prev => ({ ...prev, [scene.id]: null }))
+    setPollAttempt(prev => ({ ...prev, [scene.id]: 0 }))
     try {
       const result = await agentsService.runHeyGenAvatar(
         scene.id,
@@ -137,6 +157,9 @@ export default function VideoPanel({ project, onUpdate }) {
         project?.defaultVoiceId,
         useAvatar
       )
+      if (result?.avatar_warning) {
+        setAvatarWarnings(prev => ({ ...prev, [scene.id]: result.avatar_warning }))
+      }
       if (result?.video_id) {
         handlePoll(scene.id, result.video_id, 0)
       }
@@ -150,15 +173,13 @@ export default function VideoPanel({ project, onUpdate }) {
 
   const handlePoll = async (sceneId, videoId, attemptNumber = 0) => {
     const MAX_POLL_ATTEMPTS = 180
+    setPollAttempt(prev => ({ ...prev, [sceneId]: attemptNumber }))
     if (attemptNumber > MAX_POLL_ATTEMPTS) {
       setPolling(prev => ({ ...prev, [sceneId]: false }))
-      setErrors(prev => ({
-        ...prev,
-        [sceneId]: 'Video generation timed out'
-      }))
+      setErrors(prev => ({ ...prev, [sceneId]: 'Video generation timed out' }))
       return
     }
-    
+
     setPolling(prev => ({ ...prev, [sceneId]: true }))
     try {
       const result = await agentsService.pollHeyGen(videoId, sceneId)
@@ -172,6 +193,83 @@ export default function VideoPanel({ project, onUpdate }) {
       setPolling(prev => ({ ...prev, [sceneId]: false }))
       setErrors(prev => ({ ...prev, [sceneId]: errorToString(e) }))
     }
+  }
+
+  // Poll one scene's job to completion and RESOLVE — unlike handlePoll (which
+  // is fire-and-forget for the single-scene button), the batch loop below
+  // needs to actually wait for each job before the "X/Y regenerated" counter
+  // advances and before starting the next one past the concurrency cap.
+  const pollSceneUntilDone = (sceneId, videoId) => new Promise((resolve) => {
+    const MAX_POLL_ATTEMPTS = 180
+    const tick = async (n) => {
+      setPollAttempt(prev => ({ ...prev, [sceneId]: n }))
+      if (n > MAX_POLL_ATTEMPTS) {
+        setPolling(prev => ({ ...prev, [sceneId]: false }))
+        setErrors(prev => ({ ...prev, [sceneId]: 'Video generation timed out' }))
+        return resolve()
+      }
+      setPolling(prev => ({ ...prev, [sceneId]: true }))
+      try {
+        const result = await agentsService.pollHeyGen(videoId, sceneId)
+        if (result?.completed) {
+          setPolling(prev => ({ ...prev, [sceneId]: false }))
+          return resolve()
+        }
+        setTimeout(() => tick(n + 1), 5000)
+      } catch (e) {
+        setPolling(prev => ({ ...prev, [sceneId]: false }))
+        setErrors(prev => ({ ...prev, [sceneId]: errorToString(e) }))
+        resolve()
+      }
+    }
+    tick(0)
+  })
+
+  // Regenerate EVERY scene in the currently open module — same submit+poll
+  // path as the single-scene button, run with a small concurrency cap so it
+  // doesn't hammer the local ffmpeg render or HeyGen all at once.
+  const handleRegenerateModule = async () => {
+    if (moduleRegenBusy) return
+    const eligible = scenes.filter(s =>
+      s.ttsAudioUrl || s.segments?.some(seg => seg.ttsAudioUrl)
+    )
+    if (!eligible.length) return
+    setModuleRegenBusy(true)
+    let done = 0
+    const total = eligible.length
+    setModuleRegenStatus(`Regenerating 0/${total} scenes…`)
+    const CONCURRENCY = 2
+    let idx = 0
+    const worker = async () => {
+      while (idx < eligible.length) {
+        const scene = eligible[idx++]
+        setGenerating(prev => ({ ...prev, [scene.id]: true }))
+        setErrors(prev => ({ ...prev, [scene.id]: null }))
+        setAvatarWarnings(prev => ({ ...prev, [scene.id]: null }))
+        setPollAttempt(prev => ({ ...prev, [scene.id]: 0 }))
+        try {
+          const result = await agentsService.runHeyGenAvatar(
+            scene.id, project?.defaultAvatarId, project?.defaultVoiceId, useAvatar
+          )
+          if (result?.avatar_warning) {
+            setAvatarWarnings(prev => ({ ...prev, [scene.id]: result.avatar_warning }))
+          }
+          setGenerating(prev => ({ ...prev, [scene.id]: false }))
+          if (result?.video_id) {
+            await pollSceneUntilDone(scene.id, result.video_id)
+          }
+        } catch (e) {
+          setGenerating(prev => ({ ...prev, [scene.id]: false }))
+          setErrors(prev => ({ ...prev, [scene.id]: errorToString(e) }))
+        }
+        done++
+        setModuleRegenStatus(`Regenerating ${done}/${total} scenes…`)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, eligible.length) }, worker))
+    setModuleRegenStatus(null)
+    setModuleRegenBusy(false)
+    onUpdate?.()
   }
 
   if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
@@ -191,8 +289,9 @@ export default function VideoPanel({ project, onUpdate }) {
         <StageHeader
           icon={Video}
           title="5. Video Editing"
-          subtitle="Edit entire module with timeline and video generation"
+          subtitle="Arrange timing and transitions — generate/regenerate a scene here to test it, or do the full batch in Final Video"
           complete={false}
+          compact
         />
         
         <div className="mt-6 space-y-3">
@@ -314,18 +413,35 @@ export default function VideoPanel({ project, onUpdate }) {
             <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate">{selectedModule.title} · {scenes.length} scenes</p>
           </div>
         </div>
-        {/* Avatar / Voice-only toggle */}
-        <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800">
-          <button onClick={() => setUseAvatar(true)}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${useAvatar ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-300'}`}>
-            With Avatar
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Whole-module regenerate — re-tests every scene's talking avatar
+              in one go (e.g. after switching casting) instead of clicking
+              Regenerate on each scene one at a time. */}
+          <button onClick={handleRegenerateModule} disabled={moduleRegenBusy || !scenes.length}
+            title="Regenerate every scene's video in this module"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-50 transition-colors">
+            {moduleRegenBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            Regenerate module
           </button>
-          <button onClick={() => setUseAvatar(false)}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${!useAvatar ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-300'}`}>
-            Voice Only
-          </button>
+          {/* Avatar / Voice-only toggle */}
+          <div className="flex items-center gap-1 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800">
+            <button onClick={() => setUseAvatar(true)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${useAvatar ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-300'}`}>
+              With Avatar
+            </button>
+            <button onClick={() => setUseAvatar(false)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${!useAvatar ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-300'}`}>
+              Voice Only
+            </button>
+          </div>
         </div>
       </div>
+
+      {moduleRegenStatus && (
+        <div className="px-6 py-2 flex-shrink-0 flex items-center gap-2 text-xs text-indigo-700 dark:text-indigo-300 bg-indigo-500/10 border-b border-indigo-500/20">
+          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" /> {moduleRegenStatus}
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* ── Left: scene rail (same layout as Visual Design's scene menu) ── */}
@@ -365,9 +481,10 @@ export default function VideoPanel({ project, onUpdate }) {
           {selectedScene ? (
             <div className="max-w-4xl mx-auto w-full p-4 space-y-3">
 
-              {/* Big scene preview — real video (avatar baked in) if generated,
-                  otherwise the designed slide with the presenter overlaid so
-                  the avatar is always visible. */}
+              {/* Big scene preview — real video (avatar baked in) if it's
+                  already been generated (here OR in Final Video — they share
+                  the same avatarVideoUrl/cache), otherwise the designed slide
+                  with the presenter placeholder overlaid. */}
               <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-black border border-slate-200 dark:border-white/10 shadow-sm">
                 {timelinePlaying ? (
                   // Play happens RIGHT HERE, on the SAME design — rendered with
@@ -402,7 +519,7 @@ export default function VideoPanel({ project, onUpdate }) {
                     <p className="text-xs">Design this scene in Visual Design first</p>
                   </div>
                 )}
-                {busyOverlay(selBusy)}
+                {renderProgressOverlay(generating[selectedScene?.id], polling[selectedScene?.id], pollAttempt[selectedScene?.id] || 0)}
               </div>
 
               {/* Action toolbar */}
@@ -414,6 +531,7 @@ export default function VideoPanel({ project, onUpdate }) {
                       <Download className="w-3.5 h-3.5" /> Download
                     </a>
                     <button onClick={() => handleGenerateVideo(selectedScene)} disabled={selBusy}
+                      title="Test the talking avatar again — re-renders and shares the same cache Final Video uses"
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-50 transition-colors">
                       {selBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Regenerate
                     </button>
@@ -421,6 +539,7 @@ export default function VideoPanel({ project, onUpdate }) {
                 ) : (
                   <button onClick={() => handleGenerateVideo(selectedScene)}
                     disabled={selBusy || !selectedScene.ttsAudioUrl}
+                    title="Test the talking avatar for this scene now instead of waiting for Final Video"
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition-colors">
                     {generating[selectedScene.id] ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Generating…</>
                       : polling[selectedScene.id] ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Rendering…</>
@@ -450,6 +569,14 @@ export default function VideoPanel({ project, onUpdate }) {
 
               {errors[selectedScene.id] && (
                 <p className="text-[11px] text-red-600 dark:text-red-400">{errors[selectedScene.id]}</p>
+              )}
+              {avatarWarnings[selectedScene.id] && (
+                <div className="flex items-start gap-1.5 px-2.5 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-amber-700 dark:text-amber-300 flex-1">{avatarWarnings[selectedScene.id]}</p>
+                  <button onClick={() => setAvatarWarnings(prev => ({ ...prev, [selectedScene.id]: null }))}
+                    className="text-amber-500/70 hover:text-amber-700 dark:hover:text-amber-300 text-sm leading-none flex-shrink-0">×</button>
+                </div>
               )}
 
               {/* Status chips */}
@@ -486,14 +613,43 @@ export default function VideoPanel({ project, onUpdate }) {
   )
 }
 
-// Small dark "working" overlay shown on the preview while a render is in flight.
-function busyOverlay(busy) {
-  if (!busy) return null
+// Step-aware "working" overlay shown on the preview while a video render is
+// in flight. Video generation is really two very different phases — a quick
+// local render (slides → clips + audio, then submit to HeyGen) followed by a
+// slow wait for HeyGen's own talking-avatar render — so this shows a labeled
+// 2-step bar instead of a generic spinner.
+function renderProgressOverlay(isGenerating, isPolling, attemptNumber) {
+  if (!isGenerating && !isPolling) return null
+
+  const step = isGenerating ? 1 : 2
+  const label = isGenerating
+    ? 'Rendering slides & preparing audio…'
+    : 'Generating talking avatar with HeyGen…'
+  const pct = isGenerating
+    ? 15
+    : Math.min(92, Math.round((attemptNumber / 36) * 100))
+  const elapsedSec = attemptNumber * 5
+
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-black/45">
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/70 text-white text-xs">
-        <Loader2 className="w-4 h-4 animate-spin" /> Rendering…
+    <div className="absolute inset-0 flex items-center justify-center bg-black/55 p-6">
+      <div className="w-full max-w-xs rounded-xl bg-black/70 text-white px-4 py-3.5 space-y-2.5">
+        <div className="flex items-center gap-2 text-xs font-medium">
+          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+          <span className="flex-1">Step {step}/2 — {label}</span>
+        </div>
+        <div className="h-1.5 rounded-full bg-white/15 overflow-hidden">
+          <div
+            className={`h-full rounded-full bg-indigo-400 transition-all duration-700 ease-out ${isGenerating ? 'animate-pulse' : ''}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <p className="text-[10px] text-white/60">
+          {isGenerating
+            ? 'Usually a few seconds…'
+            : `HeyGen is rendering the presenter — usually 1-3 min${elapsedSec ? ` (~${elapsedSec}s so far)` : ''}…`}
+        </p>
       </div>
     </div>
   )
 }
+

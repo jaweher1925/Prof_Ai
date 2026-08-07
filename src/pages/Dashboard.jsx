@@ -63,7 +63,7 @@ export default function Dashboard() {
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
   return (
-    <div className="min-h-screen bg-[#f5f3fb] dark:bg-[#0a0e1a] transition-colors">
+    <div className="min-h-screen">
       <div className="max-w-6xl mx-auto px-6 py-10">
 
         {/* Header row: search + new course */}

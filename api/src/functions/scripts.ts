@@ -77,7 +77,12 @@ async function syncScriptSectionsToScenes(moduleId: string | null, sectionsRaw: 
     }).catch(e => ctx.warn(`syncScriptSectionsToScenes: welcome scene sync failed: ${e}`))
   }
 
-  // ── Content scenes: one Scene per content_scenes[i], in order ──
+  // ── Content scenes: one Scene per content_scenes[i], one SceneSegment per
+  // content_scenes[i].segments[j] — each key point is its own segment (own
+  // narration, own single-point slide), same shape as the welcome sync
+  // above. Falls back to the pre-migration flat script_content/slide_content
+  // shape for scripts generated before this change, so old projects don't
+  // break when their scripts are edited/saved again.
   const contentScenesData = sections.content_scenes
   const contentScenes = scenes.filter(s => s.sceneKind === 'content')
   if (Array.isArray(contentScenesData)) {
@@ -85,11 +90,43 @@ async function syncScriptSectionsToScenes(moduleId: string | null, sectionsRaw: 
       const s = contentScenesData[i]
       const scene = contentScenes[i]
       if (!scene) continue
+
+      if (Array.isArray(s.segments)) {
+        for (let j = 0; j < s.segments.length; j++) {
+          const seg = s.segments[j]
+          const target = scene.segments[j]
+          if (!target) continue
+          const bulletItems = blocksToSlideBullets(seg.content_blocks)
+          let design: any = {}
+          try { design = JSON.parse(target.slideDesign || '{}') } catch { design = {} }
+          await prisma.sceneSegment.update({
+            where: { id: target.id },
+            data: {
+              text: seg.text ?? target.text,
+              ...(seg.slide_title !== undefined ? { slideTitle: seg.slide_title } : {}),
+              ...(bulletItems.length ? {
+                elements: JSON.stringify(bulletItems.map(b => ({ type: 'bullet', text: b.text, level: b.level }))),
+                slideDesign: JSON.stringify({
+                  ...design,
+                  ...(seg.slide_title !== undefined ? { subtitle: seg.slide_title } : {}),
+                  blocks: [{ type: 'bullets', items: bulletItems }],
+                }),
+              } : (seg.slide_title !== undefined ? {
+                slideDesign: JSON.stringify({ ...design, subtitle: seg.slide_title }),
+              } : {})),
+              ...(seg.image_description !== undefined ? { imagePrompt: seg.image_description } : {}),
+            },
+          }).catch(e => ctx.warn(`syncScriptSectionsToScenes: content segment ${target.id} sync failed: ${e}`))
+        }
+        await prisma.scene.update({
+          where: { id: scene.id },
+          data: { scriptContent: s.segments.map((seg: any) => seg.text).join(' ') },
+        }).catch(e => ctx.warn(`syncScriptSectionsToScenes: content scene ${scene.id} sync failed: ${e}`))
+        continue
+      }
+
+      // ── Back-compat: pre-migration flat shape (one bundled segment) ──
       const bulletItems = blocksToSlideBullets(s.content_blocks)
-      // "Key insight" — the script generator already writes this as
-      // slide_content.subtitle for every content scene; the user is
-      // approving/editing an existing value here, not authoring one from
-      // scratch, so sync it the same way as the points themselves.
       const keyInsight: string | undefined = s.slide_content?.subtitle
       const hasDesignUpdate = bulletItems.length > 0 || keyInsight !== undefined
       const primarySegment = scene.segments[0]

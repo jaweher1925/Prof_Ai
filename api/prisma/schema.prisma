@@ -11,6 +11,23 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Account auth (email/password) — replaces the earlier Azure Static Web
+// Apps AAD-only login. passwordHash is a bcrypt hash, never the raw
+// password. Projects aren't scoped to a user yet (every signed-in user
+// currently sees every project, same as before this model existed) — this
+// only gates the app behind real accounts; per-user data isolation would be
+// a separate follow-up.
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
 model Project {
   id              String       @id @default(uuid())
   title           String

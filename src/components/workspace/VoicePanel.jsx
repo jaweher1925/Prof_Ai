@@ -199,7 +199,7 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
   })
 
   return (
-    <div className="p-6 max-w-4xl">
+    <div className="p-6 max-w-6xl">
       <StageHeader
         icon={Mic2}
         title="3. Voice"
@@ -207,6 +207,7 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
         complete={allVoicesComplete}
         onContinue={() => onContinue?.('visual-design')}
         continueLabel="Continue to Visual Design"
+        compact
       />
 
       <div className="mb-8">
@@ -329,10 +330,14 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
         const voiceStatus = moduleVoiceStatus[script.moduleId]
         const voiceComplete = voiceStatus && voiceStatus.total > 0 && voiceStatus.done === voiceStatus.total
         return (
-          <div key={script.id} className="mb-8">
+          // Module card — same container treatment as the Scripts panel's
+          // "Review Scenes" module cards (rounded-lg, bordered, white/slate
+          // surface) so each module reads as a clearly separated box here too,
+          // instead of a bare row divided only by a bottom border.
+          <div key={script.id} className="mb-4 rounded-xl overflow-hidden border border-slate-200 dark:border-white/[0.06] bg-white dark:bg-slate-900/40 shadow-sm">
             <button
               onClick={() => setExpandedModules(p => ({ ...p, [script.id]: !p[script.id] }))}
-              className="w-full flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-slate-200 dark:border-white/[0.06] text-left hover:opacity-80 transition-opacity"
+              className="w-full flex flex-wrap items-center gap-2 px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors"
             >
               <div className="w-6 h-6 rounded-md bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
                 <span className="text-xs font-bold text-indigo-500 dark:text-indigo-400">{vi + 1}</span>
@@ -352,7 +357,10 @@ export default function VoicePanel({ project, onUpdate, onContinue, regenStatus 
                 Generate All must still reach every module's scene list even
                 while it's visually collapsed, and status must keep reporting
                 up to the header above. */}
-            <div style={{ display: isExpanded ? 'block' : 'none' }}>
+            <div
+              className="border-t border-slate-200 dark:border-white/[0.06] px-4 py-4"
+              style={{ display: isExpanded ? 'block' : 'none' }}
+            >
               <SceneVoiceList
                 moduleId={script.moduleId}
                 generating={generating}
@@ -529,8 +537,9 @@ function SceneVoiceList({ moduleId, generating, errors, playingUrl, onGenerate, 
       </div>
 
       {/* One card PER part — each narrated part is its own numbered scene
-          (1, 2, 3, …), not nested under a parent. */}
-      <div className="space-y-2">
+          (1, 2, 3, …). Two columns on wide screens so the page width is used
+          instead of leaving the right half empty. */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 items-start">
         {flatRows.map((row, idx) => {
           const { scene, seg, si } = row
           const isPart    = !!seg

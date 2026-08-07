@@ -1,43 +1,50 @@
-import React, { createContext, useState, useContext, useEffect } from 'react'
+import React, { createContext, useState, useContext, useEffect, useCallback } from 'react'
+import { authService } from '@/services/auth'
 
 const AuthContext = createContext()
-
-async function fetchSwaUser() {
-  try {
-    const res = await fetch('/.auth/me')
-    if (!res.ok) return null
-    const payload = await res.json()
-    return payload?.clientPrincipal ?? null
-  } catch {
-    return null
-  }
-}
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
 
+  // Restore a session after a page refresh — the browser already carries the
+  // httpOnly pa_session cookie, this just asks the API who that resolves to.
   useEffect(() => {
-    fetchSwaUser().then((principal) => {
-      if (principal) {
-        setUser(principal)
+    authService.me()
+      .then((data) => {
+        setUser(data.user)
         setIsAuthenticated(true)
-      }
-      setIsLoading(false)
-    })
+      })
+      .catch(() => {
+        setUser(null)
+        setIsAuthenticated(false)
+      })
+      .finally(() => setIsLoading(false))
   }, [])
 
-  const login = (returnUrl = window.location.href) => {
-    window.location.href = `/.auth/login/aad?post_login_redirect_uri=${encodeURIComponent(returnUrl)}`
-  }
+  const login = useCallback(async (email, password) => {
+    const data = await authService.login(email, password)
+    setUser(data.user)
+    setIsAuthenticated(true)
+    return data.user
+  }, [])
 
-  const logout = () => {
-    window.location.href = `/.auth/logout?post_logout_redirect_uri=${encodeURIComponent(window.location.origin)}`
-  }
+  const signup = useCallback(async (email, password, name) => {
+    const data = await authService.signup(email, password, name)
+    setUser(data.user)
+    setIsAuthenticated(true)
+    return data.user
+  }, [])
+
+  const logout = useCallback(async () => {
+    try { await authService.logout() } catch { /* clear local state regardless */ }
+    setUser(null)
+    setIsAuthenticated(false)
+  }, [])
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, signup, logout }}>
       {children}
     </AuthContext.Provider>
   )

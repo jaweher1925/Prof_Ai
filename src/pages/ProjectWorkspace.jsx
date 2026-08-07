@@ -18,6 +18,7 @@ import SourcesPanel from '@/components/workspace/SourcesPanel'
 import ScriptsPanel from '@/components/workspace/ScriptsPanel'
 import VoicePanel from '@/components/workspace/VoicePanel'
 import VisualDesignerPanel from '@/components/workspace/VisualDesignerPanel'
+import VideoEditingPanel from '@/components/workspace/VideoEditingPanel'
 import FinalVideoPanel from '@/components/workspace/FinalVideoPanel'
 import CastingSettings from '@/components/workspace/CastingSettings'
 
@@ -87,13 +88,19 @@ const STAGES = [
     id: 'visual-design',
     label: '4. Visual Design',
     icon: Image,
-    desc: 'Design, timeline & video editing',
+    desc: 'Design each slide',
+  },
+  {
+    id: 'video-editing',
+    label: '5. Module Editing',
+    icon: Video,
+    desc: 'Scene transitions & generate',
   },
   {
     id: 'final-video',
-    label: '5. Final Video',
+    label: '6. Final Videos',
     icon: Video,
-    desc: 'Compilation & export',
+    desc: 'Play & download',
   },
 ]
 
@@ -201,6 +208,15 @@ export default function ProjectWorkspace() {
     queryClient.invalidateQueries({ queryKey: ['projects'] })
   }
 
+  // Module approvals from Video Editing live in localStorage; mirror them into
+  // state so the left-nav "Video Editing" step can turn green the moment every
+  // module is approved (same pattern as the Scripts step).
+  const moduleApKey = `pa-module-approved-${projectId}`
+  const [moduleApprovals, setModuleApprovals] = useState({})
+  useEffect(() => {
+    try { setModuleApprovals(JSON.parse(localStorage.getItem(moduleApKey) || '{}')) } catch {}
+  }, [moduleApKey])
+
   const castingGateDone = () =>
     !!(project?.defaultAvatarId && project?.defaultVoiceId) ||
     localStorage.getItem(`profai_casting_gate_${projectId}`) === 'done'
@@ -226,7 +242,7 @@ export default function ProjectWorkspace() {
 
   const isLocked = (stageId) => {
     // Stages unlock only when previous stage is complete
-    const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'final-video']
+    const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'video-editing', 'final-video']
     const currentIndex = stageOrder.indexOf(stageId)
     
     // Library is always unlocked
@@ -288,27 +304,27 @@ export default function ProjectWorkspace() {
         )
         
       case 'visual-design':
-        // "Complete enough to move on" = AT LEAST ONE scene anywhere is
-        // designed or generated. This is what unlocks the Video Editing stage,
-        // and the user wants that as soon as a single scene is ready — not
-        // after every scene in a module is finished. A scene counts if it has
-        // a saved design snapshot (visualAssetUrl) OR a rendered video
-        // (avatarVideoUrl past the pending heygen: sentinel).
-        if (!modules.length) return false
-        return scenes.some(s =>
-          !!s.visualAssetUrl ||
-          (!!s.avatarVideoUrl && !s.avatarVideoUrl.startsWith('heygen:'))
-        )
-        
-      case 'video-editing':
-        // DONE when: at least one module has all scenes with avatarVideoUrl (HeyGen videos) OR timeline edited
-        // For now, we consider video-editing complete when visual-design is complete (as users can view timeline)
-        // Full completion when at least one module has been merged (fullVideoUrl exists)
-        if (!modules.length) return false
-        return modules.some(mod => {
-          const mod_data = modules.find(m => m.id === mod.id)
-          return !!mod_data?.fullVideoUrl
+        // Green (and unlocks Video Editing) once EVERY part of EVERY scene is
+        // APPROVED — same "all approved" gate the Scripts step uses. The
+        // per-module "Generate & approve all" button is what flips the whole
+        // stage green. Approval lives per-part in each segment's slideDesign
+        // JSON (multi-part scenes) or on scene.approvedAt (single-part).
+        if (!modules.length || !scenes.length) return false
+        return scenes.every(sc => {
+          const segs = (sc.segments && sc.segments.length) ? sc.segments : null
+          if (segs) {
+            return segs.every(seg => {
+              try { return !!JSON.parse(seg.slideDesign || '{}').approvedAt } catch { return false }
+            })
+          }
+          return !!sc.approvedAt
         })
+
+      case 'video-editing':
+        // Green (and unlocks Final Video) once EVERY module is APPROVED in the
+        // Video Editing step — same "all approved" gate the Scripts step uses.
+        if (!modules.length) return false
+        return modules.every(mod => !!moduleApprovals[mod.id])
         
       case 'avatar-studio':
         return false // TODO
@@ -343,7 +359,7 @@ export default function ProjectWorkspace() {
           <p className="text-slate-500 dark:text-slate-400 text-sm">
             {activeStage === 'scripts'
               ? 'Upload at least one source file in the Library first.'
-              : ['voices', 'visual-design', 'final-video'].includes(activeStage)
+              : ['voices', 'visual-design', 'video-editing', 'final-video'].includes(activeStage)
               ? 'Generate and approve scripts first.'
               : 'Complete the previous stages first.'}
           </p>
@@ -356,6 +372,7 @@ export default function ProjectWorkspace() {
       case 'scripts':         return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
       case 'voices':          return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
       case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'video-editing':   return <VideoEditingPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} onApprovalsChange={setModuleApprovals} />
       case 'final-video':     return <FinalVideoPanel project={project} onUpdate={invalidate} />
       default:                return null
     }
@@ -363,7 +380,7 @@ export default function ProjectWorkspace() {
 
   if (!projectId) {
     return (
-      <div className="flex items-center justify-center h-full bg-[#f5f7fb] dark:bg-[#0a0e1a]">
+      <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <p className="text-slate-500 dark:text-slate-400 mb-4">No project selected.</p>
           <Button onClick={() => navigate('/dashboard')}>Back to Projects</Button>
@@ -374,14 +391,14 @@ export default function ProjectWorkspace() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full bg-[#f5f7fb] dark:bg-[#0a0e1a]">
+      <div className="flex items-center justify-center h-full">
         <Spinner size="lg" />
       </div>
     )
   }
 
   return (
-    <div className="flex h-full bg-[#f5f7fb] dark:bg-[#0a0e1a] overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Stage Rail — icon-only on narrow screens, expanded with labels on
           lg+ screens. Fixed per breakpoint, no hover-to-expand interaction. */}
       <div className="w-16 lg:w-72 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 border-r border-slate-100 dark:border-white/10 flex flex-col flex-shrink-0 overflow-hidden transition-all duration-200">

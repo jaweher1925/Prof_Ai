@@ -15,7 +15,10 @@ import StageHeader from '@/components/workspace/StageHeader'
 
 const STATUS_BADGE = {
   review:   { label: 'Draft',     variant: 'default' },
-  approved: { label: 'Approved',  variant: 'yellow' },
+  // 'yellow' reads as in-progress/warning, not "done" — approved is a
+  // finished state (same family as 'locked' below), so it should use the
+  // same green the app already uses for "done".
+  approved: { label: 'Approved',  variant: 'green' },
   draft:    { label: 'Draft',     variant: 'default' },
   locked:   { label: '🔒 Locked', variant: 'green' },
 }
@@ -107,18 +110,50 @@ function buildDisplayItems(sections) {
     })
   }
 
-  ;(sections?.content_scenes || []).forEach((scene, i) => {
-    const bulletItems = scene.slide_content?.blocks?.[0]?.items || []
-    items.push({
-      kind:         'content',
-      idx:          i,
-      title:        scene.title,
-      text:         scene.script_content,
-      duration:     scene.duration_seconds,
-      slideContent: scene.slide_content || {},
-      contentBlocks: scene.content_blocks?.length ? scene.content_blocks : bulletsToBlocks(bulletItems),
-      imageDescription: scene.image_description || '',
-    })
+  ;(sections?.content_scenes || []).forEach((scene, sceneIdx) => {
+    // Current shape: each key point under this scene's topic is its own
+    // segment (own narration, own single-point slide) — shown as its own
+    // editable row here, same as welcome's segments just above, so what you
+    // approve/edit here matches exactly what becomes its own scene-segment
+    // (and its own avatar render) downstream.
+    if (scene.segments?.length) {
+      scene.segments.forEach((seg, segIdx) => {
+        const bullets = (seg.elements || []).filter(e => e.type === 'bullet').map(e => ({ text: e.text, level: e.level || 1 }))
+        const contentBlocks = seg.content_blocks?.length ? seg.content_blocks : bulletsToBlocks(bullets)
+        items.push({
+          kind:         'content',
+          idx:          `${sceneIdx}:${segIdx}`,
+          sceneIdx,
+          segIdx,
+          title:        scene.title ? `${scene.title} — point ${segIdx + 1}` : (seg.slide_title || `Point ${segIdx + 1}`),
+          text:         seg.text,
+          duration:     null,
+          // The slide's title is the scene's shared topic (same on every
+          // point-slide in this scene, per buildContentPointDesign on the
+          // backend); slide_title is THIS point's own short label, doubling
+          // as its "key insight" since there's nothing else left to bundle.
+          slideContent: { title: scene.title, subtitle: seg.slide_title, blocks: [{ items: blocksToBulletItems(contentBlocks) }] },
+          contentBlocks,
+          imageDescription: seg.image_description || '',
+        })
+      })
+    } else {
+      // Back-compat: scripts generated before this change still have the old
+      // flat script_content/slide_content shape (one bundled slide per scene).
+      const bulletItems = scene.slide_content?.blocks?.[0]?.items || []
+      items.push({
+        kind:         'content',
+        idx:          sceneIdx,
+        sceneIdx,
+        segIdx:       null,
+        title:        scene.title,
+        text:         scene.script_content,
+        duration:     scene.duration_seconds,
+        slideContent: scene.slide_content || {},
+        contentBlocks: scene.content_blocks?.length ? scene.content_blocks : bulletsToBlocks(bulletItems),
+        imageDescription: scene.image_description || '',
+      })
+    }
   })
 
   const quiz = sections?.quiz_scene
@@ -272,13 +307,33 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
           image_description: imageDescription,
         }
       } else if (item.kind === 'content' && sections.content_scenes) {
-        const prevSlide = sections.content_scenes[item.idx]?.slide_content || {}
-        sections.content_scenes[item.idx] = {
-          ...sections.content_scenes[item.idx],
-          script_content: editingScene.text,
-          content_blocks: cleanBlocks,
-          image_description: imageDescription,
-          slide_content: { ...prevSlide, subtitle: keyInsight, blocks: [{ items: bulletItems }] },
+        const scene = sections.content_scenes[item.sceneIdx]
+        if (scene?.segments && item.segIdx !== null) {
+          // Current shape — this item is ONE point/segment under the scene.
+          // keyInsight here maps to slide_title (this point's own short
+          // label), not a scene-wide subtitle — there's no bundling left to
+          // summarize once each point has its own slide.
+          scene.segments[item.segIdx] = {
+            ...scene.segments[item.segIdx],
+            text: editingScene.text,
+            slide_title: keyInsight || scene.segments[item.segIdx]?.slide_title,
+            content_blocks: cleanBlocks,
+            image_description: imageDescription,
+            elements: [
+              { type: 'title', text: scene.title },
+              ...bulletItems.map(b => ({ type: 'bullet', text: b.text, animation: 'staggered-bullets' })),
+            ],
+          }
+        } else {
+          // Back-compat: old flat script_content/slide_content shape.
+          const prevSlide = scene?.slide_content || {}
+          sections.content_scenes[item.sceneIdx] = {
+            ...scene,
+            script_content: editingScene.text,
+            content_blocks: cleanBlocks,
+            image_description: imageDescription,
+            slide_content: { ...prevSlide, subtitle: keyInsight, blocks: [{ items: bulletItems }] },
+          }
         }
       }
 
@@ -328,6 +383,7 @@ export default function ScriptsPanel({ project, onUpdate, onContinue }) {
         complete={allApproved}
         onContinue={() => onContinue?.('voices')}
         continueLabel="Continue to Voice"
+        compact
       />
 
       <Stepper steps={steps} activeStep={activeStep} onStepClick={setViewStep} />

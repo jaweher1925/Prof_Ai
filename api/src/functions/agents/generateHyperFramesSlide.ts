@@ -40,7 +40,7 @@ async function generateHyperFramesSlideHandler(
 ): Promise<HttpResponseInit> {
   const user = getUser(request)
   if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
-
+  console.log("********first call ************")
   const apiKey = process.env.HYPERFRAMES_API_KEY
   if (!apiKey) {
     return {
@@ -50,6 +50,7 @@ async function generateHyperFramesSlideHandler(
       },
     }
   }
+  console.log("********second call ************")
 
   try {
     const body = (await request.json()) as {
@@ -64,6 +65,8 @@ async function generateHyperFramesSlideHandler(
       where: { id: body.scene_id },
       include: { module: true },
     })
+    console.log("********3th call ************")
+
     if (!scene) return { status: 404, jsonBody: { error: 'Scene not found' } }
 
     const moduleTitle = scene.module?.title || 'Module'
@@ -91,6 +94,8 @@ async function generateHyperFramesSlideHandler(
 
     context.log(`Generating HyperFrames animated slide for scene ${body.scene_id}`)
 
+    console.log("********4th call ************")
+
     // Build HTML composition
     const html = buildHyperFramesHtml(slideContent, moduleTitle, durationSeconds)
 
@@ -112,15 +117,26 @@ async function generateHyperFramesSlideHandler(
     // Update scene — visualAssetUrl now points to the animated MP4.
     // slideBackgroundType = 'hyperframes' tells ffmpegVideo.ts to use the
     // video-background render path instead of the looped still-image path.
-    await prisma.scene.update({
+
+
+    console.log(`****Hichri Jaweher ****Updating scene ${body.scene_id} with HyperFrames asset`)
+    const s = await prisma.scene.update({
+      
       where: { id: body.scene_id },
       data: {
-        visualAssetUrl: savedUrl,
+        visualAssetUrl: savedUrl, 
         // Store render metadata for UI display
         visualPrompt: scene.visualPrompt || `HyperFrames animated — ${slideContent.title}`,
       },
     })
 
+
+
+    //s.slideBackgroundType = 'hyperframes'
+    console.log(`****Hichri Jaweher 2222****Generated HyperFrames slide for scene ${body.scene_id}`)
+   
+   
+   
     return {
       status: 200,
       jsonBody: {
@@ -140,6 +156,9 @@ async function generateHyperFramesSlideHandler(
   }
 }
 
+
+
+console.log("********call  generateHyperFramesSlideHandler************")
 app.http('generateHyperFramesSlide', {
   methods: ['POST'],
   route: 'generateHyperFramesSlide',

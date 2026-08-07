@@ -20,6 +20,7 @@ import {
   extractAvatarPosition,
 } from '../../lib/ffmpegVideo'
 import { startAvatarClipJob } from '../../lib/heygenAvatar'
+import { deleteOldUpload } from '../../lib/uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
@@ -44,6 +45,13 @@ async function addAvatarOrQueue(
   sceneId: string,
   useAvatar: boolean,
   avatarPosition?: { x: number; y: number; width: number } | null,
+  // The scene's avatarVideoUrl BEFORE this regenerate — a real /api/uploads/
+  // URL from a previous render, or null/heygen:<id> if none yet. Threaded
+  // through so the OLD composited video can be deleted once (and only once)
+  // a NEW one has safely landed, instead of piling up forever on every
+  // regenerate. Left undefined for preview calls, which never persist to
+  // Scene.avatarVideoUrl and so must never delete anything either.
+  oldAvatarVideoUrl?: string | null,
   // Single-part Visual Design PREVIEWs set this so the sidecar is tagged
   // preview:true — finalizeHeyGenJob then composites + returns the avatar clip
   // WITHOUT writing Scene.avatarVideoUrl (which would clobber the full-scene
@@ -111,8 +119,11 @@ async function addAvatarOrQueue(
     })
 
     if (job.cached) {
-      const finalPath = await overlayAvatarOnVideo(basePath, job.avatarPath, avatarPosition)
+      const finalPath = await overlayAvatarOnVideo(basePath, job.avatarPath, avatarPosition, job.chromaKey)
       const finalUrl = `/api/uploads/${parse(finalPath).base}`
+      // Fully synchronous completion — safe to delete the old composite now,
+      // the new one is already on disk and about to be persisted by the caller.
+      deleteOldUpload(oldAvatarVideoUrl, finalUrl)
       context.log(`[generateHeyGenAvatar] ✅ Avatar composited from cache: ${finalUrl}`)
       return { pending: false, videoUrl: finalUrl }
     }
@@ -120,9 +131,24 @@ async function addAvatarOrQueue(
     // Sidecar so pollHeyGenVideo.ts / heygenWebhook.ts can finish the job later.
     // sceneId is required here (added in the v3 migration) — the webhook has no
     // other way to know which scene a bare video_id belongs to.
+    // oldAvatarVideoUrl rides along too: the DB's avatarVideoUrl gets
+    // overwritten with the `heygen:<id>` sentinel the moment this job is
+    // queued (see finishOrQueue), so the OLD real URL would otherwise be lost
+    // before finalizeHeyGenJob ever gets a chance to clean up the file it
+    // pointed at — deferred to there instead of deleted here, so a failed
+    // HeyGen job never leaves the scene with zero video AND a missing file.
     writeFileSync(
       join(UPLOAD_DIR, `heygen_pending_${job.videoId}.json`),
-      JSON.stringify({ slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(), avatarPosition: avatarPosition || null, preview: !!preview, sceneId })
+      JSON.stringify({
+        slideVideoUrl, cachePath: job.cachePath, createdAt: Date.now(),
+        avatarPosition: avatarPosition || null, preview: !!preview, sceneId,
+        oldAvatarVideoUrl: oldAvatarVideoUrl || null,
+        // Whether this job was rendered on the chroma-key green (Avatar
+        // Background = "Transparent") — finalizeHeyGenJob needs this to key
+        // it back out when the render lands, since HeyGen itself never
+        // reports it and it isn't derivable from the finished clip alone.
+        chromaKey: job.chromaKey,
+      })
     )
     context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
     return { pending: true, heygenVideoId: job.videoId }
@@ -149,9 +175,10 @@ async function finishOrQueue(
   slideVideoUrl: string,
   audioUrls: string[],
   useAvatar: boolean,
-  avatarPosition?: { x: number; y: number; width: number } | null
+  avatarPosition?: { x: number; y: number; width: number } | null,
+  oldAvatarVideoUrl?: string | null
 ): Promise<HttpResponseInit> {
-  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, sceneId, useAvatar, avatarPosition)
+  const avatar = await addAvatarOrQueue(context, slideVideoUrl, audioUrls, moduleId, sceneId, useAvatar, avatarPosition, oldAvatarVideoUrl)
 
   if (avatar.pending) {
     // NOTE: avatarVideoUrl deliberately keeps the `heygen:<id>` sentinel —
@@ -180,6 +207,7 @@ async function finishOrQueue(
     }
   }
 
+  deleteOldUpload(oldAvatarVideoUrl, avatar.videoUrl)
   await prisma.scene.update({
     where: { id: sceneId },
     data: { avatarVideoUrl: avatar.videoUrl, status: 'completed' },
@@ -329,7 +357,9 @@ async function generateHeyGenAvatarHandler(
           }
           const av = await addAvatarOrQueue(
             context, videoUrl, segments.map(s => s.ttsAudioUrl),
-            scene.moduleId, body.scene_id, true, avatarPosition, /* preview */ true, body.segment_id
+            scene.moduleId, body.scene_id, true, avatarPosition,
+            /* oldAvatarVideoUrl */ undefined, // preview never persists to Scene.avatarVideoUrl — nothing to clean up
+            /* preview */ true, body.segment_id
           )
           if (!av.pending) {
             // Avatar clip was cached (or overlay done) — the preview already
@@ -368,7 +398,8 @@ async function generateHeyGenAvatarHandler(
           videoUrl,
           segments.map(s => s.ttsAudioUrl),
           useAvatar,
-          avatarPosition
+          avatarPosition,
+          scene.avatarVideoUrl
         )
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)
@@ -419,7 +450,8 @@ async function generateHeyGenAvatarHandler(
           videoUrl,
           [scene.ttsAudioUrl || ''],
           useAvatar,
-          avatarPosition
+          avatarPosition,
+          scene.avatarVideoUrl
         )
       } catch (renderErr: any) {
         context.error(`[generateHeyGenAvatar] Render failed:`, renderErr)

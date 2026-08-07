@@ -305,7 +305,7 @@ export function VisualSlidePreview({ composition, template = 'modern', elements 
 // VOICE-OVER TIMELINE BAR — Shows audio segments
 // ═══════════════════════════════════════════════════════════════════════════
 
-function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlayStateChange }) {
+function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlayStateChange, playToken = 0 }) {
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   // Which PART's audio is currently playing. A scene is several parts (hook,
@@ -316,6 +316,18 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
 
   useEffect(() => { onPlayStateChange?.(playing) }, [playing, onPlayStateChange])
   useEffect(() => { onTick?.(currentTime) }, [currentTime, onTick])
+
+  // External "play" trigger — lets a parent outside this bar (e.g. a Play
+  // button that lives elsewhere on the page) start playback here, instead of
+  // requiring the user to find and click this bar's own button. Only reacts
+  // to an actual increment, not the initial mount (playToken starts at 0).
+  useEffect(() => {
+    if (!playToken) return
+    setPartIndex(0)
+    setCurrentTime(0)
+    setPlaying(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playToken])
 
   // Ordered list of each part's audio + its duration.
   const parts = segments
@@ -694,7 +706,7 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════
 
-export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true, avatarImageUrl = null, hidePreview = false, onPlayingChange, onTick, onTimelineReady, onElementSelect }) {
+export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true, avatarImageUrl = null, hidePreview = false, onPlayingChange, onTick, onTimelineReady, onElementSelect, playToken = 0 }) {
   const queryClient = useQueryClient()
   const [elements, setElements] = useState([])
   const [composition, setComposition] = useState(null)
@@ -835,8 +847,11 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
   const handleUpdate = async (update) => {
     try {
       if (update.resetAll) {
-        // Reset all elements to default, evenly distributed timing
-        const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.duration || 0), 0) || 30
+        // Reset all elements to default, evenly distributed timing.
+        // durationSeconds (not duration — see the header's totalTime below
+        // for why the field name matters here) is what SceneSegment rows
+        // actually carry.
+        const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30
         const timePerElement = totalTime / Math.max(elements.length, 1)
         
         const newEls = elements.map((el, i) => ({
@@ -910,7 +925,18 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
     )
   }
 
-  const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.duration || 0), 0) || 30
+  // BUG FIX (#18): this read s.duration, a field SceneSegment rows don't
+  // have (they carry durationSeconds — see VoiceTimelineBar's own totalTime
+  // at line ~326 and ElementTimelineTrack's at line ~459, which both already
+  // read the right field). Every scene therefore fell through to the `|| 30`
+  // fallback here, so the "Voice Timeline" header above the bar always
+  // showed a flat 30s — DIFFERENT from the real duration VoiceTimelineBar
+  // itself computes and displays inside the bar (e.g. "37s / 37s"), and
+  // different again from whatever ElementTimelineTrack's ruler length ended
+  // up implying. Three places computing the same number three different
+  // ways, one of them silently wrong. Reported as: "Voice timeline show 37
+  // sec / line show 35 sec / bar show 30 sec."
+  const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30
 
   return (
     <div className="w-full space-y-3">
@@ -1008,6 +1034,7 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
           totalDuration={totalTime}
           onPlayStateChange={setIsPlaying}
           onTick={setPlaybackTime}
+          playToken={playToken}
         />
       </div>
 

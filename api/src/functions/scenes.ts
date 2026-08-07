@@ -1,6 +1,7 @@
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
 import { prisma } from '../lib/db'
 import { getUser } from '../lib/auth'
+import { deleteOldUpload } from '../lib/uploadCleanup'
 
 const unauth = () => ({ status: 401, jsonBody: { error: 'Unauthenticated' } } as HttpResponseInit)
 const err500 = (e: any) => ({ status: 500, jsonBody: { error: e?.message } } as HttpResponseInit)
@@ -71,6 +72,14 @@ app.http('updateScene', {
     if (!getUser(req)) return unauth()
     try {
       const body = (await req.json()) as any
+      // Grab the pre-update URLs so we can delete the files they used to
+      // point at once the DB has safely moved on to the new ones (#storage
+      // cleanup) — every save from the Visual Designer's WYSIWYG snapshot
+      // hits this same endpoint, so this is the single biggest source of
+      // orphaned uploads if left uncleaned.
+      const before = (body.visual_asset_url !== undefined || body.avatar_video_url !== undefined)
+        ? await prisma.scene.findUnique({ where: { id: req.params.id }, select: { visualAssetUrl: true, avatarVideoUrl: true } })
+        : null
       const scene = await prisma.scene.update({
         where: { id: req.params.id },
         data: {
@@ -99,6 +108,10 @@ app.http('updateScene', {
           }),
         },
       })
+      if (before) {
+        deleteOldUpload(before.visualAssetUrl, scene.visualAssetUrl)
+        deleteOldUpload(before.avatarVideoUrl, scene.avatarVideoUrl)
+      }
       return { status: 200, jsonBody: scene }
     } catch (e) { ctx.error(e); return err500(e) }
   },

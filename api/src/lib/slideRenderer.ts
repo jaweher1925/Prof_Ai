@@ -100,15 +100,17 @@ export function toSlideBlocks(contentBlocks: EditorContentBlock[], layout?: stri
   if (!Array.isArray(contentBlocks) || contentBlocks.length === 0) return []
 
   // Flatten every point + its nested key points into one bullets list
-  // (level 0 = main idea, level 1 = supporting detail) — the shape
-  // renderBullets() expects, and what renderSplit()/renderSummary() fall
-  // back to as well.
+  // (level 1 = main idea, level 2 = supporting detail) — the SAME
+  // convention scriptGeneratorAgent.ts and the Visual Designer editor
+  // itself use (the editor's bullet-level toggle only ever produces 1 or
+  // 2, never 0 — see VisualDesignerPanel.jsx's bullets state). renderBullets()
+  // below matches this convention now too.
   const items: SlideBullet[] = []
   for (const block of contentBlocks) {
-    if (block?.text) items.push({ text: block.text, level: 0 })
+    if (block?.text) items.push({ text: block.text, level: 1 })
     if (Array.isArray(block?.keyPoints)) {
       for (const kp of block.keyPoints) {
-        if (kp) items.push({ text: kp, level: 1 })
+        if (kp) items.push({ text: kp, level: 2 })
       }
     }
   }
@@ -276,9 +278,35 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
   const subWrapChars1 = Math.max(18, Math.round(wrapChars * (70 / 60)))
   const subWrapChars2 = Math.max(16, Math.round(wrapChars * (75 / 60)))
 
-  // Group items: level-0 are main ideas, level-1/2 are supporting details
-  const mainIdeas = items.filter(i => !i.level || i.level === 0)
+  // Group items: level 0/1 (undefined counts as 1, the default everywhere
+  // else in the app) are main ideas, level 2+ are supporting details. This
+  // MUST match how bullets are actually produced — scriptGeneratorAgent.ts
+  // and the Visual Designer editor both use level 1 for a main bullet and
+  // level 2 for an indented sub-point, never level 0. The old `level === 0`
+  // check here meant EVERY main bullet (all saved as level 1) matched
+  // nothing, so this whole block silently rendered empty for any slide
+  // that was never manually opened in the editor (which is most freshly
+  // generated content) — reported as "some scenes are just a title with no
+  // content points".
+  const mainIdeas = items.filter(i => !i.level || i.level <= 1)
   if (!mainIdeas.length) return ''
+
+  // Each main idea's OWN supporting points are whatever level-2+ items sit
+  // between it and the NEXT main idea (or the end of the list) — not every
+  // level-2+ item in the rest of the array. Slicing to "the rest of items"
+  // (as this used to) meant a single trailing sub-point got reattached
+  // under EVERY main idea instead of just the one it actually follows,
+  // duplicating it down the whole slide once real main ideas started
+  // rendering again (see the level-1/level-0 fix above). Precomputed once
+  // and reused by both the size estimate and the actual draw loop below so
+  // they can never disagree.
+  const mainIdeaIndex = new Map(mainIdeas.map((mi, idx) => [mi, idx]))
+  const supportingPointsFor = (mainIdea: SlideBullet): SlideBullet[] => {
+    const idx = mainIdeaIndex.get(mainIdea)!
+    const startIdx = items.indexOf(mainIdea) + 1
+    const endIdx = idx + 1 < mainIdeas.length ? items.indexOf(mainIdeas[idx + 1]) : items.length
+    return items.slice(startIdx, endIdx).filter(i => (i.level ?? 1) >= 2)
+  }
 
   const AVAILABLE_H = 980 - startY
 
@@ -289,10 +317,7 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
   let estimatedH = 0
   for (const mainIdea of mainIdeas) {
     estimatedH += estimateLines(mainIdea.text, wrapChars) > 1 ? 110 : 80
-    const supportingPoints = items
-      .slice(items.indexOf(mainIdea) + 1)
-      .filter(i => (i.level === 1 || i.level === 2) && items.indexOf(i) - items.indexOf(mainIdea) <= items.length)
-    for (const sp of supportingPoints) {
+    for (const sp of supportingPointsFor(mainIdea)) {
       estimatedH += estimateLines(sp.text, sp.level === 2 ? subWrapChars2 : subWrapChars1) > 1 ? 95 : 60
     }
     estimatedH += 20
@@ -326,12 +351,9 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
 
     y += mainLines.length > 1 ? gapAfterMainMulti : gapAfterMain
 
-    // Nested supporting points (level 1-2) directly following this main idea
-    const supportingPoints = items
-      .slice(items.indexOf(mainIdea) + 1)
-      .filter(i => (i.level === 1 || i.level === 2) && items.indexOf(i) - items.indexOf(mainIdea) <= items.length)
-
-    for (const supportPoint of supportingPoints) {
+    // Nested supporting points (level 2+) directly following this main idea
+    // — and only this one, see supportingPointsFor above.
+    for (const supportPoint of supportingPointsFor(mainIdea)) {
       const isLevel2 = supportPoint.level === 2
       const indentX = isLevel2 ? dotX2 : dotX1
       const indentDot = isLevel2 ? 3 : 5

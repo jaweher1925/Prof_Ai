@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { buildSlide } from './slideRenderer'
 import type { SlideContent } from './slideRenderer'
+import { AVATAR_CHROMA_KEY_HEX } from './heygenAvatar'
 
 const ffmpegPath = require('ffmpeg-static')
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
@@ -85,7 +86,9 @@ export function localPathFromUploadUrl(url?: string | null): string | null {
   const match = url.match(/\/api\/uploads\/([^/?]+)/)
   if (!match) return null
   const path = join(UPLOAD_DIR, match[1])
+
   return existsSync(path) ? path : null
+
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -594,7 +597,7 @@ export function localVideoPathFromUploadUrl(url?: string | null): string | null 
 // jump cut. This is separate from the crossfade used to join SEGMENTS
 // within one scene (concatenateVideos above), which stays smooth/quick on
 // purpose since those are parts of the same continuous scene.
-const SCENE_PAUSE_SEC = 2
+const SCENE_PAUSE_SEC = 5
 
 /** Extends a clip by holding its last frame (+ silence) for `padSec` more
  *  seconds, instead of cutting/fading straight into the next clip. */
@@ -617,15 +620,32 @@ async function padClipEnd(inputPath: string, padSec: number): Promise<string> {
 export async function concatVideos(localPaths: string[]): Promise<string> {
   if (!localPaths.length) throw new Error('No videos to concatenate')
   if (localPaths.length === 1) return localPaths[0]
+
+  // Pad every clip except the last — the last scene doesn't need a pause
+  // after it since there's nothing following it in this video. Each clip is
+  // padded INDEPENDENTLY (its own try/catch) rather than as one Promise.all
+  // that aborts entirely on the first failure — previously a single bad
+  // clip (e.g. an oddly-encoded segment tpad/apad chokes on) discarded
+  // padding for every OTHER clip too and fell straight through to the
+  // crossfade fallback below, which has no pause at all and audibly runs
+  // the last word of one scene into the first word of the next. Now one
+  // clip failing to pad just leaves THAT one boundary un-padded.
+  const padded = await Promise.all(
+    localPaths.map(async (p, i) => {
+      if (i === localPaths.length - 1) return p
+      try {
+        return await padClipEnd(p, SCENE_PAUSE_SEC)
+      } catch (err: any) {
+        console.warn(`[concatVideos] Pause-padding failed for clip ${i + 1}/${localPaths.length}, joining it unpadded: ${err?.message?.slice(-300)}`)
+        return p
+      }
+    })
+  )
+
   try {
-    // Pad every clip except the last — the last scene doesn't need a pause
-    // after it since there's nothing following it in this video.
-    const padded = await Promise.all(
-      localPaths.map((p, i) => (i < localPaths.length - 1 ? padClipEnd(p, SCENE_PAUSE_SEC) : Promise.resolve(p)))
-    )
     return await plainConcat(padded)
   } catch (err: any) {
-    console.warn(`[concatVideos] Pause-padding failed, falling back to a plain crossfaded join with no pause: ${err?.message?.slice(-300)}`)
+    console.warn(`[concatVideos] Plain concat of padded clips failed, falling back to a crossfaded join (shorter/no pause at the failed boundaries): ${err?.message?.slice(-300)}`)
     return await concatenateVideos(localPaths)
   }
 }
@@ -648,7 +668,15 @@ export async function concatVideos(localPaths: string[]): Promise<string> {
 export async function overlayAvatarOnVideo(
   baseVideoPath: string,
   avatarVideoPath: string,
-  position?: { x: number; y: number; width: number } | null
+  position?: { x: number; y: number; width: number } | null,
+  // When true, the avatar clip was rendered by HeyGen on the chroma-key green
+  // defined in heygenAvatar.ts (AVATAR_CHROMA_KEY_HEX) because the project's
+  // Avatar Background is set to "Transparent" — HeyGen has no real
+  // transparent render option, so this keys the green out to per-pixel alpha
+  // here instead, so the slide shows through around the presenter instead of
+  // a solid box (previously this flag didn't exist at all: "Transparent" was
+  // silently ignored and always rendered as a plain rectangular overlay).
+  chromaKey?: boolean
 ): Promise<string> {
   const outPath = join(UPLOAD_DIR, `${randomUUID()}_with_avatar.mp4`)
 
@@ -674,12 +702,23 @@ export async function overlayAvatarOnVideo(
     overlayY = `H-h-22`
   }
 
+  // Chroma-key the avatar clip's green background out to real alpha before
+  // overlaying, so the slide shows through around the presenter instead of a
+  // solid green/navy box. similarity/blend tuned conservatively (checked
+  // against a synthetic green-screen test clip): keys out the flat green
+  // cleanly while a soft blend band avoids a hard fringe at the presenter's
+  // edge. format=yuva420p makes the alpha channel explicit going into
+  // overlay, which otherwise ignores per-pixel alpha on some codecs/builds.
+  const avatarFilter = chromaKey
+    ? `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx},chromakey=${AVATAR_CHROMA_KEY_HEX}:0.15:0.08,format=yuva420p[av]`
+    : `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx}[av]`
+
   await runFfmpeg([
     '-y',
     '-i', baseVideoPath,
     '-i', avatarVideoPath,
     '-filter_complex',
-    `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx}[av];[0:v][av]overlay=${overlayX}:${overlayY}:eof_action=repeat[v]`,
+    `${avatarFilter};[0:v][av]overlay=${overlayX}:${overlayY}:eof_action=repeat[v]`,
     '-map', '[v]',
     '-map', '0:a',
     '-c:v', 'libx264',

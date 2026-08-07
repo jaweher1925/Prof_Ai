@@ -24,14 +24,22 @@ export default function Welcome() {
   const { theme, toggleTheme } = useTheme()
   const isDark = theme === 'dark'
 
-  function enter() {
+  // Auth (login/signup) is fully built but temporarily not enforced (see
+  // App.jsx's RequireAuth) — every CTA here drops straight into /dashboard
+  // for now instead of routing through /login or /signup. Once auth is
+  // switched back on, point signIn at '/login' and signUp at '/signup'
+  // again (RequireAuth's redirect will otherwise just bounce people back to
+  // /login the instant they land on /dashboard anyway).
+  function goTo(path) {
     setFlashing(true)
     localStorage.setItem('profai_visited', 'true')
-    setTimeout(() => navigate('/dashboard'), 400)
+    setTimeout(() => navigate(path), 400)
   }
+  const signIn = () => goTo('/dashboard')
+  const signUp = () => goTo('/dashboard')
 
   return (
-    <div className="min-h-screen bg-[#f5f7fb] dark:bg-[#0a0e1a] text-slate-900 dark:text-white transition-colors">
+    <div className="min-h-screen text-slate-900 dark:text-white">
       <AnimatePresence>
         {flashing && (
           <motion.div
@@ -73,11 +81,11 @@ export default function Welcome() {
                 <Moon className={cn('w-4 h-4 absolute inset-0 transition-all', isDark ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 rotate-90 scale-50')} />
               </span>
             </button>
-            <button onClick={enter} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors hidden sm:block">
+            <button onClick={signIn} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors hidden sm:block">
               Sign in
             </button>
             <motion.button
-              onClick={enter}
+              onClick={signUp}
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: 0.97 }}
               className="px-4 py-2 text-sm font-semibold text-white bg-indigo-700 hover:bg-indigo-600 rounded-xl transition-colors shadow-md shadow-indigo-500/20"
@@ -120,7 +128,7 @@ export default function Welcome() {
                 video lecture, automatically.
               </p>
               <motion.button
-                onClick={enter}
+                onClick={signUp}
                 whileHover={{ scale: 1.04 }}
                 whileTap={{ scale: 0.97 }}
                 className="flex items-center gap-2 px-6 py-3 text-sm font-semibold text-indigo-800 bg-white hover:bg-slate-50 rounded-xl shadow-lg transition-colors"

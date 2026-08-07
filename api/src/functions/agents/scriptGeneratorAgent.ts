@@ -25,6 +25,21 @@ import { prisma } from '../../lib/db'
 import { getUser } from '../../lib/auth'
 import { generateJson } from '../../lib/llm'
 
+// Every scene kind used to seed its slide with a DIFFERENT hardcoded theme —
+// hook='ocean' (dark blue), content='academic' (light cream), recap=
+// 'dark-navy', quiz/interaction='corporate' — so a freshly generated module
+// was mixed-theme from the moment it was created, before the user ever
+// touched Visual Designer or picked anything (reported: uploaded slide
+// thumbnails showing inconsistent themes even for never-opened modules).
+// Visual Designer only overwrites a module's scenes to a consistent theme
+// when the user happens to open THAT module, so unvisited ones stayed
+// mixed forever. One shared seed theme here means every module starts
+// consistent by default — still fully overridable per-scene afterward, this
+// only changes what a scene looks like before anyone has edited it.
+// 'light' matches the fallback default used everywhere else in the app
+// (e.g. VisualDesignerPanel's `parsed.theme || 'light'`).
+const DEFAULT_SEED_THEME = 'light'
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type AnimationType = 'fade-in' | 'slide-in-left' | 'slide-in-right' | 'staggered-bullets' | 'pulse'
@@ -81,13 +96,22 @@ interface SlideContent {
   segments?:    Array<{ segment_type: string; slide_title?: string; text?: string }>
 }
 
+// Content scenes used to be ONE narrated segment whose slide crammed 2-3
+// bullet points onto one slide together — narrated in one breath, one HeyGen
+// render. That undercounted the real number of "points" in the course (a
+// scene showing 3 bullets was still just 1 scene/1 render), and it meant a
+// student couldn't get a beat between distinct facts. Content scenes now use
+// the exact same "segments" shape as the welcome scene: one scene = one
+// sub-topic, split into N segments = N individual points, each with its own
+// narration (own TTS call), its own single-point slide, and its own avatar
+// render — never bundled together. See scriptGeneratorAgentHandler's prompt
+// for the generation-side rules and the save loop below for how this maps to
+// Scene (one per sub-topic) + SceneSegment (one per point) rows.
 interface ContentSceneOutput {
-  title:               string
-  script_content:      string
-  slide_content:       SlideContent
-  visual_prompt:       string
-  duration_seconds:    number
-  text_animation_type: string
+  title:                string
+  visual_prompt:        string
+  text_animation_type?: string
+  segments:             GeneratedSegment[]   // one per key point — segment_type is always "content"
 }
 
 interface WelcomeSceneOutput {
@@ -179,33 +203,6 @@ async function extractBullets(sourceText: string, count = 3): Promise<string[]> 
   }
 }
 
-/** Ensures a content scene's slide_content.blocks has at least one non-empty bullets block. */
-async function ensureSlideBullets(scene: ContentSceneOutput): Promise<ContentSceneOutput> {
-  const blocks = scene.slide_content?.blocks ?? []
-  const hasBullets = blocks.some(b => b.type === 'bullets' && (b.items?.length ?? 0) > 0)
-  if (hasBullets) return scene
-
-  const fallbackText = scene.script_content || scene.title
-  const bullets = await extractBullets(fallbackText, 3)
-  if (!bullets.length) return scene // genuinely nothing to extract from — leave as-is rather than fabricate
-
-  // These are independently-extracted facts with no real hierarchy between
-  // them (unlike the LLM's own slide_content.blocks, where level reflects an
-  // actual main-point/sub-point relationship) — treat them all as main points
-  // rather than arbitrarily demoting everything after the first to level 2.
-  const bulletsBlock: SlideBlock = {
-    type:  'bullets',
-    items: bullets.map((text): SlideBullet => ({ text, level: 1 })),
-  }
-  return {
-    ...scene,
-    slide_content: {
-      ...scene.slide_content,
-      blocks: [...blocks.filter(b => b.type !== 'bullets'), bulletsBlock],
-    },
-  }
-}
-
 /** Ensures a generated segment has at least one real bullet/title element. */
 async function ensureSegmentElements(segment: GeneratedSegment): Promise<GeneratedSegment> {
   const hasContent = segment.elements.some(el => (el.text ?? '').trim().length > 0)
@@ -234,7 +231,7 @@ function welcomeLegacySlide(welcome: WelcomeSceneOutput): SlideContent {
     title:    hook?.slide_title || welcome.title,
     subtitle: typeof objectiveTagline === 'string' ? objectiveTagline.slice(0, 120) : 'Module Overview',
     layout:   'roadmap',
-    theme:    'dark-navy',
+    theme:    DEFAULT_SEED_THEME,
     blocks:   [],
     // Pass segment metadata for roadmap rendering
     segments: welcome.segments.map(s => ({
@@ -246,11 +243,54 @@ function welcomeLegacySlide(welcome: WelcomeSceneOutput): SlideContent {
   }
 }
 
+/** Combined summary slide for Scene.slideDeckContent — legacy/back-compat only
+ *  (mirrors welcomeLegacySlide). The REAL per-point slides live in each
+ *  segment's own slideDesign (buildContentPointDesign below); this just gives
+ *  any code still reading the scene-level field a reasonable all-points view
+ *  instead of an empty one. */
+function contentLegacySlide(scene: ContentSceneOutput): SlideContent {
+  return {
+    title:  scene.title,
+    layout: 'bullets',
+    theme:  DEFAULT_SEED_THEME,
+    blocks: [{
+      type:  'bullets',
+      items: scene.segments.map((seg): SlideBullet => ({
+        text:  seg.elements?.find(el => el.type === 'bullet')?.text || seg.slide_title || seg.text,
+        level: 1,
+      })),
+    }],
+    imagePrompt: scene.segments.find(seg => seg.image_prompt)?.image_prompt,
+  }
+}
+
+/** One point's own slide — single-bullet, focused on just that one fact
+ *  (never bundled with sibling points). sceneTitle is shared across every
+ *  point in the scene so the run of slides visually reads as "one topic,
+ *  told one point at a time"; slide_title becomes this point's own short
+ *  label/key-insight, shown as the subtitle. */
+function buildContentPointDesign(point: GeneratedSegment, sceneTitle: string): string {
+  const items: SlideBullet[] = point.elements?.length
+    ? point.elements
+        .filter(el => el.type === 'bullet' && el.text)
+        .map((el): SlideBullet => ({ text: el.text || '', level: 1 }))
+    : [{ text: point.text || 'Key point', level: 1 as const }]
+  const design: SlideContent = {
+    layout: 'bullets',
+    theme: DEFAULT_SEED_THEME,
+    title: sceneTitle,
+    subtitle: point.slide_title || '',
+    blocks: [{ type: 'bullets', items }],
+    imagePrompt: point.image_prompt,
+  }
+  return JSON.stringify(design)
+}
+
 function quizLegacySlide(quiz: QuizSceneOutput): SlideContent {
   return {
     title:  quiz.title || 'Knowledge Check',
     layout: 'summary',
-    theme:  'corporate',
+    theme:  DEFAULT_SEED_THEME,
     blocks: [{
       type:  'bullets',
       // Each question is its own independent point, not a sub-detail of the
@@ -276,49 +316,58 @@ function buildQuestionSegment(q: QuizQuestion, idx: number): GeneratedSegment {
     segment_type: 'question',
     // FIXED: Don't include the correct answer in the segment text - questions only!
     text:         `Question ${idx + 1}: ${q.question} ${opts}.`,
-    slide_title:  `Question ${idx + 1}`,
-    elements: [
-      { type: 'title', text: q.question, animation: 'fade-in' },
-      ...q.options.map((o): SlideElement => ({
-        type: 'bullet',
-        text: `${o.label}) ${o.text}`,
-        animation: 'staggered-bullets',
-        semanticRole: o.label === q.correct_option_label ? 'definition' : 'none',
-      })),
-    ],
+    // The QUESTION itself is the slide title (shows in Visual Design's Slide
+    // Title field), so the options below read as its answer points — no separate
+    // duplicate title element.
+    slide_title:  q.question,
+    elements: q.options.map((o): SlideElement => ({
+      type: 'bullet',
+      text: `${o.label}) ${o.text}`,
+      animation: 'staggered-bullets',
+      semanticRole: o.label === q.correct_option_label ? 'definition' : 'none',
+    })),
     animation: 'fade-in',
   }
 }
 
-/** Generate auto-designed slides for welcome segment based on its type */
-function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: string): string {
+/** Generate auto-designed slides for welcome segment based on its type.
+ *  objectiveTagline (#17): the hook's subtitle used to be a hardcoded
+ *  "Course Overview: 4-step learning journey" on EVERY module — that's not a
+ *  key insight about THIS module, just generic boilerplate, so the intro
+ *  slide always looked like it had none (reported: "there is no key insight
+ *  in first scene (intro layout)"). welcomeLegacySlide() (used for the
+ *  scene-level roadmap view) already derives a real per-module tagline from
+ *  the LLM's own objective/learning_objective field — this just reuses that
+ *  same value for the actual per-segment design Visual Designer edits and
+ *  renders from, instead of computing it twice or leaving it generic. */
+function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: string, objectiveTagline?: string): string {
   const designs: Record<string, SlideContent> = {
     hook: {
       layout: 'title-hero',
-      theme: 'ocean',
+      theme: DEFAULT_SEED_THEME,
       title: segment.slide_title || moduleTitle || 'Introduction',
-      subtitle: 'Course Overview: 4-step learning journey',
+      subtitle: objectiveTagline?.trim() || 'Course Overview: 4-step learning journey',
+      // Was hardcoded to the same 4 generic "1. Hook - Get curious / 2.
+      // Content - Learn key concepts / ..." lines on EVERY module, completely
+      // ignoring the LLM's own hook-specific content — the prompt already
+      // asks for a real "title + 1-3 bullet" elements array here (a concrete
+      // hook detail from THIS module's source material, see the prompt spec
+      // above), it just wasn't being read (reported: "not the same design
+      // content"). Mirrors the 'content' case's own elements-first pattern
+      // just below.
       blocks: [{
         type: 'bullets',
-        items: [{
-          text: '1. Hook - Get curious 🎯',
-          level: 1
-        }, {
-          text: '2. Content - Learn key concepts 📚',
-          level: 1
-        }, {
-          text: '3. Content - Dive deeper 🔍',
-          level: 1
-        }, {
-          text: '4. Recap - Key takeaways ✓',
-          level: 1
-        }]
+        items: segment.elements?.length
+          ? segment.elements
+              .filter(el => el.type === 'bullet' && el.text)
+              .map((el): SlideBullet => ({ text: el.text || '', level: 1 }))
+          : [{ text: segment.text || 'Welcome to this module', level: 1 }]
       }],
       imagePrompt: segment.image_prompt,
     },
     content: {
       layout: 'bullets',
-      theme: 'academic',
+      theme: DEFAULT_SEED_THEME,
       title: segment.slide_title || 'Key Learning Points',
       subtitle: 'Essential concepts from this module',
       blocks: [{
@@ -336,7 +385,7 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
     },
     interaction: {
       layout: 'definition',
-      theme: 'corporate',
+      theme: DEFAULT_SEED_THEME,
       title: '💡 ' + (segment.slide_title || 'Think About This'),
       subtitle: 'Pause and reflect on what you learned',
       blocks: [{
@@ -346,7 +395,7 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
     },
     recap: {
       layout: 'summary',
-      theme: 'dark-navy',
+      theme: DEFAULT_SEED_THEME,
       title: '✓ ' + (segment.slide_title || 'What You Learned'),
       subtitle: 'Summary of key takeaways',
       blocks: [{
@@ -360,7 +409,7 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
     },
     question: {
       layout: 'bullets',
-      theme: 'corporate',
+      theme: DEFAULT_SEED_THEME,
       title: segment.slide_title || 'Question',
       blocks: [{
         type: 'bullets',
@@ -458,17 +507,31 @@ The package has exactly three parts:
 2. content_scenes — AS MANY SCENES AS THE SOURCE MATERIAL ACTUALLY SUPPORTS, covering the
    module's sub-topics in depth. Do not pad with filler scenes, and do not compress distinct
    sub-topics into one scene just to hit a target count — one scene per genuinely distinct idea.
-   A short source might only support 2-3 scenes; a rich one might support 8-10+. Each scene has:
-   - script_content: ONLY what the presenter says — natural conversational speech, 60-90 words
-   - slide_content: ONLY what students read — a DIFFERENT, structured text from the speech, with
-     a "blocks" array that MUST include at least one "bullets" block with 2-3 real items pulled
-     from the source (never an empty blocks array). Make slides VISUALLY INTERESTING:
-     * Use varied layouts (not always bullets): definitions, quotes, two-column, diagrams
-     * Include examples from the source material when possible
-     * Use meaningful subtitles that highlight the KEY INSIGHT students should remember
-     * Add relevant icons or emoji that reinforce the concept (e.g., 🔗 for connections, 📊 for data)
-   - visual_prompt, duration_seconds, text_animation_type (one of: "slow-zoom-in", "zoom-out",
-     "pan-left", "pan-right", "ken-burns", "static")
+   A short source might only support 2-3 scenes; a rich one might support 8-10+.
+
+   Each scene covers ONE sub-topic and is told through its own "segments" array — one segment PER
+   distinct key point under that sub-topic (usually 1-3 points per scene, more if the sub-topic
+   genuinely has more distinct facts). NEVER narrate two different points together in one
+   segment's text, and NEVER put more than one point's worth of content on one slide — each point
+   gets its OWN short narration (its own TTS clip and its own avatar render) and its OWN focused,
+   single-point slide, exactly like the welcome scene's segments above. If a sub-topic genuinely
+   has only one point, one segment is correct — don't invent a second point just to split it.
+
+   Each scene has:
+   - title: the scene's shared topic title (max 7 words) — shown on every one of its point-slides
+   - visual_prompt: brief visual context, keep static background
+   - text_animation_type: one of "slow-zoom-in", "zoom-out", "pan-left", "pan-right", "ken-burns", "static"
+   - segments: the points, each with:
+     * segment_type: always "content"
+     * text: ONLY what the presenter says for THIS ONE point — natural conversational speech,
+       grounded in the source, 20-35 words (short, because it's one point, not the whole scene)
+     * slide_title: a short (max 8 words) label for this specific point — shown as the slide's
+       key-insight subtitle
+     * elements: a "title" element (repeat the scene's title) plus exactly ONE "bullet" element
+       with the concise on-screen version of THIS point (max 12 words) — never more than one
+       bullet per segment, that's what would bundle points back together
+     * image_prompt: only on the scene's FIRST segment, a simple flat-style educational
+       illustration for the whole sub-topic (later points in the same scene don't need their own)
 
 3. quiz_scene — a closing knowledge check with 3-5 multiple-choice questions testing the module's
    key ideas. Each question has 3-4 options (labeled "A","B","C","D"), a correct_option_label, and
@@ -503,75 +566,32 @@ Return this exact JSON shape:
   },
   "content_scenes": [
     {
-      "title": "Scene title",
-      "script_content": "What the presenter says — 60-90 conversational words from source content",
-      "slide_content": {
-        "title": "Slide title (max 7 words)",
-        "subtitle": "Key insight students should remember — one line",
-        "layout": "bullets",
-        "theme": "academic",
-        "blocks": [
-          {
-            "type": "bullets",
-            "items": [
-              { "text": "Specific fact or concept from source", "level": 1 },
-              { "text": "Supporting detail or example from source",        "level": 2 },
-              { "text": "Real-world application or consequence",        "level": 2 }
-            ]
-          }
-        ],
-        "imagePrompt": "Educational diagram that illustrates the concept"
-      },
+      "title": "Scene title (shared topic for all points below)",
       "visual_prompt": "Brief visual context, keep static background",
-      "duration_seconds": 60,
-      "text_animation_type": "static"
-    },
-    {
-      "title": "Definition or Key Concept Scene",
-      "script_content": "Explanation of a key term or concept — 60-90 words",
-      "slide_content": {
-        "title": "📚 Key Terminology",
-        "subtitle": "Important definition from source material",
-        "layout": "definition",
-        "theme": "academic",
-        "blocks": [
-          {
-            "type": "definition",
-            "term": "Term from source",
-            "definition": "Clear 1-2 sentence definition from source",
-            "examples": ["Real example from source", "Another relevant example"]
-          }
-        ]
-      },
-      "visual_prompt": "Concept illustration",
-      "duration_seconds": 50,
-      "text_animation_type": "static"
-    },
-    {
-      "title": "Comparison or Two-Part Concept",
-      "script_content": "Compare two ideas or show contrasting approaches — 60-90 words",
-      "slide_content": {
-        "title": "Comparison: Concept A vs. B",
-        "subtitle": "Understanding key differences from source",
-        "layout": "split",
-        "theme": "academic",
-        "blocks": [
-          {
-            "type": "two-column",
-            "left": [
-              { "text": "First concept details from source", "level": 1 },
-              { "text": "Characteristic or feature", "level": 2 }
-            ],
-            "right": [
-              { "text": "Second concept details from source", "level": 1 },
-              { "text": "Contrasting characteristic", "level": 2 }
-            ]
-          }
-        ]
-      },
-      "visual_prompt": "Side-by-side comparison visual",
-      "duration_seconds": 60,
-      "text_animation_type": "static"
+      "text_animation_type": "static",
+      "segments": [
+        {
+          "segment_type": "content",
+          "text": "What the presenter says about ONLY this first point — 20-35 conversational words from source",
+          "slide_title": "Short label for this point (max 8 words)",
+          "elements": [
+            { "type": "title", "text": "Scene title (shared topic for all points below)" },
+            { "type": "bullet", "text": "Concise on-screen version of this point (max 12 words)", "animation": "staggered-bullets" }
+          ],
+          "image_prompt": "Simple flat-style educational illustration for the whole sub-topic",
+          "animation": "fade-in"
+        },
+        {
+          "segment_type": "content",
+          "text": "What the presenter says about the SECOND, separate point — 20-35 words from source",
+          "slide_title": "Short label for this second point",
+          "elements": [
+            { "type": "title", "text": "Scene title (shared topic for all points below)" },
+            { "type": "bullet", "text": "Concise on-screen version of this second point", "animation": "staggered-bullets" }
+          ],
+          "animation": "fade-in"
+        }
+      ]
     }
   ],
   "quiz_scene": {
@@ -597,7 +617,15 @@ Return this exact JSON shape:
       const welcome = scriptData.welcome_scene
       welcome.segments = await Promise.all(welcome.segments.map(ensureSegmentElements))
 
-      const contentScenes = await Promise.all(scriptData.content_scenes.map(ensureSlideBullets))
+      // Same backfill as the welcome segments — a content point missing real
+      // bullet/title text gets one extracted from its own narration rather
+      // than shipping an empty slide.
+      const contentScenes = await Promise.all(
+        scriptData.content_scenes.map(async (cs) => ({
+          ...cs,
+          segments: await Promise.all((cs.segments ?? []).map(ensureSegmentElements)),
+        }))
+      )
 
       const quiz = scriptData.quiz_scene
 
@@ -640,67 +668,58 @@ Return this exact JSON shape:
               imagePrompt: seg.image_prompt,
               animation:   seg.animation,
               // AUTO-DESIGN: Each welcome segment gets a designed slide
-              slideDesign: buildWelcomeSegmentDesign(seg, mod.title),
+              slideDesign: buildWelcomeSegmentDesign(seg, mod.title, legacySlide.subtitle),
             },
           })
         }
         scenes.push(welcomeScene)
       }
 
-      // Scenes N — content (#30: bullets already guaranteed above).
-      // No fixed cap: scene count scales with however many distinct sub-topics
-      // the LLM found in the source material (removal of pagination limits, #6).
+      // Scenes N — content. No fixed cap on scene count (however many distinct
+      // sub-topics the LLM found), and no fixed cap on points per scene either.
+      // Each point is its OWN segment — own narration, own single-point slide,
+      // own avatar render — never bundled together (see ContentSceneOutput doc
+      // comment above and the prompt's content_scenes instructions below).
       for (const s of contentScenes) {
+        const points = s.segments.length ? s.segments : [{
+          segment_type: 'content' as const, text: s.title, elements: [], slide_title: s.title,
+        }]
+        const sceneDuration = points.reduce((sum, seg) => sum + Math.max(3, seg.text.split(' ').length / 2.5), 0)
         const scene = await prisma.scene.create({
           data: {
             moduleId:           mod.id,
             orderIndex:         orderIndex++,
             sceneKind:          'content',
-            scriptContent:      s.script_content,
-            slideDeckContent:   JSON.stringify(s.slide_content ?? {}),
+            scriptContent:      points.map(seg => seg.text).join(' '),
+            slideDeckContent:   JSON.stringify(contentLegacySlide({ ...s, segments: points })),
             visualPrompt:       s.visual_prompt,
             textAnimationType:  s.text_animation_type ?? 'bullet-reveal',
             presenterPosition:  'bottom-right',
-            durationSeconds:    s.duration_seconds,
+            durationSeconds:    sceneDuration,
             status:             'draft',
           },
         })
-        const bulletsBlock = s.slide_content?.blocks?.find(b => b.type === 'bullets')
-        await prisma.sceneSegment.create({
-          data: {
-            sceneId:     scene.id,
-            orderIndex:  0,
-            segmentType: 'content',
-            text:        s.script_content,
-            slideTitle:  s.slide_content?.title,
-            elements: JSON.stringify([
-              { type: 'title', text: s.slide_content?.title },
-              ...(bulletsBlock?.items ?? []).map(it => ({ type: 'bullet', text: it.text, animation: 'staggered-bullets' })),
-            ]),
-            imagePrompt: s.slide_content?.imagePrompt,
-            animation:   s.text_animation_type === 'static' ? 'fade-in' : undefined,
-            // AUTO-DESIGN: Create a designed slide for each content segment.
-            // subtitle MUST come from the LLM's actual generated key insight
-            // (s.slide_content.subtitle) — a hardcoded placeholder here used
-            // to silently override the real generated content every time.
-            slideDesign: JSON.stringify({
-              layout: 'bullets',
-              theme: 'academic',
-              title: s.slide_content?.title || 'Content',
-              subtitle: s.slide_content?.subtitle || '',
-              blocks: [{
-                type: 'bullets',
-                // Keep the LLM's own level (it already distinguishes main
-                // points from supporting details per the generation prompt —
-                // see the "level": 1/2 examples above). Forcing every item
-                // after the first to level 2 by index was flattening
-                // legitimate main points into sub-points.
-                items: (bulletsBlock?.items ?? []).map((it): SlideBullet => ({ text: it.text, level: it.level === 2 ? 2 : 1 }))
-              }],
-              imagePrompt: s.slide_content?.imagePrompt,
-            }),
-          },
-        })
+        for (let i = 0; i < points.length; i++) {
+          const point = points[i]
+          await prisma.sceneSegment.create({
+            data: {
+              sceneId:     scene.id,
+              orderIndex:  i,
+              segmentType: 'content',
+              text:        point.text,
+              slideTitle:  point.slide_title,
+              elements: JSON.stringify(point.elements?.length ? point.elements : [
+                { type: 'title', text: s.title },
+                { type: 'bullet', text: point.slide_title || point.text, animation: 'staggered-bullets' },
+              ]),
+              imagePrompt: point.image_prompt,
+              animation:   point.animation ?? (s.text_animation_type === 'static' ? 'fade-in' : undefined),
+              // AUTO-DESIGN: each point gets its own single-bullet slide,
+              // titled with the scene's shared topic — see buildContentPointDesign.
+              slideDesign: buildContentPointDesign(point, s.title),
+            },
+          })
+        }
         scenes.push(scene)
       }
 

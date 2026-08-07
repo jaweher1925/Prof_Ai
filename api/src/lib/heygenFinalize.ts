@@ -20,6 +20,7 @@ import { InvocationContext } from '@azure/functions'
 import { prisma } from './db'
 import { compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl } from './ffmpegVideo'
 import { downloadToUploads } from './heygenAvatar'
+import { deleteOldUpload } from './uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
@@ -92,6 +93,16 @@ export async function finalizeHeyGenJob(opts: {
         avatarPosition?: { x: number; y: number; width: number } | null
         preview?: boolean
         sceneId?: string
+        // The scene's avatarVideoUrl from BEFORE this regenerate was queued
+        // (generateHeyGenAvatar.ts overwrote it with the `heygen:<id>`
+        // sentinel the moment the job was submitted, so this sidecar is the
+        // only place that URL still exists). Deleted below only once the new
+        // composite has actually landed — never eagerly — so a job that ends
+        // up failing doesn't leave the scene with no video AND no file.
+        oldAvatarVideoUrl?: string | null
+        // See generateHeyGenAvatar.ts's sidecar write — whether this clip was
+        // rendered on the chroma-key green and needs keying out here.
+        chromaKey?: boolean
       }
 
       // Already finalized by the other path (poll vs webhook race) — don't
@@ -115,7 +126,7 @@ export async function finalizeHeyGenJob(opts: {
       const basePath = localPathFromUploadUrl(meta.slideVideoUrl)
       if (basePath) {
         try {
-          const finalPath = await overlayAvatarOnVideo(basePath, avatarPath, meta.avatarPosition)
+          const finalPath = await overlayAvatarOnVideo(basePath, avatarPath, meta.avatarPosition, meta.chromaKey)
           finalUrl = `/api/uploads/${parse(finalPath).base}`
           context.log(`[heygenFinalize] scene ${meta.sceneId}: async avatar composited onto slide video after ${elapsedMin}min`)
         } catch (e: any) {
@@ -133,6 +144,9 @@ export async function finalizeHeyGenJob(opts: {
           where: { id: meta.sceneId },
           data: { avatarVideoUrl: finalUrl, status: 'completed' },
         })
+        // New composite is safely persisted — now it's safe to drop the file
+        // the previous regenerate left behind.
+        deleteOldUpload(meta.oldAvatarVideoUrl, finalUrl)
       }
       try { unlinkSync(sidecarPath) } catch { /* best-effort cleanup */ }
 

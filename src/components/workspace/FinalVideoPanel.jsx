@@ -10,7 +10,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { modulesService } from '@/services/modules'
 import { scenesService } from '@/services/scenes'
 import { agentsService } from '@/services/agents'
-import { Film, Download, CheckCircle, Loader2, Package, Sparkles } from 'lucide-react'
+import { Film, Download, CheckCircle, Loader2, Package, Sparkles, AlertCircle, RefreshCw } from 'lucide-react'
 import StageHeader from '@/components/workspace/StageHeader'
 import Spinner from '@/components/ui/Spinner'
 
@@ -29,6 +29,21 @@ export default function FinalVideoPanel({ project }) {
   const [busy, setBusy] = useState(null)
   const [genError, setGenError] = useState(null)
   const [genStatus, setGenStatus] = useState(null)
+  // The backend can render a scene's video WITHOUT the avatar and still
+  // report success (no avatar selected, no HeyGen key, avatar overlay threw,
+  // etc.) — it returns WHY via `avatar_warning` on that response, but this
+  // panel used to just discard it, so a module could finish and look done
+  // while quietly missing its presenter with zero explanation ("no avatar in
+  // the vd"). Collected per-run and shown as a dismissible notice, same
+  // pattern already used in Visual Design's scene preview.
+  const [avatarWarnings, setAvatarWarnings] = useState([])
+  // A scene's HeyGen render can fail outright (not just render avatar-less) —
+  // e.g. "Insufficient credit", a rejected voice/avatar, a clip too long.
+  // This used to be swallowed with only a console.error, so the UI showed no
+  // sign anything went wrong until the later merge step failed with a vague
+  // "5 scenes don't have a rendered video" message. Surface the real
+  // per-scene reason(s) as soon as they happen.
+  const [sceneErrors, setSceneErrors] = useState([])
   // Fast preview = skip HeyGen lip-sync entirely and render slide + narration
   // (voice-only) with ffmpeg. A few seconds per clip instead of ~2 min, so you
   // can check layout/timing quickly. The real export keeps full lip-sync.
@@ -46,7 +61,13 @@ export default function FinalVideoPanel({ project }) {
         // hammering the same dead job for 15 minutes (the "takes too much time"
         // symptom: a failed intro clip was polled hundreds of times).
         if (r?.status === 'failed' || r?.status === 'error') {
-          return reject(new Error('HeyGen could not render this scene (it may be too long, or the voice/avatar was rejected)'))
+          // The backend forwards HeyGen's actual failure reason as `r.error`
+          // (e.g. "Insufficient credit. This operation requires 'api'
+          // credits.") — this used to be discarded in favor of a generic
+          // guess ("too long, or rejected"), which sent people chasing scene
+          // content/length when the real cause was account credits. Show the
+          // real reason when HeyGen gives us one.
+          return reject(new Error(r?.error || 'HeyGen could not render this scene (it may be too long, or the voice/avatar was rejected)'))
         }
         setTimeout(() => tick(n + 1), 5000)
       } catch (e) { reject(e) }
@@ -59,7 +80,12 @@ export default function FinalVideoPanel({ project }) {
   // pending job, so it doesn't count as done.
   const isRendered = (v) => !!v && !String(v).startsWith('heygen:')
 
-  const generate = async (ids, label) => {
+  // `force` re-renders EVERY scene's avatar clip even if one already exists —
+  // used by the "Regenerate" button on an already-compiled module, so you can
+  // test a fix (e.g. a casting/avatar change) without deleting anything by
+  // hand first. Without it, generate() only fills in scenes that are still
+  // missing a clip, so re-clicking Generate on a finished module was a no-op.
+  const generate = async (ids, label, force = false) => {
     if (busy) return
     const useAvatar = !fastPreview
     // Lip-sync render needs a chosen presenter + voice. Fast preview is
@@ -72,7 +98,9 @@ export default function FinalVideoPanel({ project }) {
       setGenError('Choose a voice in Casting settings before generating.')
       return
     }
-    setBusy(label); setGenError(null); setGenStatus(null)
+    setBusy(label); setGenError(null); setGenStatus(null); setAvatarWarnings([]); setSceneErrors([])
+    const warningsSeen = new Set()
+    const errorsSeen = new Set()
     try {
       // Render per WHOLE SCENE (no segment_id). This is critical: passing a
       // segment_id puts the backend in single-part PREVIEW mode, which renders
@@ -84,7 +112,7 @@ export default function FinalVideoPanel({ project }) {
       // skip scenes that already have a finished clip.
       const perModule = await Promise.all(ids.map(async (id) => {
         const scenes = await scenesService.listByModule(id).catch(() => [])
-        const pend = scenes.filter(sc => fastPreview || !isRendered(sc.avatarVideoUrl))
+        const pend = scenes.filter(sc => fastPreview || force || !isRendered(sc.avatarVideoUrl))
         return { id, scenes: pend }
       }))
 
@@ -111,11 +139,27 @@ export default function FinalVideoPanel({ project }) {
             try {
               const r = await agentsService.runHeyGenAvatar(sc.id, project.defaultAvatarId, project.defaultVoiceId, useAvatar)
               submitted++; bump()
+              // Success response but no avatar actually made it in (missing
+              // avatar/key/audio, or the overlay itself failed) — the render
+              // still "succeeds" with a slide-only clip, so this is the ONLY
+              // signal that happened. Collect it instead of dropping it.
+              if (r?.avatar_warning && !warningsSeen.has(r.avatar_warning)) {
+                warningsSeen.add(r.avatar_warning)
+                setAvatarWarnings(Array.from(warningsSeen))
+              }
               if (r?.video_id) {
                 pollPromises.push(
                   pollUntilDone(r.video_id, sc.id)
                     .then(() => { finished++; bump() })
-                    .catch(e => console.error('poll failed', sc.id, e))
+                    .catch(e => {
+                      console.error('poll failed', sc.id, e)
+                      finished++; bump()
+                      const msg = e?.message || 'HeyGen render failed for a scene.'
+                      if (!errorsSeen.has(msg)) {
+                        errorsSeen.add(msg)
+                        setSceneErrors(Array.from(errorsSeen))
+                      }
+                    })
                 )
               } else { finished++; bump() }
             } catch (e) { console.error('submit failed', sc.id, e); submitted++; bump() }
@@ -168,7 +212,7 @@ export default function FinalVideoPanel({ project }) {
       const res = await agentsService.exportSCORM(project.id)
       setExportUrl(res?.url || res?.download_url || res?.scorm_url || null)
     } catch (e) {
-      setExportError('Export failed — make sure every module has been generated in Video Editing.')
+      setExportError('Export failed — make sure every module has been generated in Module Editing.')
     } finally {
       setExporting(false)
     }
@@ -181,7 +225,7 @@ export default function FinalVideoPanel({ project }) {
 
   return (
     <div className="p-6 w-full max-w-3xl mx-auto pa-page-enter space-y-5">
-      <StageHeader icon={Film} title="Final Video" subtitle="Generate the finished video for each module, then play and download" />
+      <StageHeader icon={Film} title="Final Video" subtitle="Generate the finished video for each module, then play and download" compact />
 
       {ordered.length > 0 && (
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -212,6 +256,29 @@ export default function FinalVideoPanel({ project }) {
       )}
       {genError && <p className="text-[11px] text-red-500">{genError}</p>}
 
+      {sceneErrors.length > 0 && (
+        <div className="flex items-start gap-1.5 px-3 py-2.5 rounded-lg bg-red-500/10 border border-red-500/25">
+          <AlertCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0 space-y-0.5">
+            {sceneErrors.map((w, i) => (
+              <p key={i} className="text-[11px] text-red-700 dark:text-red-300">{w}</p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {avatarWarnings.length > 0 && (
+        <div className="flex items-start gap-1.5 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0 space-y-0.5">
+            {avatarWarnings.map((w, i) => (
+              <p key={i} className="text-[11px] text-amber-700 dark:text-amber-300">{w}</p>
+            ))}
+          </div>
+          <button onClick={() => setAvatarWarnings([])} className="text-amber-500/70 hover:text-amber-700 dark:hover:text-amber-300 text-sm leading-none flex-shrink-0">×</button>
+        </div>
+      )}
+
       {ordered.length === 0 ? (
         <div className="p-6 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 text-sm text-slate-500 dark:text-slate-400 text-center">
           No modules yet — generate scripts first.
@@ -226,10 +293,17 @@ export default function FinalVideoPanel({ project }) {
                   <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400 text-sm font-bold flex-shrink-0">{i + 1}</div>
                   <p className="text-sm font-semibold text-slate-900 dark:text-white truncate flex-1">{mod.title || `Module ${i + 1}`}</p>
                   {ready ? (
-                    <a href={mod.fullVideoUrl} download target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors flex-shrink-0">
-                      <Download className="w-3.5 h-3.5" /> Download
-                    </a>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <a href={mod.fullVideoUrl} download target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                        <Download className="w-3.5 h-3.5" /> Download
+                      </a>
+                      <button onClick={() => generate([mod.id], mod.id, true)} disabled={!!busy}
+                        title="Re-render every scene's avatar and recompile this module — use this to test a change (e.g. a new avatar/voice)"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-50 transition-colors">
+                        {busy === mod.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Regenerate
+                      </button>
+                    </div>
                   ) : (
                     <button onClick={() => generate([mod.id], mod.id)} disabled={!!busy}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition-colors flex-shrink-0">
@@ -264,7 +338,7 @@ export default function FinalVideoPanel({ project }) {
               Finalize course {allReady && <CheckCircle className="w-4 h-4 text-emerald-500" />}
             </p>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {allReady ? 'All modules are ready. Export the finished course package.' : 'Generate every module in Video Editing first.'}
+              {allReady ? 'All modules are ready. Export the finished course package.' : 'Generate every module in Module Editing first.'}
             </p>
             {exportError && <p className="text-[11px] text-red-500 mt-1">{exportError}</p>}
             {exportUrl && <a href={exportUrl} download className="text-[11px] text-indigo-600 dark:text-indigo-400 underline mt-1 inline-block">Download course package</a>}

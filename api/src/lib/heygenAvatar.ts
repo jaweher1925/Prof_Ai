@@ -33,6 +33,39 @@ const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
 const HEYGEN_API = 'https://api.heygen.com'
 
+/** Chroma-key green used to render a HeyGen avatar clip when the project's
+ *  Avatar Background is set to "Transparent". HeyGen's v3 /v3/videos API only
+ *  documents 'color' and 'image' background types — there's no real
+ *  transparent option — and the compositor (overlayAvatarOnVideo) used to
+ *  just overlay a plain rectangular crop with no keying at all. Picking
+ *  "Transparent" therefore silently fell back to a solid navy box (reported:
+ *  "background transparency did not work — there's still a [visible] box").
+ *  Fix: render on this specific, fully-saturated green instead — essentially
+ *  never appears in skin, hair, or everyday clothing — then key it out to
+ *  real per-pixel alpha in overlayAvatarOnVideo so only the presenter shows
+ *  through onto the slide underneath. */
+export const AVATAR_CHROMA_KEY_HEX = '#00FF00'
+
+/** Parses the project's saved avatar_background JSON and decides what to
+ *  actually send HeyGen (only 'color'/'image' are valid) plus whether the
+ *  result needs chroma-keying afterward. Shared by createAvatarVideo (the
+ *  HeyGen request body) and startAvatarClipJob (which needs to know
+ *  chromaKey on a cache HIT too, without re-deriving it from a network call). */
+function resolveAvatarBackground(raw?: string | null): { heygenBackground: { type: string; value?: string }; chromaKey: boolean } {
+  let requested: any = null
+  try { if (raw) requested = JSON.parse(raw) } catch { /* keep null — falls through to default below */ }
+
+  if (requested?.type === 'transparent') {
+    return { heygenBackground: { type: 'color', value: AVATAR_CHROMA_KEY_HEX }, chromaKey: true }
+  }
+  const ALLOWED_BG = ['color', 'image']
+  let bg = (requested && typeof requested === 'object' && ALLOWED_BG.includes(requested.type))
+    ? requested
+    : { type: 'color', value: '#0F172A' }
+  if (bg.type === 'color' && !bg.value) bg = { ...bg, value: '#0F172A' }
+  return { heygenBackground: bg, chromaKey: false }
+}
+
 function apiKey(): string {
   const key = process.env.HEYGEN_API_KEY
   if (!key) throw new Error('HEYGEN_API_KEY not configured')
@@ -138,20 +171,7 @@ export async function createAvatarVideo(opts: {
   background?: string | null  // JSON string {"type":"color","value":"#1E293B"}
   callbackId?: string | null  // echoed back in the webhook payload — pass sceneId for traceability
 }): Promise<string> {
-  let background: any = { type: 'color', value: '#0F172A' }
-  try { if (opts.background) background = JSON.parse(opts.background) } catch { /* keep default */ }
-
-  // v3 /v3/videos only documents 'color' and 'image' background types for avatar videos
-  // (no 'transparent', no 'video'). The avatar is composited as a solid cropped
-  // picture-in-picture box locally anyway (overlayAvatarOnVideo does no chroma-keying),
-  // so real transparency isn't achievable through HeyGen here — coerce anything else to
-  // a solid color HeyGen accepts instead of a 400.
-  const ALLOWED_BG = ['color', 'image']
-  if (!background || typeof background !== 'object' || !ALLOWED_BG.includes(background.type)) {
-    background = { type: 'color', value: (background && background.value) || '#0F172A' }
-  } else if (background.type === 'color' && !background.value) {
-    background.value = '#0F172A'
-  }
+  const { heygenBackground: background } = resolveAvatarBackground(opts.background)
 
   // v2's `avatar_style: 'closeUp' | 'normal'` framing control has no documented equivalent
   // in the v3 /v3/videos schema (type: avatar / audio_asset_id path). Rather than guess at
@@ -163,21 +183,63 @@ export async function createAvatarVideo(opts: {
   }
 
   const callbackUrl = publicCallbackUrl()
-  const res = await fetch(`${HEYGEN_API}/v3/videos`, {
+  const requestBody = {
+    type: 'avatar',
+    avatar_id: opts.avatarId,
+    audio_asset_id: opts.audioAssetId,
+    background,
+    aspect_ratio: '16:9',
+    // CORRECTION (2026-08-07): briefly "fixed" this to `dimension: { width,
+    // height }` based on a web search claiming v3 uses that shape instead of
+    // a resolution string — that was wrong. HeyGen's actual v3 schema for
+    // this endpoint rejects `dimension` outright: 400 invalid_parameter,
+    // "Extra inputs are not permitted" (param: "dimension"). Meanwhile
+    // `resolution: '720p'` has never once errored across this whole
+    // integration — it's the correct field, confirmed empirically rather
+    // than by (apparently outdated/wrong) docs. Reverted. Lesson: trust the
+    // API's own error responses over search results when they disagree —
+    // this endpoint clearly DOES strictly validate unknown fields (see the
+    // "Extra inputs are not permitted" wording), so if `resolution` were
+    // wrong it would 400 too, and it never has.
+    resolution: '720p',
+    ...(callbackUrl ? { callback_url: callbackUrl } : {}),
+    ...(opts.callbackId ? { callback_id: opts.callbackId } : {}),
+  }
+
+  // The avatar picker (listHeyGenAvatars) pulls its catalog from HeyGen's
+  // broad v2 /v2/avatars list (stock + talking-photo avatars) — but /v3/videos
+  // defaults to the "avatar_iv" engine when `engine` is omitted, and Avatar IV
+  // only works with avatars specifically built as Digital Twin/Photo Avatar
+  // "looks" (see GET /v3/avatars/looks/{id}.supported_api_engines). Almost
+  // none of the v2 catalog qualifies, so most avatars 400 with "This video
+  // avatar does not support Avatar IV video generation" ("no avatar in the
+  // vd", reported 2026-08-07). Avatar III is the older, broadly-compatible
+  // engine that works with regular avatar_ids — request it explicitly instead
+  // of relying on the (incompatible-for-this-catalog) default, with a single
+  // retry on the other engine below in case a specific avatar goes the other
+  // way. Only revisit this properly (e.g. per-avatar engine detection via
+  // /v3/avatars/looks) if the picker starts offering real Digital Twin looks.
+  // IMPORTANT: `engine` is an OBJECT ({ type: "avatar_iii" }), not a bare string —
+  // sending a string 400s with "Input should be a valid dictionary or object to
+  // extract fields from" (param: "engine"), reported 2026-08-07. Verified against
+  // HeyGen's docs (developers.heygen.com/models): engine: { type: "avatar_iv" |
+  // "avatar_v" | "avatar_iii" }.
+  const attempt = async (engineType: string) => fetch(`${HEYGEN_API}/v3/videos`, {
     method: 'POST',
     headers: { 'x-api-key': apiKey(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      type: 'avatar',
-      avatar_id: opts.avatarId,
-      audio_asset_id: opts.audioAssetId,
-      background,
-      aspect_ratio: '16:9',
-      resolution: '720p',
-      ...(callbackUrl ? { callback_url: callbackUrl } : {}),
-      ...(opts.callbackId ? { callback_id: opts.callbackId } : {}),
-    }),
+    body: JSON.stringify({ ...requestBody, engine: { type: engineType } }),
   })
-  const bodyText = await res.text()
+
+  let res = await attempt('avatar_iii')
+  let bodyText = await res.text()
+  // Some avatars go the other way (built only for IV, reject III) — retry
+  // once with the other engine before giving up, instead of failing an
+  // avatar that actually does work, just not on the engine we guessed first.
+  if (!res.ok && /avatar iii|avatar_iii/i.test(bodyText)) {
+    console.warn(`[heygenAvatar] avatar_iii rejected for ${opts.avatarId}, retrying with avatar_iv: ${bodyText.slice(0, 200)}`)
+    res = await attempt('avatar_iv')
+    bodyText = await res.text()
+  }
   if (!res.ok) {
     throw new Error(`HeyGen video generate failed (${res.status}): ${bodyText.slice(0, 300)}`)
   }
@@ -280,10 +342,16 @@ export async function startAvatarClipJob(opts: {
    *  of truth for what to do when the job completes. */
   callbackId?: string | null
 }): Promise<
-  | { cached: true; avatarPath: string }
-  | { cached: false; videoId: string; cachePath: string }
+  | { cached: true; avatarPath: string; chromaKey: boolean }
+  | { cached: false; videoId: string; cachePath: string; chromaKey: boolean }
 > {
   const audioPath = await concatAudioFiles(opts.audioPaths)
+  // Derived up front (cheap, no network) so both the cache-hit and cache-miss
+  // returns below agree on whether the clip needs chroma-keying — the cached
+  // file itself was rendered under the same avatarBackground (it's part of
+  // the cache key just below), so this is safe to compute independently of
+  // whatever createAvatarVideo would separately resolve on a miss.
+  const { chromaKey } = resolveAvatarBackground(opts.avatarBackground)
 
   const hasher = createHash('md5')
   for (const f of (opts.cacheKeyFiles?.length ? opts.cacheKeyFiles : [audioPath])) {
@@ -298,7 +366,7 @@ export async function startAvatarClipJob(opts: {
 
   if (existsSync(cachePath)) {
     console.log(`[heygenAvatar] Cache hit — reusing avatar clip ${cachePath} (skipping HeyGen render)`)
-    return { cached: true, avatarPath: cachePath }
+    return { cached: true, avatarPath: cachePath, chromaKey }
   }
 
   const assetId = await uploadAudioAsset(audioPath)
@@ -310,7 +378,7 @@ export async function startAvatarClipJob(opts: {
     callbackId: opts.callbackId,
   })
   console.log(`[heygenAvatar] Submitted async avatar job ${videoId} (not waiting)`)
-  return { cached: false, videoId, cachePath }
+  return { cached: false, videoId, cachePath, chromaKey }
 }
 
 /** Full pipeline: TTS audio files → local path of the rendered avatar MP4.
