@@ -14,13 +14,13 @@ async function meHandler(request: HttpRequest, context: InvocationContext): Prom
   // The LOCAL_DEV mock user (see api/src/lib/auth.ts) has no real row in the
   // users table — return it as-is instead of a DB lookup that would 404.
   if (swaUser.identityProvider === 'dev') {
-    return { status: 200, jsonBody: { user: { id: swaUser.userId, email: swaUser.userDetails, name: 'Local Dev' } } }
+    return { status: 200, jsonBody: { user: { id: swaUser.userId, email: swaUser.userDetails, name: 'Local Dev', role: swaUser.appRole || 'admin' } } }
   }
 
   try {
     const user = await prisma.user.findUnique({ where: { id: swaUser.userId } })
     if (!user) return { status: 401, jsonBody: { error: 'Unauthenticated' } }
-    return { status: 200, jsonBody: { user: { id: user.id, email: user.email, name: user.name } } }
+    return { status: 200, jsonBody: { user: { id: user.id, email: user.email, name: user.name, role: user.role } } }
   } catch (e) {
     context.error('me error:', e)
     return { status: 500, jsonBody: { error: (e as any)?.message || 'Internal error' } }

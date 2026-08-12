@@ -170,7 +170,7 @@ export async function createAvatarVideo(opts: {
   avatarStyle?: string | null
   background?: string | null  // JSON string {"type":"color","value":"#1E293B"}
   callbackId?: string | null  // echoed back in the webhook payload — pass sceneId for traceability
-}): Promise<string> {
+}): Promise<{ videoId: string; engineUsed: 'avatar_iii' | 'avatar_iv' }> {
   const { heygenBackground: background } = resolveAvatarBackground(opts.background)
 
   // v2's `avatar_style: 'closeUp' | 'normal'` framing control has no documented equivalent
@@ -230,15 +230,23 @@ export async function createAvatarVideo(opts: {
     body: JSON.stringify({ ...requestBody, engine: { type: engineType } }),
   })
 
+  let engineUsed: 'avatar_iii' | 'avatar_iv' = 'avatar_iii'
   let res = await attempt('avatar_iii')
   let bodyText = await res.text()
   // Some avatars go the other way (built only for IV, reject III) — retry
   // once with the other engine before giving up, instead of failing an
   // avatar that actually does work, just not on the engine we guessed first.
+  // NOTE: this fallback isn't just a compatibility shim — it's a real cost
+  // jump. Per HeyGen's pricing (developers.heygen.com/docs/pricing), Avatar
+  // III is $0.0167–0.0433/sec depending on avatar type, while Avatar IV is
+  // $0.05–0.0667/sec — roughly 2-4x more expensive for the exact same clip.
+  // Callers surface `engineUsed` (see startAvatarClipJob) so this cost bump
+  // is visible instead of a silent per-render cost multiplier.
   if (!res.ok && /avatar iii|avatar_iii/i.test(bodyText)) {
-    console.warn(`[heygenAvatar] avatar_iii rejected for ${opts.avatarId}, retrying with avatar_iv: ${bodyText.slice(0, 200)}`)
+    console.warn(`[heygenAvatar] avatar_iii rejected for ${opts.avatarId}, retrying with avatar_iv (2-4x costlier per HeyGen's pricing): ${bodyText.slice(0, 200)}`)
     res = await attempt('avatar_iv')
     bodyText = await res.text()
+    engineUsed = 'avatar_iv'
   }
   if (!res.ok) {
     throw new Error(`HeyGen video generate failed (${res.status}): ${bodyText.slice(0, 300)}`)
@@ -247,8 +255,8 @@ export async function createAvatarVideo(opts: {
   try { videoId = JSON.parse(bodyText)?.data?.video_id } catch { /* fall through to error below */ }
   if (!videoId) throw new Error(`HeyGen video generate: no video_id in response: ${bodyText.slice(0, 300)}`)
 
-  console.log(`[heygenAvatar] Created avatar video job ${videoId} (v3)${callbackUrl ? ' with webhook callback' : ' (polling only — PUBLIC_API_BASE_URL not set)'}`)
-  return videoId
+  console.log(`[heygenAvatar] Created avatar video job ${videoId} (v3, engine=${engineUsed})${callbackUrl ? ' with webhook callback' : ' (polling only — PUBLIC_API_BASE_URL not set)'}`)
+  return { videoId, engineUsed }
 }
 
 /** GET /v3/videos/{video_id} — the v3 replacement for v1's /v1/video_status.get.
@@ -343,7 +351,7 @@ export async function startAvatarClipJob(opts: {
   callbackId?: string | null
 }): Promise<
   | { cached: true; avatarPath: string; chromaKey: boolean }
-  | { cached: false; videoId: string; cachePath: string; chromaKey: boolean }
+  | { cached: false; videoId: string; cachePath: string; chromaKey: boolean; engineUsed: 'avatar_iii' | 'avatar_iv' }
 > {
   const audioPath = await concatAudioFiles(opts.audioPaths)
   // Derived up front (cheap, no network) so both the cache-hit and cache-miss
@@ -370,15 +378,15 @@ export async function startAvatarClipJob(opts: {
   }
 
   const assetId = await uploadAudioAsset(audioPath)
-  const videoId = await createAvatarVideo({
+  const { videoId, engineUsed } = await createAvatarVideo({
     avatarId: opts.avatarId,
     audioAssetId: assetId,
     avatarStyle: opts.avatarStyle,
     background: opts.avatarBackground,
     callbackId: opts.callbackId,
   })
-  console.log(`[heygenAvatar] Submitted async avatar job ${videoId} (not waiting)`)
-  return { cached: false, videoId, cachePath, chromaKey }
+  console.log(`[heygenAvatar] Submitted async avatar job ${videoId} (not waiting, engine=${engineUsed})`)
+  return { cached: false, videoId, cachePath, chromaKey, engineUsed }
 }
 
 /** Full pipeline: TTS audio files → local path of the rendered avatar MP4.
@@ -417,7 +425,7 @@ export async function generateAvatarClip(opts: {
   }
 
   const assetId = await uploadAudioAsset(audioPath)
-  const videoId = await createAvatarVideo({
+  const { videoId } = await createAvatarVideo({
     avatarId: opts.avatarId,
     audioAssetId: assetId,
     avatarStyle: opts.avatarStyle,

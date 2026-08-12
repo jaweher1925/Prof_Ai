@@ -17,6 +17,14 @@ export interface SessionPayload {
   sub: string    // user id
   email: string
   name?: string | null
+  // "professor" | "admin" — embedded in the JWT itself (not just looked up
+  // fresh from the DB on every request) so requireAdmin() can check it
+  // without an extra query on every single admin-route hit. Session tokens
+  // last 30 days (SESSION_MAX_AGE_SEC below), so a role change (promote/
+  // demote) won't take effect for an already-logged-in user until they log
+  // in again — acceptable for this app's scale, but worth knowing if a
+  // "revoke admin immediately" requirement ever comes up.
+  role?: string
 }
 
 export function signSession(payload: SessionPayload): string {

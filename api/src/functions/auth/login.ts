@@ -26,10 +26,10 @@ async function loginHandler(request: HttpRequest, context: InvocationContext): P
     const valid = await bcrypt.compare(password, user.passwordHash)
     if (!valid) return unauth()
 
-    const token = signSession({ sub: user.id, email: user.email, name: user.name })
+    const token = signSession({ sub: user.id, email: user.email, name: user.name, role: user.role })
     return {
       status: 200,
-      jsonBody: { user: { id: user.id, email: user.email, name: user.name } },
+      jsonBody: { user: { id: user.id, email: user.email, name: user.name, role: user.role } },
       headers: { 'Set-Cookie': buildSessionCookie(token) },
     }
   } catch (e) {

@@ -95,9 +95,26 @@ export const agentsService = {
       scene_id: sceneId,
     }),
 
-  /** Concatenate every scene video in a module into one full module video */
-  runMergeModuleVideo: (moduleId) =>
-    apiClient.post('/mergeModuleVideo', { module_id: moduleId }),
+  /** Batched avatar rendering (#46) — bundles every listed scene's narration
+   *  into ONE HeyGen job instead of one job per scene, cutting total fixed
+   *  per-job overhead. Pass sceneIds to only batch specific (e.g.
+   *  not-yet-done) scenes; omit to batch every scene in the module. Returns
+   *  either {status:'completed'} right away (rare, only on a full cache hit)
+   *  or {video_id, status:'rendering'} to poll via pollHeyGen — completion
+   *  means every scene in the batch has its own avatarVideoUrl set. */
+  runGenerateModuleAvatarBatch: (moduleId, sceneIds) =>
+    apiClient.post('/generateModuleAvatarBatch', {
+      module_id: moduleId,
+      ...(sceneIds?.length ? { scene_ids: sceneIds } : {}),
+    }),
+
+  /** Concatenate every scene video in a module into one full module video.
+   *  `transitions` (optional) is keyed by scene id — the transition style
+   *  used at the boundary right after that scene, e.g. { sceneId:
+   *  {type:'fade', pauseSec:3} } — built from Module Editing's per-boundary
+   *  picker (VideoEditingPanel.jsx) plus its project-wide pause setting. */
+  runMergeModuleVideo: (moduleId, transitions) =>
+    apiClient.post('/mergeModuleVideo', { module_id: moduleId, ...(transitions ? { transitions } : {}) }),
 
   // Image Generation
 

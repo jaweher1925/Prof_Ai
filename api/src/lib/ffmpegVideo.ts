@@ -34,8 +34,16 @@ const UPLOAD_DIR = join(process.cwd(), 'uploads')
  * time, and '-threads 0' lets x264 use every core instead of its default cap.
  *
  * This was the main reason a single scene took 4+ minutes to render.
+ *
+ * `-threads` was `0` (let x264 use every core) until #46's module batch
+ * generation started running several of these ffmpeg calls CONCURRENTLY
+ * (rendering multiple scenes' slide+voice clips at once) — several
+ * processes each independently trying to claim every core fight each other
+ * for CPU instead of actually parallelizing, so raising CONCURRENCY there
+ * bought nothing. Capping each process to a fixed, modest thread count lets
+ * multiple renders genuinely run side by side.
  */
-const ENCODE_SPEED = ['-preset', 'veryfast', '-crf', '23', '-threads', '0'] as const
+const ENCODE_SPEED = ['-preset', 'veryfast', '-crf', '23', '-threads', '2'] as const
 
 const OUT_W = 1920, OUT_H = 1080
 
@@ -418,7 +426,11 @@ async function plainConcat(videoPaths: string[]): Promise<string> {
 /** Join segment clips with a crossfade transition between slides (#41).
  *  Falls back to a plain cut if any clip is too short to fade or if the
  *  xfade render fails. */
-async function concatenateVideos(videoPaths: string[]): Promise<string> {
+// Exported (in addition to being used internally by renderSegmentsToVideo)
+// so per-segment avatar rendering (generateHeyGenAvatar.ts's grouped-segment
+// path) can stitch the finished, avatar-composited segment clips together
+// with the exact same crossfade treatment used for the slide-only join.
+export async function concatenateVideos(videoPaths: string[]): Promise<string> {
   if (videoPaths.length === 0) {
     throw new Error('No videos to concatenate')
   }
@@ -597,7 +609,7 @@ export function localVideoPathFromUploadUrl(url?: string | null): string | null 
 // jump cut. This is separate from the crossfade used to join SEGMENTS
 // within one scene (concatenateVideos above), which stays smooth/quick on
 // purpose since those are parts of the same continuous scene.
-const SCENE_PAUSE_SEC = 5
+const SCENE_PAUSE_SEC = 3
 
 /** Extends a clip by holding its last frame (+ silence) for `padSec` more
  *  seconds, instead of cutting/fading straight into the next clip. */
@@ -650,6 +662,130 @@ export async function concatVideos(localPaths: string[]): Promise<string> {
   }
 }
 
+/** Concatenate several audio files into ONE track while recording each
+ *  input's [start, end] offset (seconds) within the combined result — used
+ *  to submit a SINGLE HeyGen job for a whole module's narration (#46,
+ *  batched module-level avatar rendering) instead of one job per scene, then
+ *  split the single returned avatar clip back into per-scene pieces with
+ *  trimVideo() below, using these exact offsets. */
+export async function concatAudioWithOffsets(
+  audioPaths: string[]
+): Promise<{ combinedPath: string; offsets: { start: number; end: number }[] }> {
+  const durations = await Promise.all(audioPaths.map((p) => getAudioDurationSec(p)))
+  let combinedPath: string
+  if (audioPaths.length === 1) {
+    combinedPath = audioPaths[0]
+  } else {
+    const listFile = join(UPLOAD_DIR, `${randomUUID()}_audiolist.txt`)
+    writeFileSync(listFile, audioPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'))
+    combinedPath = join(UPLOAD_DIR, `${randomUUID()}_combined_audio.mp3`)
+    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:a', 'libmp3lame', '-b:a', '128k', combinedPath])
+  }
+  let t = 0
+  const offsets = durations.map((d) => {
+    const start = t
+    t += d
+    return { start, end: t }
+  })
+  return { combinedPath, offsets }
+}
+
+/** Cuts [startSec, endSec) out of a video — used to split one long combined
+ *  avatar clip (module-level batched HeyGen job, see concatAudioWithOffsets)
+ *  back into its per-scene pieces before compositing each onto its own
+ *  scene's slide video. Re-encodes rather than stream-copying so the cut
+ *  isn't limited to the nearest keyframe. */
+export async function trimVideo(inputPath: string, startSec: number, endSec: number): Promise<string> {
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_trim.mp4`)
+  await runFfmpeg([
+    '-y',
+    '-ss', startSec.toFixed(3),
+    '-to', Math.max(endSec, startSec + 0.1).toFixed(3),
+    '-i', inputPath,
+    '-c:v', 'libx264', ...ENCODE_SPEED, '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k',
+    outPath,
+  ])
+  return outPath
+}
+
+export type SceneTransitionType = 'none' | 'fade' | 'dissolve' | 'slide'
+// Maps this app's user-facing transition names (VideoEditingPanel.jsx's
+// TRANSITIONS list) to ffmpeg's own `xfade` transition names.
+const XFADE_TYPE: Record<Exclude<SceneTransitionType, 'none'>, string> = {
+  fade: 'fadeblack',   // hold, fade to black, fade in on the next scene
+  dissolve: 'fade',    // direct crossfade, no black
+  slide: 'slideleft',
+}
+const XFADE_DURATION = 0.6
+
+/** Join two already-rendered scene clips at ONE boundary, honoring that
+ *  boundary's own chosen transition + pause — used by
+ *  mergeScenesWithTransitions below to build up a module video boundary by
+ *  boundary, since different boundaries in the same module can each have a
+ *  different transition (picked per-scene in Module Editing). */
+async function joinTwoClips(
+  aPath: string,
+  bPath: string,
+  transition: { type: SceneTransitionType; pauseSec: number }
+): Promise<string> {
+  const pauseSec = Math.max(0, transition.pauseSec ?? SCENE_PAUSE_SEC)
+  let held = aPath
+  if (pauseSec > 0) {
+    try { held = await padClipEnd(aPath, pauseSec) } catch (err: any) {
+      console.warn(`[joinTwoClips] Pause-padding failed, joining unpadded: ${err?.message?.slice(-300)}`)
+      held = aPath
+    }
+  }
+
+  if (!transition.type || transition.type === 'none') {
+    try {
+      return await plainConcat([held, bPath])
+    } catch (err: any) {
+      console.warn(`[joinTwoClips] Plain concat failed, falling back to a quick crossfade: ${err?.message?.slice(-300)}`)
+      // fall through to the crossfade path below as a last resort
+    }
+  }
+
+  const xfadeType = XFADE_TYPE[transition.type === 'none' || !transition.type ? 'dissolve' : transition.type] || 'fade'
+  try {
+    const durA = await getAudioDurationSec(held)
+    if (durA < XFADE_DURATION * 2.4) return await plainConcat([held, bPath]) // too short to crossfade
+    const outPath = join(UPLOAD_DIR, `${randomUUID()}_joined.mp4`)
+    await runFfmpeg([
+      '-y', '-i', held, '-i', bPath,
+      '-filter_complex',
+      `[0:v][1:v]xfade=transition=${xfadeType}:duration=${XFADE_DURATION}:offset=${(durA - XFADE_DURATION).toFixed(3)}[v];[0:a][1:a]acrossfade=d=${XFADE_DURATION}[a]`,
+      '-map', '[v]', '-map', '[a]',
+      '-c:v', 'libx264', ...ENCODE_SPEED, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+      outPath,
+    ])
+    return outPath
+  } catch (err: any) {
+    console.warn(`[joinTwoClips] Crossfade join failed, falling back to a plain cut: ${err?.message?.slice(-300)}`)
+    return await plainConcat([held, bPath])
+  }
+}
+
+/** Module-level merge (#45) — like concatVideos, but each scene-to-scene
+ *  boundary can have its OWN transition style + pause, matching what the
+ *  user actually picked per-boundary in Module Editing instead of always
+ *  applying one fixed hold-then-cut everywhere. `boundaries[i]` is the
+ *  transition used AFTER clipPaths[i] (so boundaries.length === clipPaths.length - 1). */
+export async function mergeScenesWithTransitions(
+  clipPaths: string[],
+  boundaries: { type: SceneTransitionType; pauseSec: number }[]
+): Promise<string> {
+  if (!clipPaths.length) throw new Error('No videos to concatenate')
+  if (clipPaths.length === 1) return clipPaths[0]
+  let acc = clipPaths[0]
+  for (let i = 1; i < clipPaths.length; i++) {
+    const boundary = boundaries[i - 1] || { type: 'none' as const, pauseSec: SCENE_PAUSE_SEC }
+    acc = await joinTwoClips(acc, clipPaths[i], boundary)
+  }
+  return acc
+}
+
 /**
  * Overlay the HeyGen talking-avatar video on the slide video (#40), sized and
  * positioned by the Visual Designer's avatar placeholder (#3, #4) — falls
@@ -665,6 +801,20 @@ export async function concatVideos(localPaths: string[]): Promise<string> {
  * The final audio track is the slide video's own TTS narration — the avatar
  * is muted (it lip-syncs the same audio anyway).
  */
+// Portrait aspect (height/width, in pixels) the avatar box is cropped to.
+// Was 16/9 (a true 9:16 portrait sliver) — HeyGen's v3 API has no framing
+// control (closeUp/normal was dropped going from v2, see createAvatarVideo's
+// comment), so its default medium-shot framing already fills a good chunk of
+// its native 16:9 frame; cropping THAT down to another 9:16-shaped box on
+// top discarded ~70% of the frame width and compounded into an extreme
+// face-only close-up ("avatar is zoomed too big", reported 2026-08-11).
+// 4/3 keeps the box portrait (taller than wide, still reads as a presenter
+// insert) while keeping meaningfully more of the original frame width.
+// VisualDesignerPanel.jsx's AVATAR_HEIGHT_RATIO must stay in sync with this
+// (it's the same ratio, folded together with the 16:9 slide's own aspect) so
+// the editor placeholder shows the same crop the render actually produces.
+const AVATAR_BOX_ASPECT = 4 / 3
+
 export async function overlayAvatarOnVideo(
   baseVideoPath: string,
   avatarVideoPath: string,
@@ -688,7 +838,7 @@ export async function overlayAvatarOnVideo(
   if (position && Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.width)) {
     const wPct = Math.max(10, Math.min(60, position.width))
     boxWPx = Math.round((OUT_W * wPct) / 100)
-    boxHPx = Math.round(boxWPx * (16 / 9)) // 9:16 portrait crop, even dims required by libx264
+    boxHPx = Math.round(boxWPx * AVATAR_BOX_ASPECT) // portrait crop, even dims required by libx264
     if (boxWPx % 2 !== 0) boxWPx += 1
     if (boxHPx % 2 !== 0) boxHPx += 1
     const centerXPx = (OUT_W * position.x) / 100

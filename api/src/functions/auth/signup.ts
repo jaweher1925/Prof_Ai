@@ -29,10 +29,10 @@ async function signupHandler(request: HttpRequest, context: InvocationContext): 
     const passwordHash = await bcrypt.hash(password, 10)
     const user = await prisma.user.create({ data: { email, passwordHash, name } })
 
-    const token = signSession({ sub: user.id, email: user.email, name: user.name })
+    const token = signSession({ sub: user.id, email: user.email, name: user.name, role: user.role })
     return {
       status: 201,
-      jsonBody: { user: { id: user.id, email: user.email, name: user.name } },
+      jsonBody: { user: { id: user.id, email: user.email, name: user.name, role: user.role } },
       headers: { 'Set-Cookie': buildSessionCookie(token) },
     }
   } catch (e) {

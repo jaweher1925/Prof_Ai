@@ -15,11 +15,14 @@
  * "done" means again.
  */
 import { join, parse } from 'path'
-import { existsSync, readFileSync, copyFileSync, unlinkSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync } from 'fs'
 import { InvocationContext } from '@azure/functions'
 import { prisma } from './db'
-import { compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl } from './ffmpegVideo'
-import { downloadToUploads } from './heygenAvatar'
+import {
+  compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl, concatenateVideos,
+  renderSegmentsToVideo, extractAvatarPosition, extractAudioTrack, trimVideo, type RenderableSegment,
+} from './ffmpegVideo'
+import { downloadToUploads, getVideoStatusV3, startAvatarClipJob } from './heygenAvatar'
 import { deleteOldUpload } from './uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
@@ -103,6 +106,10 @@ export async function finalizeHeyGenJob(opts: {
         // See generateHeyGenAvatar.ts's sidecar write — whether this clip was
         // rendered on the chroma-key green and needs keying out here.
         chromaKey?: boolean
+        // See generateHeyGenAvatar.ts's sidecar write — which HeyGen engine
+        // actually rendered this clip (cost-relevant: avatar_iv is ~2-4x
+        // pricier than avatar_iii per HeyGen's pricing docs).
+        engineUsed?: 'avatar_iii' | 'avatar_iv'
       }
 
       // Already finalized by the other path (poll vs webhook race) — don't
@@ -137,12 +144,24 @@ export async function finalizeHeyGenJob(opts: {
         avatarWarning = 'Could not locate the rendered slide video to overlay the avatar onto — rendered voice-only.'
       }
 
+      // Surface the cost-relevant engine fallback even when the composite
+      // itself succeeded — the render still cost 2-4x more than expected,
+      // and the only other place this was visible was a server log line.
+      if (meta.engineUsed === 'avatar_iv') {
+        const bump = 'This scene rendered on HeyGen\'s Avatar IV engine instead of the cheaper Avatar III (the selected avatar doesn\'t support Avatar III) — costs roughly 2-4x more per second on this clip.'
+        avatarWarning = avatarWarning ? `${avatarWarning} ${bump}` : bump
+      }
+
       // A single-part Visual Design PREVIEW must NOT be written to Scene.avatarVideoUrl
       // — that field is the full-scene video Video Editing assembles from.
       if (!meta.preview && meta.sceneId) {
         await prisma.scene.update({
           where: { id: meta.sceneId },
-          data: { avatarVideoUrl: finalUrl, status: 'completed' },
+          data: {
+            avatarVideoUrl: finalUrl,
+            status: 'completed',
+            ...(meta.engineUsed ? { avatarEngineUsed: meta.engineUsed } : {}),
+          },
         })
         // New composite is safely persisted — now it's safe to drop the file
         // the previous regenerate left behind.
@@ -221,5 +240,335 @@ export async function finalizeHeyGenJob(opts: {
     return { outcome: 'completed', sceneId: scene.id, videoUrl: finalVideoUrl, avatarWarning }
   } finally {
     finalizing.delete(videoId)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GROUPED SEGMENT JOBS (#44) — a multi-part scene's segments each get their
+// OWN HeyGen job (see generateHeyGenAvatar.ts's startGroupedSegmentRender)
+// instead of one combined job. This tracks the group sidecar
+// (heygen_group_<sceneId>.json) and is polled once per tick from
+// pollHeyGenVideo.ts whenever the video_id being polled belongs to a group —
+// it checks EVERY still-pending segment's HeyGen status (not just the one
+// video_id the frontend happens to be watching), composites any that just
+// finished, and only stitches + persists Scene.avatarVideoUrl once every
+// segment has landed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const groupFinalizing = new Set<string>()
+
+type GroupSegmentEntry =
+  | { index: number; done: true; clipPath: string | null; warning?: string }
+  | {
+      index: number; done: false; videoId: string; cachePath: string
+      segmentClipPath: string; avatarPosition: { x: number; y: number; width: number } | null; chromaKey: boolean
+    }
+  // Not yet rendered or submitted to HeyGen at all — carries everything
+  // needed to do that later (see renderAndSubmitSegment below), a few
+  // segments at a time, from inside pollSegmentGroup's own tick instead of
+  // all-at-once inside the original HTTP request (see generateHeyGenAvatar.ts
+  // startGroupedSegmentRender's comment for why that was the actual bug
+  // behind "first scene takes 4+ min and isn't even done yet").
+  | { index: number; done: false; videoId: null; segment: RenderableSegment; attempts?: number }
+
+type GroupFile = {
+  sceneId: string; moduleId: string; oldAvatarVideoUrl: string | null; createdAt: number
+  moduleTitle: string | null
+  avatarCasting: { defaultAvatarId: string; avatarStyle?: string | null; avatarBackground?: string | null }
+  segments: GroupSegmentEntry[]
+}
+
+/** Render one segment's slide+audio clip and submit its own HeyGen job (or
+ *  composite immediately on a cache hit). Pulled out of
+ *  generateHeyGenAvatar.ts so both the initial request AND every later poll
+ *  tick (pollSegmentGroup, below) can call the exact same logic — the
+ *  initial request no longer does this itself, so it returns fast. */
+export async function renderAndSubmitSegment(
+  segment: RenderableSegment,
+  moduleTitle: string | null | undefined,
+  avatarCasting: { defaultAvatarId: string; avatarStyle?: string | null; avatarBackground?: string | null },
+  sceneId: string
+): Promise<
+  | { done: true; clipPath: string }
+  | { done: false; videoId: string; cachePath: string; segmentClipPath: string; avatarPosition: { x: number; y: number; width: number } | null; chromaKey: boolean }
+> {
+  const segmentClipUrl = await renderSegmentsToVideo({ segments: [segment], moduleTitle })
+  const segmentClipPath = localPathFromUploadUrl(segmentClipUrl)
+  if (!segmentClipPath) throw new Error(`Segment ${segment.id}: rendered clip not found locally`)
+  const avatarPosition = extractAvatarPosition(segment.slideDesign)
+
+  let audioPaths: string[]
+  try {
+    audioPaths = [await extractAudioTrack(segmentClipPath)]
+  } catch {
+    const raw = localPathFromUploadUrl(segment.ttsAudioUrl)
+    audioPaths = raw ? [raw] : []
+  }
+  if (!audioPaths.length) return { done: true, clipPath: segmentClipPath }
+
+  const job = await startAvatarClipJob({
+    audioPaths,
+    avatarId: avatarCasting.defaultAvatarId,
+    avatarStyle: avatarCasting.avatarStyle,
+    avatarBackground: avatarCasting.avatarBackground,
+    cacheKeyFiles: [localPathFromUploadUrl(segment.ttsAudioUrl)].filter((p): p is string => !!p),
+    callbackId: `${sceneId}:${segment.id}`,
+  })
+
+  if (job.cached) {
+    const composited = await overlayAvatarOnVideo(segmentClipPath, job.avatarPath, avatarPosition, job.chromaKey)
+    return { done: true, clipPath: composited }
+  }
+  return { done: false, videoId: job.videoId, cachePath: job.cachePath, segmentClipPath, avatarPosition, chromaKey: job.chromaKey }
+}
+
+export async function pollSegmentGroup(
+  sceneId: string,
+  context: InvocationContext
+): Promise<
+  | { outcome: 'completed'; videoUrl: string; avatarWarning?: string }
+  | { outcome: 'processing' }
+  | { outcome: 'not_found' }
+> {
+  const groupPath = join(UPLOAD_DIR, `heygen_group_${sceneId}.json`)
+  if (!existsSync(groupPath)) return { outcome: 'not_found' }
+  // Same race guard as `finalizing` above, scoped per-scene — two poll
+  // requests landing close together must not both try to composite/stitch.
+  if (groupFinalizing.has(sceneId)) return { outcome: 'processing' }
+  groupFinalizing.add(sceneId)
+  try {
+    const group = JSON.parse(readFileSync(groupPath, 'utf8')) as GroupFile
+    const warnings: string[] = []
+    let changed = false
+
+    // Bound how much LOCAL render + HeyGen-submit work happens on a single
+    // poll tick (each one is a real ffmpeg render + a HeyGen upload) so one
+    // HTTP request never blocks for the whole scene — the rest just get
+    // picked up on the next tick, ~5s later from the frontend.
+    const NOT_SUBMITTED_PER_TICK = 2
+    let submittedThisTick = 0
+
+    for (const seg of group.segments) {
+      if (seg.done) { if (seg.warning) warnings.push(seg.warning); continue }
+
+      if (seg.videoId === null) {
+        if (submittedThisTick >= NOT_SUBMITTED_PER_TICK) continue // next tick
+        submittedThisTick++
+        try {
+          const result = await renderAndSubmitSegment(seg.segment, group.moduleTitle, group.avatarCasting, group.sceneId)
+          if (result.done) {
+            Object.assign(seg, { done: true, clipPath: result.clipPath })
+          } else {
+            Object.assign(seg, {
+              done: false, videoId: result.videoId, cachePath: result.cachePath,
+              segmentClipPath: result.segmentClipPath, avatarPosition: result.avatarPosition, chromaKey: result.chromaKey,
+            })
+            writeFileSync(
+              join(UPLOAD_DIR, `heygen_pending_${result.videoId}.json`),
+              JSON.stringify({ groupSceneId: sceneId, sceneId, createdAt: Date.now() })
+            )
+          }
+        } catch (e: any) {
+          const attempts = ((seg as any).attempts || 0) + 1
+          if (attempts >= 3) {
+            const warning = `Could not render part ${seg.index + 1} after ${attempts} attempts (${e?.message || 'unknown error'}) — that part was skipped.`
+            Object.assign(seg, { done: true, clipPath: null, warning })
+            warnings.push(warning)
+            context.warn(`[heygenFinalize] group ${sceneId}: segment ${seg.index} permanently failed after ${attempts} attempts: ${e?.message}`)
+          } else {
+            Object.assign(seg, { attempts })
+            context.warn(`[heygenFinalize] group ${sceneId}: segment ${seg.index} render/submit attempt ${attempts} failed, retrying next tick: ${e?.message}`)
+          }
+        }
+        changed = true
+        continue
+      }
+
+      let status: string, videoUrl: string | null | undefined, failureMessage: string | null | undefined
+      try {
+        const r = await getVideoStatusV3(seg.videoId)
+        status = r.status; videoUrl = r.videoUrl; failureMessage = r.failureMessage
+      } catch (e: any) {
+        // A transient status-check failure shouldn't blow up the whole poll
+        // tick — just leave this segment pending and try again next tick.
+        context.warn(`[heygenFinalize] group ${sceneId}: status check failed for segment job ${seg.videoId}: ${e?.message}`)
+        continue
+      }
+
+      if (status === 'completed' && videoUrl) {
+        try {
+          const avatarPath = await downloadToUploads(videoUrl)
+          try { copyFileSync(avatarPath, seg.cachePath) } catch { /* cache is best-effort */ }
+          const composited = await overlayAvatarOnVideo(seg.segmentClipPath, avatarPath, seg.avatarPosition, seg.chromaKey)
+          const finished: GroupSegmentEntry = { index: seg.index, done: true, clipPath: composited }
+          Object.assign(seg, finished)
+        } catch (e: any) {
+          // Compositing failed for this ONE part — fall back to its
+          // slide-only clip rather than blocking the whole scene on it.
+          const warning = `Speaking avatar rendering failed for one part (${e?.message || 'unknown error'}) — that part is voice-only.`
+          const finished: GroupSegmentEntry = { index: seg.index, done: true, clipPath: seg.segmentClipPath, warning }
+          Object.assign(seg, finished)
+          warnings.push(warning)
+        }
+        try { unlinkSync(join(UPLOAD_DIR, `heygen_pending_${seg.videoId}.json`)) } catch { /* best-effort */ }
+        changed = true
+      } else if (status === 'failed') {
+        const warning = `HeyGen could not render one part (${failureMessage || 'unknown error'}) — that part is voice-only.`
+        const finished: GroupSegmentEntry = { index: seg.index, done: true, clipPath: seg.segmentClipPath, warning }
+        Object.assign(seg, finished)
+        warnings.push(warning)
+        try { unlinkSync(join(UPLOAD_DIR, `heygen_pending_${seg.videoId}.json`)) } catch { /* best-effort */ }
+        changed = true
+      }
+      // else still pending/processing — leave as-is, checked again next tick.
+    }
+
+    const stillPending = group.segments.some(s => !s.done)
+    if (stillPending) {
+      if (changed) writeFileSync(groupPath, JSON.stringify(group))
+      return { outcome: 'processing' }
+    }
+
+    // Every segment has landed — stitch them together in original order
+    // (same crossfade join used for the old combined-audio path) and persist.
+    // A segment that permanently failed to render (see the retry/attempts
+    // handling above) has clipPath:null — skip it rather than fail the whole
+    // scene over one unlucky part.
+    const ordered = [...group.segments].sort((a, b) => a.index - b.index)
+    const clipPaths = ordered
+      .map(s => (s as Extract<GroupSegmentEntry, { done: true }>).clipPath)
+      .filter((p): p is string => !!p)
+    if (!clipPaths.length) throw new Error('Every segment in this scene failed to render — nothing to stitch together.')
+    const finalPath = await concatenateVideos(clipPaths)
+    const finalUrl = `/api/uploads/${parse(finalPath).base}`
+
+    await prisma.scene.update({
+      where: { id: group.sceneId },
+      data: { avatarVideoUrl: finalUrl, status: 'completed' },
+    })
+    deleteOldUpload(group.oldAvatarVideoUrl, finalUrl)
+    try { unlinkSync(groupPath) } catch { /* best-effort */ }
+    context.log(`[heygenFinalize] group ${sceneId}: all ${group.segments.length} segment job(s) landed, stitched into ${finalUrl}`)
+
+    return { outcome: 'completed', videoUrl: finalUrl, avatarWarning: warnings[0] }
+  } finally {
+    groupFinalizing.delete(sceneId)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MODULE-LEVEL BATCHED JOBS (#46) — built at the user's explicit request after
+// per-scene jobs (even non-blocking/progressive, above) were still too slow
+// for a whole module: N scenes = N separate fixed per-job overheads at
+// HeyGen. generateModuleAvatarBatch.ts renders every not-yet-done scene's own
+// slide+voice video locally (fast, unchanged from the normal path), then
+// concatenates ALL of their narration into ONE audio track and submits
+// exactly ONE HeyGen job for the whole batch — tracked via a
+// `heygen_modulebatch_<moduleId>.json` sidecar carrying each scene's [start,
+// end] offset in that combined timeline. This is polled here: once the ONE
+// job completes, the single returned avatar clip is downloaded ONCE, split
+// back into each scene's own piece with trimVideo(), and composited onto
+// that scene's own slide video exactly like the per-scene path does.
+//
+// Trade-off (agreed with the user before building this): unlike the grouped
+// per-segment jobs above, this is all-or-nothing — every scene in the batch
+// finishes together when the one job lands, not incrementally. Regenerating
+// ONE scene by itself still goes through the original per-scene endpoint,
+// untouched by any of this.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const moduleBatchFinalizing = new Set<string>()
+
+type ModuleBatchSceneEntry = {
+  sceneId: string
+  start: number
+  end: number
+  slideVideoUrl: string
+  avatarPosition: { x: number; y: number; width: number } | null
+  oldAvatarVideoUrl: string | null
+}
+
+type ModuleBatchFile = {
+  moduleId: string
+  videoId: string
+  cachePath?: string | null
+  chromaKey: boolean
+  createdAt: number
+  scenes: ModuleBatchSceneEntry[]
+}
+
+export async function pollModuleBatch(
+  moduleId: string,
+  context: InvocationContext
+): Promise<
+  | { outcome: 'completed'; sceneCount: number }
+  | { outcome: 'processing' }
+  | { outcome: 'failed'; error?: string }
+  | { outcome: 'not_found' }
+> {
+  const batchPath = join(UPLOAD_DIR, `heygen_modulebatch_${moduleId}.json`)
+  if (!existsSync(batchPath)) return { outcome: 'not_found' }
+  if (moduleBatchFinalizing.has(moduleId)) return { outcome: 'processing' }
+  moduleBatchFinalizing.add(moduleId)
+  try {
+    const batch = JSON.parse(readFileSync(batchPath, 'utf8')) as ModuleBatchFile
+
+    let status: string, videoUrl: string | null | undefined, failureMessage: string | null | undefined
+    try {
+      const r = await getVideoStatusV3(batch.videoId)
+      status = r.status; videoUrl = r.videoUrl; failureMessage = r.failureMessage
+    } catch (e: any) {
+      context.warn(`[heygenFinalize] module batch ${moduleId}: status check failed for job ${batch.videoId}: ${e?.message}`)
+      return { outcome: 'processing' }
+    }
+
+    if (status === 'failed') {
+      context.warn(`[heygenFinalize] module batch ${moduleId} failed${failureMessage ? `: ${failureMessage}` : ''}`)
+      await prisma.scene.updateMany({ where: { id: { in: batch.scenes.map((s) => s.sceneId) } }, data: { status: 'assets_ready' } })
+      try { unlinkSync(batchPath) } catch { /* best-effort */ }
+      try { unlinkSync(join(UPLOAD_DIR, `heygen_pending_${batch.videoId}.json`)) } catch { /* best-effort */ }
+      return { outcome: 'failed', error: failureMessage || undefined }
+    }
+    if (status !== 'completed' || !videoUrl) return { outcome: 'processing' }
+
+    const avatarPath = await downloadToUploads(videoUrl)
+    if (batch.cachePath) {
+      try { copyFileSync(avatarPath, batch.cachePath) } catch { /* cache is best-effort */ }
+    }
+
+    // Split the ONE combined clip back into each scene's own slice and
+    // composite it onto that scene's own slide video — one scene failing to
+    // split/composite falls back to its slide-only video instead of losing
+    // every OTHER scene in the batch too.
+    let doneSoFar = 0
+    for (const entry of batch.scenes) {
+      try {
+        const clipPath = await trimVideo(avatarPath, entry.start, entry.end)
+        const basePath = localPathFromUploadUrl(entry.slideVideoUrl)
+        if (!basePath) throw new Error('rendered slide video not found locally')
+        const composited = await overlayAvatarOnVideo(basePath, clipPath, entry.avatarPosition, batch.chromaKey)
+        const finalUrl = `/api/uploads/${parse(composited).base}`
+        await prisma.scene.update({ where: { id: entry.sceneId }, data: { avatarVideoUrl: finalUrl, status: 'completed' } })
+        deleteOldUpload(entry.oldAvatarVideoUrl, finalUrl)
+        doneSoFar++
+        // Per-scene marker (was previously only visible in the AGGREGATE log
+        // line after every scene finished) — search backend logs for "scene
+        // <id>" or just this module's id to watch each one land, since the
+        // UI's own grid can't show incremental progress for a batched job
+        // (see generateBatch's docs in FinalVideoPanel.jsx for why).
+        context.log(`[heygenFinalize] module batch ${moduleId}: scene ${entry.sceneId} composited (${doneSoFar}/${batch.scenes.length}) → ${finalUrl}`)
+      } catch (e: any) {
+        doneSoFar++
+        context.warn(`[heygenFinalize] module batch ${moduleId}: scene ${entry.sceneId} split/composite failed (${doneSoFar}/${batch.scenes.length}), using its slide-only video instead: ${e?.message}`)
+        await prisma.scene.update({ where: { id: entry.sceneId }, data: { avatarVideoUrl: entry.slideVideoUrl, status: 'completed' } })
+      }
+    }
+
+    try { unlinkSync(batchPath) } catch { /* best-effort */ }
+    try { unlinkSync(join(UPLOAD_DIR, `heygen_pending_${batch.videoId}.json`)) } catch { /* best-effort */ }
+    context.log(`[heygenFinalize] module batch ${moduleId}: all ${batch.scenes.length} scene(s) split + composited from one HeyGen job (${batch.videoId})`)
+    return { outcome: 'completed', sceneCount: batch.scenes.length }
+  } finally {
+    moduleBatchFinalizing.delete(moduleId)
   }
 }

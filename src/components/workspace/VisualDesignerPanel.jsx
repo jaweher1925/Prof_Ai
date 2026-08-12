@@ -16,7 +16,7 @@ import {
   BookOpen, Code, BarChart2, Cpu, Zap, Target, Globe,
   Database, Award, Star, Shield, Eye, EyeOff, Settings, AlertCircle,
   Square, Volume2, Type, LayoutGrid, Sliders, Check, User, Pencil,
-  Ban, Circle as CircleIcon, ChevronDown, Minus, Highlighter, MessageSquare
+  Ban, Circle as CircleIcon, ChevronDown, Minus, Highlighter, MessageSquare, Lock
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
@@ -97,16 +97,26 @@ const LAYER_WIDTHS = { logo:16, title:65, subtitle:65, content:65, image:35 }
 // pipeline reads server-side (api/src/lib/ffmpegVideo.ts extractAvatarPosition
 // / overlayAvatarOnVideo) so the box the user drags here is truly WYSIWYG,
 // not just a cosmetic preview. Height isn't stored — the backend derives it
-// as a 9:16 portrait crop (height = width × 16/9 in output-pixel terms),
-// which is why AVATAR_HEIGHT_RATIO below isn't a plain 16:9 — it also folds
-// in the 16:9 frame's own width:height ratio to get height-as-%-of-slide.
-const AVATAR_HEIGHT_RATIO = 256 / 81 // heightPct = widthPct * this
-// Widest the box is ever allowed to get. Because of AVATAR_HEIGHT_RATIO's
-// ~3.16x, a width past this makes the box TALLER than the slide itself
-// (100% height) — no position could ever contain it without spilling past
-// the top and bottom edges. Keeping width at or under this guarantees a
-// valid, fully-on-slide y always exists.
-const MAX_AVATAR_WIDTH = 31
+// as a portrait crop (height = width × AVATAR_BOX_ASPECT in output-pixel
+// terms), which is why AVATAR_HEIGHT_RATIO below folds in the 16:9 frame's
+// own width:height ratio to get height-as-%-of-slide.
+//
+// AVATAR_BOX_ASPECT was 16/9 (a true 9:16 portrait sliver) — HeyGen v3 has no
+// framing control (closeUp/normal was dropped vs. v2), so its default
+// medium-shot already fills a good chunk of its native 16:9 frame; cropping
+// THAT down to another 9:16 box discarded ~70% of the frame width and
+// compounded into an extreme face-only close-up ("avatar zoomed too big",
+// reported 2026-08-11). Lowered to 4/3 — still a portrait presenter box, but
+// keeps meaningfully more of the original frame. MUST match
+// ffmpegVideo.ts's AVATAR_BOX_ASPECT exactly, or this placeholder stops
+// being WYSIWYG.
+const AVATAR_BOX_ASPECT = 4 / 3
+const AVATAR_HEIGHT_RATIO = AVATAR_BOX_ASPECT * (16 / 9) // heightPct = widthPct * this
+// Widest the box is ever allowed to get. A width past this makes the box
+// TALLER than the slide itself (100% height) — no position could ever
+// contain it without spilling past the top and bottom edges. Keeping width
+// at or under this guarantees a valid, fully-on-slide y always exists.
+const MAX_AVATAR_WIDTH = Math.floor(98 / AVATAR_HEIGHT_RATIO)
 // Slightly bigger default presenter, tucked into the lower-right but NOT
 // jammed into the corner — AVATAR_BORDER_MARGIN below keeps a gap from the
 // slide edges so it reads as intentionally placed, not clipped to the border.
@@ -643,17 +653,24 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
         {/* Left: scene list — own rounded card, separated from the editor by
             real gap instead of a thin border line. */}
         <div className="w-56 flex-shrink-0 rounded-xl border border-slate-200 dark:border-gray-700 overflow-y-auto bg-slate-50 dark:bg-slate-950">
-          {scripts.map((script, vi) => (
-            <SceneGroupList key={script.id} script={script} videoIndex={vi}
-              selectedId={selected?.scene?.id} selectedSegmentId={selected?.segmentId} generating={generating}
-              onSelect={(scene, totalScenes, segmentId) => setSelected({ scene, script, totalScenes, segmentId })}
-              onDeleted={(sceneId) => setSelected(prev => prev?.scene?.id === sceneId ? null : prev)}
-              onApprovedChange={(approved) => {
-                setModuleApprovalStatus(prev =>
-                  prev[script.moduleId] === approved ? prev : { ...prev, [script.moduleId]: approved }
-                )
-              }} />
-          ))}
+          {scripts.map((script, vi) => {
+            // Sequential unlocking: module N+1 stays locked until module N
+            // is fully approved — same "finish one, move to the next" flow
+            // Module Editing already uses (locked until a module's scenes
+            // are designed). The first module is always open.
+            const locked = vi > 0 && moduleApprovalStatus[scripts[vi - 1].moduleId] !== true
+            return (
+              <SceneGroupList key={script.id} script={script} videoIndex={vi} locked={locked}
+                selectedId={selected?.scene?.id} selectedSegmentId={selected?.segmentId} generating={generating}
+                onSelect={(scene, totalScenes, segmentId) => setSelected({ scene, script, totalScenes, segmentId })}
+                onDeleted={(sceneId) => setSelected(prev => prev?.scene?.id === sceneId ? null : prev)}
+                onApprovedChange={(approved) => {
+                  setModuleApprovalStatus(prev =>
+                    prev[script.moduleId] === approved ? prev : { ...prev, [script.moduleId]: approved }
+                  )
+                }} />
+            )
+          })}
         </div>
 
         {/* Right: editor */}
@@ -875,10 +892,10 @@ function ProjectThemeGatePopup({ onChoose, onSkip, onClose }) {
   }
   return createPortal(
     <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto p-6 pt-16">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-[0_24px_60px_-12px_rgba(0,0,0,0.45)] border border-black/5 dark:border-white/10 max-w-lg w-full overflow-hidden">
         <div className="relative p-6 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-4 mx-auto">
-            <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-b from-indigo-500/20 to-indigo-500/5 border border-indigo-500/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.4),0_6px_14px_-4px_rgba(79,70,229,0.35)] flex items-center justify-center mb-4 mx-auto">
+            <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400 drop-shadow-sm" />
           </div>
           <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this project</p>
           <p className="text-slate-500 text-sm mb-5">
@@ -887,13 +904,26 @@ function ProjectThemeGatePopup({ onChoose, onSkip, onClose }) {
           {applying ? (
             <div className="py-10 flex justify-center"><Spinner size="sm" /></div>
           ) : (
-            <div className="space-y-1.5">
+            <div className="grid grid-cols-3 gap-3">
               {THEMES.map(th => (
                 <button key={th.id} onClick={() => pick(th.id)}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded border border-slate-200 dark:border-white/[0.10] hover:border-indigo-400/40 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all text-left"
-                  style={{ background: th.isDark ? 'transparent' : 'rgba(248,250,252,0.05)' }}>
-                  <div className="w-3 h-3 rounded-full flex-shrink-0 border border-slate-300 dark:border-white/20" style={{ background: th.accent }} />
-                  <span className="text-sm font-medium text-slate-900 dark:text-white">{th.label}</span>
+                  className="group relative rounded-xl overflow-hidden border border-black/10 dark:border-white/10 bg-white dark:bg-slate-800
+                    shadow-[0_3px_0_0_rgba(0,0,0,0.10),0_8px_16px_-6px_rgba(0,0,0,0.25)]
+                    hover:shadow-[0_2px_0_0_rgba(0,0,0,0.10),0_16px_28px_-8px_rgba(0,0,0,0.35)]
+                    hover:-translate-y-1 active:translate-y-0
+                    active:shadow-[0_1px_0_0_rgba(0,0,0,0.10),0_4px_8px_-4px_rgba(0,0,0,0.25)]
+                    transition-all duration-150 text-left">
+                  {/* Mini slide preview — the theme's actual gradient, same as the real canvas */}
+                  <div className="relative h-14 w-full" style={{ background: `linear-gradient(135deg, ${th.bg} 0%, ${th.bgGrad} 100%)` }}>
+                    <div className="absolute inset-0" style={{ background: `radial-gradient(circle at 28% 22%, ${th.accent}66, transparent 65%)` }} />
+                    <div className="absolute inset-x-0 top-0 h-1/2 bg-gradient-to-b from-white/15 to-transparent" />
+                    <div className="absolute bottom-1.5 left-1.5 w-6 h-1.5 rounded-full shadow-sm" style={{ background: th.accent }} />
+                  </div>
+                  <div className="px-2 py-1.5 flex items-center justify-between gap-1 border-t border-black/5 dark:border-white/10">
+                    <span className="text-[11px] font-semibold text-slate-900 dark:text-white truncate">{th.label}</span>
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 ring-2 ring-white dark:ring-slate-800 shadow-sm" style={{ background: th.accent }} />
+                  </div>
+                  <div className="pointer-events-none absolute inset-0 rounded-xl ring-0 group-hover:ring-2 group-hover:ring-indigo-400/50 transition-all" />
                 </button>
               ))}
             </div>
@@ -944,7 +974,7 @@ function ModuleThemeGate({ moduleTitle, onChoose }) {
 
 // ─── Left: scene group list ───────────────────────────────────────────────────
 
-function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, generating, onSelect, onDeleted, onApprovedChange }) {
+function SceneGroupList({ script, videoIndex, locked = false, selectedId, selectedSegmentId, generating, onSelect, onDeleted, onApprovedChange }) {
   const queryClient = useQueryClient()
   const [adding, setAdding] = useState(false)
   const { data: scenes = [], isLoading } = useQuery({
@@ -1097,18 +1127,24 @@ function SceneGroupList({ script, videoIndex, selectedId, selectedSegmentId, gen
   // manual — even the module you're editing can be collapsed (was previously
   // forced open by hasSelected, so Module 1 could never be closed).
   const [collapsed, setCollapsed] = useState(!hasSelected && videoIndex !== 0)
-  const open = !collapsed
+  const open = !collapsed && !locked
 
   return (
-    <div className={`mx-1.5 my-1 rounded-lg overflow-hidden bg-white dark:bg-slate-900 border transition-colors ${
-      open ? 'border-indigo-300/70 dark:border-indigo-500/30 shadow-sm' : 'border-slate-200 dark:border-white/10'
+    <div className={`mx-1.5 my-1 rounded-lg overflow-hidden border transition-colors ${
+      locked ? 'bg-slate-50 dark:bg-slate-900/40 border-slate-200 dark:border-white/10'
+        : open ? 'bg-white dark:bg-slate-900 border-indigo-300/70 dark:border-indigo-500/30 shadow-sm'
+        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-white/10'
     }`}>
-      <button onClick={() => setCollapsed(c => !c)}
-        className="w-full flex items-center gap-2 px-2.5 py-2 text-left hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
-        <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />
+      <button onClick={() => !locked && setCollapsed(c => !c)} disabled={locked}
+        title={locked ? 'Finish (approve) the previous module first' : undefined}
+        className={`w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors ${locked ? 'cursor-not-allowed' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
+        {locked
+          ? <Lock className="w-3 h-3 flex-shrink-0 text-slate-400" />
+          : <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />}
         <div className="min-w-0 flex-1">
-          <p className="text-[9px] font-bold text-blue-500 dark:text-blue-400 uppercase tracking-widest">Module {videoIndex + 1}</p>
-          <p className="text-xs text-slate-900 dark:text-white font-medium truncate">{script.title}</p>
+          <p className={`text-[9px] font-bold uppercase tracking-widest ${locked ? 'text-slate-400 dark:text-slate-500' : 'text-blue-500 dark:text-blue-400'}`}>Module {videoIndex + 1}</p>
+          <p className={`text-xs font-medium truncate ${locked ? 'text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-white'}`}>{script.title}</p>
+          {locked && <p className="text-[10px] text-slate-400 dark:text-slate-500">Finish the previous module to unlock</p>}
         </div>
         {moduleApproved && <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 text-emerald-600 dark:text-emerald-400" title="All scenes approved" />}
       </button>
@@ -3865,7 +3901,7 @@ function SubtitleLayer({ subtitle, layout, theme }) {
 
 function ContentLayer({ layout, bullets, subtitle, theme, segments, wrapStyle = { whiteSpace: 'nowrap' } }) {
   switch (layout) {
-    case 'title-hero':  return <TitleHeroContent   bullets={bullets} theme={theme} wrapStyle={wrapStyle} />
+    case 'title-hero':  return <TitleHeroContent   bullets={bullets} subtitle={subtitle} theme={theme} wrapStyle={wrapStyle} />
     case 'bullets':     return <BulletsContent     bullets={bullets} theme={theme} wrapStyle={wrapStyle} />
     case 'two-column':  return <TwoColumnContent   bullets={bullets} theme={theme} wrapStyle={wrapStyle} />
     case 'icon-grid':   return <IconGridContent    bullets={bullets} theme={theme} wrapStyle={wrapStyle} />
@@ -3881,16 +3917,43 @@ function ContentLayer({ layout, bullets, subtitle, theme, segments, wrapStyle = 
 
 // ─── Layout content renderers ─────────────────────────────────────────────────
 
-function TitleHeroContent({ theme }) {
-  // Intro (title-hero) slides stay SIMPLE — just the centered title/subtitle and
-  // a small accent flourish. No content points here (per request), so the first
-  // scene of each module reads as a clean title card.
+function TitleHeroContent({ bullets, subtitle, theme, wrapStyle = { whiteSpace: 'nowrap' } }) {
+  // Intro (title-hero) slides stay SIMPLE — just the centered title and a
+  // small accent flourish — but real generated content was silently going
+  // nowhere: the "Key Insight" (subtitle — a short tagline like "Module
+  // Overview") is timed in the Timeline Editor and DOES show there, but this
+  // canvas never actually drew it, so it queued up in the timeline and then
+  // never appeared when played (reported: "in remotion i can see the point
+  // under the title but i can't see it in the scene when i play"). Same
+  // story for the hook's own generated key point (a concrete detail from
+  // the module's material, saved to bullets but never rendered here
+  // either). Both get one quiet line each under the title now — still a
+  // clean title card, not a bullet list.
+  const keyPoint = bullets?.find(b => b.text)?.text
   return (
     <div className="flex flex-col items-center gap-[3%]">
       <div className="pa-icon flex items-center gap-[2%]">
         <div style={{ width:'6%', height:'2px', borderRadius:1, background:theme.accent }} />
         <div style={{ width:'4%', height:'2px', borderRadius:1, background:theme.accent, opacity:0.5 }} />
       </div>
+      {subtitle && (
+        <p style={{
+          color: theme.accent, fontSize: FS(9,1.35,18), fontWeight: 600,
+          textAlign: 'center', maxWidth: '70%', lineHeight: 1.4,
+          ...wrapStyle,
+        }}>
+          {subtitle}
+        </p>
+      )}
+      {keyPoint && (
+        <p style={{
+          color: theme.textSub, fontSize: FS(9,1.3,17), fontWeight: 500,
+          textAlign: 'center', maxWidth: '68%', lineHeight: 1.5,
+          ...wrapStyle,
+        }}>
+          {keyPoint}
+        </p>
+      )}
     </div>
   )
 }

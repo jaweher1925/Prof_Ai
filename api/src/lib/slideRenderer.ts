@@ -339,10 +339,16 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
   let y = startY
 
   for (const mainIdea of mainIdeas) {
-    // MAIN IDEA - larger, bolder, accent color
+    // MAIN IDEA - larger, bolder, accent color. A small square accent marker
+    // (matching the editor's BulletsContent dot) sits to the left of the text
+    // instead of the translucent full-width highlight box this used to draw.
+    // That box never existed in the actual Visual Designer canvas — it only
+    // ever showed up on scenes that fell back to this renderer because they
+    // were never opened/saved in Visual Design — so it read as an unwanted
+    // "frame" ("cadre") behind every bullet that didn't match the editor.
     const mainLines = wrap(esc(mainIdea.text), wrapChars)
-    svg += `<rect x="${boxX}" y="${y - 10}" width="1728" height="${mainLines.length > 1 ? Math.round(100 * scale) : Math.round(72 * scale)}" 
-      rx="8" fill="${t.accent}" opacity="0.08"/>`
+    const markerSize = Math.max(10, Math.round(16 * scale))
+    svg += `<rect x="${boxX}" y="${y - markerSize + 4}" width="${markerSize}" height="${markerSize}" rx="3" fill="${mainIdea.color || t.accent}"/>`
 
     for (let i = 0; i < mainLines.length; i++) {
       svg += `<text x="${baseX}" y="${y + i * mainLineH}" font-family="Arial,sans-serif" font-size="${mainFontSize}" 
@@ -644,15 +650,16 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
   const titleY = (layout === 'title-hero' ? 440 : TITLE_BASE_Y) + titleOffsetY
   const titleFontSize = (layout === 'title-hero' ? 84 : 64) * (titlePos.scale || 1)
   const titleText = esc((slide.title || '').slice(0, 90))
-  // Subtitle ("Key Insight") is no longer shown on slides at all — removed
-  // from the Visual Designer editor/canvas per request, and forced empty
-  // here too so this server-side fallback renderer (only used for scenes
-  // that have never been opened/saved in the editor yet, i.e. have no
-  // WYSIWYG snapshot) stays visually consistent with it. Left as an empty
-  // string rather than deleting the surrounding position math below, since
-  // that math is still relied on by other layout calculations even when
-  // there's no subtitle text to actually draw.
-  const subtitleText = ''
+  // Subtitle ("Key Insight") — restored (2026-08-11): it was forced empty
+  // here to match the Visual Designer canvas, which used to suppress it too.
+  // That meant the Timeline Editor still showed a "Key Insight" element
+  // queued up to appear, but it could never actually show on the rendered
+  // slide — reported as "in remotion i can see the point under the title
+  // but i can't see it in the scene when i play". The canvas now draws it
+  // again (VisualDesignerPanel.jsx's TitleHeroContent) for title-hero
+  // slides, so this fallback (only used for scenes never opened/saved in
+  // the editor yet) needs to match.
+  const subtitleText = esc((slide.subtitle || '').slice(0, 90))
 
   // Text position synced with the avatar placeholder (#layout fluidity):
   // wherever the avatar sits, the title/content wrap width narrows so text

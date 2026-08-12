@@ -7,6 +7,7 @@ import { queryClient } from '@/lib/queryClient'
 import { AuthProvider, useAuth } from '@/lib/AuthContext'
 import { ThemeProvider, useTheme } from '@/lib/ThemeContext'
 import AppLayout from '@/components/layout/AppLayout'
+import AdminLayout from '@/components/layout/AdminLayout'
 import { PageTransition } from '@/components/layout/PageTransition'
 import Spinner from '@/components/ui/Spinner'
 import AppBackground from '@/components/common/AppBackground'
@@ -20,22 +21,37 @@ import ProjectWorkspace from '@/pages/ProjectWorkspace'
 import Library from '@/pages/Library'
 import Director from '@/pages/Director'
 import NotFound from '@/pages/NotFound'
+import AdminOverview from '@/pages/admin/AdminOverview'
+import AdminUsers from '@/pages/admin/AdminUsers'
+import AdminProjects from '@/pages/admin/AdminProjects'
+import AdminSettings from '@/pages/admin/AdminSettings'
 
 // Gates the app pages behind a real session — anyone not signed in gets
 // bounced to /login with the page they wanted stashed in location state, so
 // Login can send them straight back after they sign in instead of always
 // landing on /dashboard.
-//
-// TEMPORARILY DISABLED — per request, "Get Started" should drop straight
-// into /dashboard without going through login/signup for now. The login/
-// signup pages, API, and session cookie are all still fully built and
-// working; re-enable by restoring the commented block below.
 function RequireAuth({ children }) {
-  // const { isAuthenticated } = useAuth()
-  // const location = useLocation()
-  // if (!isAuthenticated) {
-  //   return <Navigate to="/login" replace state={{ from: location.pathname }} />
-  // }
+  const { isAuthenticated } = useAuth()
+  const location = useLocation()
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  }
+  return children
+}
+
+// Same session check as RequireAuth, plus a role check — a signed-in
+// professor hitting /admin/* gets sent to their own dashboard instead of an
+// admin screen they have no access to (not back to /login, since they ARE
+// authenticated, just not authorized for this section).
+function RequireAdmin({ children }) {
+  const { isAuthenticated, user } = useAuth()
+  const location = useLocation()
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  }
+  if (user?.role !== 'admin') {
+    return <Navigate to="/dashboard" replace />
+  }
   return children
 }
 
@@ -112,6 +128,45 @@ function AnimatedRoutes() {
               </PageTransition>
             </AppLayout>
           </RequireAuth>
+        } />
+
+        {/* Admin pages — separate rail (AdminLayout, not AppLayout), gated on
+            role rather than just session. */}
+        <Route path="/admin" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminOverview />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
+        <Route path="/admin/users" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminUsers />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
+        <Route path="/admin/projects" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminProjects />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
+        <Route path="/admin/settings" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminSettings />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
         } />
 
         <Route path="*" element={<NotFound />} />

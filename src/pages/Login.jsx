@@ -28,7 +28,9 @@ export default function Login() {
 
   // Route guards redirect here with the page the user was trying to reach —
   // send them back there instead of always dumping everyone on /dashboard.
-  const redirectTo = location.state?.from || '/dashboard'
+  // No "from" state (e.g. arriving fresh from Welcome's "Sign in") falls
+  // back by role: admins land on /admin, professors on /dashboard.
+  const redirectTo = location.state?.from
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -36,8 +38,9 @@ export default function Login() {
     setError('')
     setSubmitting(true)
     try {
-      await login(email.trim().toLowerCase(), password)
-      navigate(redirectTo, { replace: true })
+      const loggedInUser = await login(email.trim().toLowerCase(), password)
+      const fallback = loggedInUser?.role === 'admin' ? '/admin' : '/dashboard'
+      navigate(redirectTo || fallback, { replace: true })
     } catch (err) {
       setError(err?.message || 'Something went wrong. Try again.')
     } finally {

@@ -18,11 +18,72 @@ import {
   localPathFromUploadUrl,
   extractAudioTrack,
   extractAvatarPosition,
+  type RenderableSegment,
 } from '../../lib/ffmpegVideo'
 import { startAvatarClipJob } from '../../lib/heygenAvatar'
 import { deleteOldUpload } from '../../lib/uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
+
+/**
+ * Per-segment avatar rendering for a multi-part scene (faster renders, #44).
+ *
+ * Previously a multi-part scene concatenated EVERY segment's narration into
+ * one long audio track and submitted ONE HeyGen job for the whole thing — so
+ * a 4-part scene's wait scaled with its total narration length (observed:
+ * ~8min vs. ~4min for a single part). HeyGen's own render time is dominated
+ * by fixed per-job overhead (see startAvatarClipJob's docs: "1-5 min per
+ * render REGARDLESS of clip length"), so bundling parts into one job only
+ * makes the wait longer without buying anything — splitting into one job
+ * PER SEGMENT means the wall-clock wait for the whole scene is close to a
+ * single segment's render time instead of the sum, as long as HeyGen
+ * processes concurrent jobs from the account in parallel.
+ *
+ * IMPORTANT (fixed 2026-08-11, round 2): the first version of this function
+ * rendered+submitted EVERY segment synchronously, inside this same HTTP
+ * request, before returning anything — so a 4-part scene still blocked the
+ * request for as long as all four segments took to render+submit (several
+ * minutes), and the frontend just sat on "submitting to HeyGen…" the whole
+ * time with the poll loop never even starting. That was the actual bug
+ * behind "first scene takes 4+ min and isn't done yet" — not HeyGen itself.
+ *
+ * Fixed by doing NONE of that work here. This just writes the group sidecar
+ * with every segment marked "not yet submitted" and returns immediately.
+ * pollSegmentGroup() in heygenFinalize.ts renders+submits a couple of
+ * segments per poll tick (the frontend polls every ~5s) until all of them
+ * are in flight at HeyGen, then waits for them to land and stitches the
+ * finished clips together in order.
+ */
+async function startGroupedSegmentRender(
+  context: InvocationContext,
+  sceneId: string,
+  moduleId: string,
+  segments: RenderableSegment[],
+  moduleTitle: string | null | undefined,
+  project: { defaultAvatarId: string | null; avatarStyle?: string | null; avatarBackground?: string | null },
+  oldAvatarVideoUrl?: string | null
+): Promise<{ pending: true; heygenVideoId: string }> {
+  // Synthetic representative id — doesn't need to be a real HeyGen video_id.
+  // pollHeyGenVideo.ts detects the `heygen_pending_<id>.json` sidecar's
+  // `groupSceneId` tag and delegates to pollSegmentGroup() BEFORE it ever
+  // tries to call HeyGen's status API with this id, so it's safe to use.
+  const groupToken = `group_${sceneId}_${Date.now()}`
+  writeFileSync(
+    join(UPLOAD_DIR, `heygen_group_${sceneId}.json`),
+    JSON.stringify({
+      sceneId, moduleId, oldAvatarVideoUrl: oldAvatarVideoUrl || null, createdAt: Date.now(),
+      moduleTitle: moduleTitle || null,
+      avatarCasting: { defaultAvatarId: project.defaultAvatarId, avatarStyle: project.avatarStyle || null, avatarBackground: project.avatarBackground || null },
+      segments: segments.map((s, i) => ({ index: i, done: false, videoId: null, segment: s })),
+    })
+  )
+  writeFileSync(
+    join(UPLOAD_DIR, `heygen_pending_${groupToken}.json`),
+    JSON.stringify({ groupSceneId: sceneId, sceneId, createdAt: Date.now() })
+  )
+  context.log(`[generateHeyGenAvatar] Grouped render: queued ${segments.length} segment(s) for scene ${sceneId} (representative ${groupToken}) — rendering happens progressively during polling`)
+  return { pending: true, heygenVideoId: groupToken }
+}
 
 /**
  * Talking-avatar overlay (#40), now NON-BLOCKING:
@@ -148,6 +209,13 @@ async function addAvatarOrQueue(
         // it back out when the render lands, since HeyGen itself never
         // reports it and it isn't derivable from the finished clip alone.
         chromaKey: job.chromaKey,
+        // Which HeyGen engine actually rendered this clip. Normally avatar_iii
+        // (cheapest, per developers.heygen.com/docs/pricing: $0.0167-0.0433/sec)
+        // — but createAvatarVideo falls back to avatar_iv ($0.05-0.0667/sec,
+        // roughly 2-4x costlier) when the chosen avatar_id doesn't support III.
+        // Carried through so finalizeHeyGenJob can surface the cost bump to the
+        // user instead of it being a silent per-render charge difference.
+        engineUsed: job.engineUsed,
       })
     )
     context.log(`[generateHeyGenAvatar] HeyGen job ${job.videoId} submitted — completing asynchronously via poll`)
@@ -242,8 +310,10 @@ async function generateHeyGenAvatarHandler(
     const scene = await prisma.scene.findUnique({
       where: { id: body.scene_id },
       include: {
-        module: true,
-        segments: { 
+        // include: project too — startGroupedSegmentRender needs the
+        // project's avatar/voice casting to submit per-segment HeyGen jobs.
+        module: { include: { project: true } },
+        segments: {
           orderBy: { orderIndex: 'asc' },
           select: {
             id: true,
@@ -321,20 +391,6 @@ async function generateHeyGenAvatarHandler(
       )
 
       try {
-        const videoUrl = await renderSegmentsToVideo({
-          segments,
-          moduleTitle: scene.module?.title,
-        })
-
-        // Avatar placeholder position/size from the Visual Designer (#3, #4).
-        // For a single-part render use THAT part's own placement, not the
-        // first segment's — each part positions its avatar independently.
-        const avatarPosition = extractAvatarPosition(
-          isSinglePart
-            ? scene.segments.find(sg => sg.id === body.segment_id)?.slideDesign
-            : scene.segments[0]?.slideDesign
-        )
-
         // A single-part render is a Visual Design PREVIEW of one row. There's
         // no per-segment video column, and writing to Scene.avatarVideoUrl
         // would replace the full-scene video Video Editing assembles from — so
@@ -349,6 +405,9 @@ async function generateHeyGenAvatarHandler(
         // return the slide+voice cut immediately so the user isn't blocked, and
         // the avatar shows on the next preview once its clip is cached.
         if (isSinglePart) {
+          const videoUrl = await renderSegmentsToVideo({ segments, moduleTitle: scene.module?.title })
+          // Avatar placeholder position/size — THAT part's own placement.
+          const avatarPosition = extractAvatarPosition(scene.segments.find(sg => sg.id === body.segment_id)?.slideDesign)
           if (!useAvatar) {
             return {
               status: 200,
@@ -390,7 +449,40 @@ async function generateHeyGenAvatarHandler(
           }
         }
 
-        // Talking-avatar overlay (#40) — async when not cached
+        // WHOLE SCENE. Multi-part scenes render + submit each part's avatar
+        // job SEPARATELY (startGroupedSegmentRender) instead of concatenating
+        // every part's audio into one combined HeyGen job — see that
+        // function's docs for why. Single-part scenes and non-avatar renders
+        // skip straight to the simple combined path below: there's only one
+        // clip either way, so grouping would just add overhead for nothing.
+        const project = scene.module?.project
+        const canGroupRender = segments.length > 1 && useAvatar && !!process.env.HEYGEN_API_KEY && !!project?.defaultAvatarId
+
+        if (canGroupRender) {
+          // Always returns pending immediately now — see the function's docs
+          // for why doing the render synchronously here was the actual bug.
+          // Same `heygen:<id>` sentinel convention as finishOrQueue — the
+          // representative id is what the frontend polls exactly as before;
+          // pollHeyGenVideo.ts recognizes (via the per-job sidecar's
+          // groupSceneId) that it needs to check/advance every sibling
+          // segment, not just this one.
+          const result = await startGroupedSegmentRender(
+            context, body.scene_id, scene.moduleId, segments, scene.module?.title, project!, scene.avatarVideoUrl
+          )
+          await prisma.scene.update({
+            where: { id: body.scene_id },
+            data: { avatarVideoUrl: `heygen:${result.heygenVideoId}`, status: 'rendering' },
+          })
+          return {
+            status: 200,
+            jsonBody: { success: true, scene_id: body.scene_id, video_id: result.heygenVideoId, status: 'rendering' },
+          }
+        }
+
+        // Fallback: single-segment scenes, voice-only renders, or no avatar
+        // configured — unchanged combined-render path.
+        const videoUrl = await renderSegmentsToVideo({ segments, moduleTitle: scene.module?.title })
+        const avatarPosition = extractAvatarPosition(scene.segments[0]?.slideDesign)
         return await finishOrQueue(
           context,
           body.scene_id,

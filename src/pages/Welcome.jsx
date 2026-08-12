@@ -24,19 +24,17 @@ export default function Welcome() {
   const { theme, toggleTheme } = useTheme()
   const isDark = theme === 'dark'
 
-  // Auth (login/signup) is fully built but temporarily not enforced (see
-  // App.jsx's RequireAuth) — every CTA here drops straight into /dashboard
-  // for now instead of routing through /login or /signup. Once auth is
-  // switched back on, point signIn at '/login' and signUp at '/signup'
-  // again (RequireAuth's redirect will otherwise just bounce people back to
-  // /login the instant they land on /dashboard anyway).
+  // Auth is now enforced again (see App.jsx's RequireAuth) — route through
+  // /login and /signup as the comment here used to anticipate, instead of
+  // dropping straight into /dashboard (RequireAuth would just bounce
+  // straight back to /login anyway).
   function goTo(path) {
     setFlashing(true)
     localStorage.setItem('profai_visited', 'true')
     setTimeout(() => navigate(path), 400)
   }
-  const signIn = () => goTo('/dashboard')
-  const signUp = () => goTo('/dashboard')
+  const signIn = () => goTo('/login')
+  const signUp = () => goTo('/signup')
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-white">

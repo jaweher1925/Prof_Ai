@@ -22,6 +22,12 @@ model User {
   email        String   @unique
   passwordHash String   @map("password_hash")
   name         String?
+  // "professor" (default — the existing client role, unchanged behavior) |
+  // "admin" (new — gates /admin routes and endpoints). Plain string, not a
+  // Prisma enum, to match every other status/role-shaped field in this
+  // schema (Project.status, Scene.status, etc.) — SQLite has no native enum
+  // type anyway, Prisma would just emulate one.
+  role         String   @default("professor")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -88,6 +94,13 @@ model Scene {
   avatarPositionY   Float?    @map("avatar_position_y")
   ttsAudioUrl       String?   @map("tts_audio_url")
   avatarVideoUrl    String?   @map("avatar_video_url")
+  // Which HeyGen engine last rendered this scene's avatar clip — "avatar_iii"
+  // (cheap, the normal path) or "avatar_iv" (2-4x costlier fallback, see
+  // heygenAvatar.ts createAvatarVideo()). Persisted (previously this only
+  // lived transiently in the pending-job sidecar and got deleted once the
+  // job finished) so the admin dashboard can actually report real per-engine
+  // usage instead of a fake number.
+  avatarEngineUsed  String?   @map("avatar_engine_used")
   status            String    @default("draft")
   durationSeconds   Float?    @map("duration_seconds")
   approvedAt        DateTime? @map("approved_at")
@@ -302,4 +315,19 @@ model SlideComposition {
 
   @@index([sceneId])
   @@map("slide_compositions")
+}
+
+/// Global app config the admin dashboard can view/edit (default avatar/voice,
+/// feature flags, etc.) — a plain key/value store rather than one column per
+/// setting, so the admin Settings page can add new toggles without another
+/// migration each time. `value` is always a JSON string (SQLite has no
+/// native JSON column, same convention as avatarBackground/voiceSettings
+/// above).
+model AppSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
 }

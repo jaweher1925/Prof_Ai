@@ -14,7 +14,7 @@ import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { getUser } from '../../lib/auth'
 import { getVideoStatusV3 } from '../../lib/heygenAvatar'
-import { finalizeHeyGenJob } from '../../lib/heygenFinalize'
+import { finalizeHeyGenJob, pollSegmentGroup, pollModuleBatch } from '../../lib/heygenFinalize'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
 
@@ -37,6 +37,63 @@ async function pollHeyGenVideoHandler(
 
     if (!process.env.HEYGEN_API_KEY) {
       return { status: 500, jsonBody: { error: 'HEYGEN_API_KEY not configured' } }
+    }
+
+    // Grouped segment job (#44) — this video_id is one of SEVERAL independent
+    // per-segment HeyGen jobs for a multi-part scene (see
+    // generateHeyGenAvatar.ts's startGroupedSegmentRender). The frontend only
+    // knows about this one representative video_id, so pollSegmentGroup()
+    // checks every sibling segment's status on this same tick and only
+    // reports "completed" once the whole scene has been stitched together —
+    // the polling CONTRACT (poll this one id, wait for completed:true) stays
+    // identical to a normal single job from the frontend's point of view.
+    const pendingSidecarPath = join(UPLOAD_DIR, `heygen_pending_${body.video_id}.json`)
+    if (existsSync(pendingSidecarPath)) {
+      try {
+        const meta = JSON.parse(readFileSync(pendingSidecarPath, 'utf8')) as { groupSceneId?: string; moduleGroupId?: string }
+        if (meta.groupSceneId) {
+          const groupResult = await pollSegmentGroup(meta.groupSceneId, context)
+          if (groupResult.outcome === 'completed') {
+            return {
+              status: 200,
+              jsonBody: {
+                video_id: body.video_id, status: 'completed', video_url: groupResult.videoUrl,
+                completed: true,
+                ...(groupResult.avatarWarning ? { avatar_warning: groupResult.avatarWarning } : {}),
+              },
+            }
+          }
+          // 'processing' or 'not_found' (already finalized by a previous
+          // tick, sidecar cleaned up) — either way, keep the frontend polling.
+          return {
+            status: 200,
+            jsonBody: { video_id: body.video_id, status: 'processing', video_url: null, completed: false },
+          }
+        }
+        // Module-level batched job (#46) — this video_id is the ONE HeyGen
+        // job covering every scene in the batch. The frontend just wants
+        // completed:true/false; the module_id-keyed sidecar (checked here)
+        // tracks whether every scene has been split + composited yet.
+        if (meta.moduleGroupId) {
+          const batchResult = await pollModuleBatch(meta.moduleGroupId, context)
+          if (batchResult.outcome === 'completed') {
+            return {
+              status: 200,
+              jsonBody: { video_id: body.video_id, status: 'completed', video_url: null, completed: true, scene_count: batchResult.sceneCount },
+            }
+          }
+          if (batchResult.outcome === 'failed') {
+            return {
+              status: 200,
+              jsonBody: { video_id: body.video_id, status: 'failed', video_url: null, completed: false, error: batchResult.error },
+            }
+          }
+          return {
+            status: 200,
+            jsonBody: { video_id: body.video_id, status: 'processing', video_url: null, completed: false },
+          }
+        }
+      } catch { /* malformed sidecar — fall through to the normal single-job path */ }
     }
 
     const { status, videoUrl, thumbnailUrl, failureMessage } = await getVideoStatusV3(body.video_id)

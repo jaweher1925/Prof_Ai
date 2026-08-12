@@ -98,9 +98,9 @@ const STAGES = [
   },
   {
     id: 'final-video',
-    label: '6. Final Videos',
+    label: '6. Video Vault',
     icon: Video,
-    desc: 'Play & download',
+    desc: 'Play & download all final videos',
   },
 ]
 
