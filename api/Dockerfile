@@ -1,5 +1,5 @@
 # ProfAI API — Azure Functions (Node 20) in a container
-FROM mcr.microsoft.com/azure-functions/node:4-node20
+FROM --platform=linux/amd64 mcr.microsoft.com/azure-functions/node:4-node20
 
 ENV AzureWebJobsScriptRoot=/home/site/wwwroot \
     AzureFunctionsJobHost__Logging__Console__IsEnabled=true \
