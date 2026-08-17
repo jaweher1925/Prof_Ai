@@ -22,14 +22,14 @@ export default function AdminStatCard({ icon: Icon, label, value, sublabel, acce
   return (
     <TiltCard
       className={cn(
-        'relative rounded-2xl border border-white/[0.08] bg-gradient-to-br from-slate-800/80 to-slate-900/80 backdrop-blur-xl p-5 shadow-xl shadow-black/30',
+        'relative rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-gradient-to-br from-white/90 to-slate-50/90 dark:from-slate-800/80 dark:to-slate-900/80 backdrop-blur-xl p-5 shadow-xl shadow-slate-200/50 dark:shadow-black/30',
       )}
     >
       <div className="relative flex items-start justify-between" style={{ transform: 'translateZ(30px)' }}>
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400">{label}</p>
-          <p className="text-3xl font-bold text-white mt-2 leading-none">{value}</p>
-          {sublabel && <p className="text-xs text-slate-500 mt-2">{sublabel}</p>}
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-400">{label}</p>
+          <p className="text-3xl font-bold text-slate-900 dark:text-white mt-2 leading-none">{value}</p>
+          {sublabel && <p className="text-xs text-slate-500 dark:text-slate-500 mt-2">{sublabel}</p>}
         </div>
         <div
           className={cn(

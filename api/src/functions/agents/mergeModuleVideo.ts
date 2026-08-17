@@ -45,10 +45,25 @@ async function mergeModuleVideoHandler(
 
     const missing = scenes.filter((s) => !localVideoPathFromUploadUrl(s.avatarVideoUrl))
     if (missing.length) {
+      // Naming WHICH scenes, not just a count — "2 scene(s) don't have a
+      // rendered video" told you nothing about where to go looking among a
+      // module's whole list ("just tell me what are the scene(s)", reported
+      // 2026-08-15). Scene has no dedicated title column; the title lives in
+      // the legacy slideDeckContent JSON blob (kept in sync by
+      // scriptGeneratorAgent.ts/compositions.ts for exactly this kind of
+      // lookup) — falls back to a position label if that's missing/malformed
+      // rather than dropping the scene from the list silently.
+      const names = missing.map((s) => {
+        try {
+          const title = JSON.parse(s.slideDeckContent || '{}')?.title
+          if (title) return `"${title}"`
+        } catch { /* fall through to position label below */ }
+        return `Scene ${s.orderIndex + 1}`
+      })
       return {
         status: 400,
         jsonBody: {
-          error: `${missing.length} scene(s) don't have a rendered video yet. Generate every scene's video first.`,
+          error: `${missing.length} scene(s) don't have a rendered video yet — ${names.join(', ')}. Generate every scene's video first.`,
         },
       }
     }

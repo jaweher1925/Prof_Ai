@@ -24,6 +24,7 @@
  * (unaffected by any of this).
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
+import { execFile } from 'child_process'
 import { join, parse } from 'path'
 import { writeFileSync } from 'fs'
 import { prisma } from '../../lib/db'
@@ -33,12 +34,12 @@ import {
   localPathFromUploadUrl,
   extractAudioTrack,
   extractAvatarPosition,
-  concatAudioWithOffsets,
   trimVideo,
   overlayAvatarOnVideo,
+  concatAudioWithOffsets,
   type RenderableSegment,
 } from '../../lib/ffmpegVideo'
-import { startAvatarClipJob } from '../../lib/heygenAvatar'
+import { startAvatarClipJob, resolveAvatarBackgroundColor } from '../../lib/heygenAvatar'
 import { deleteOldUpload } from '../../lib/uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
@@ -181,7 +182,7 @@ async function generateModuleAvatarBatchHandler(
           const clip = await trimVideo(job.avatarPath, entry.start, entry.end)
           const basePath = localPathFromUploadUrl(entry.slideVideoUrl)
           if (!basePath) throw new Error('rendered slide video not found locally')
-          const composited = await overlayAvatarOnVideo(basePath, clip, entry.avatarPosition, job.chromaKey)
+          const composited = await overlayAvatarOnVideo(basePath, clip, entry.avatarPosition, job.chromaKey, resolveAvatarBackgroundColor(project.avatarBackground))
           const finalUrl = `/api/uploads/${parse(composited).base}`
           await prisma.scene.update({ where: { id: entry.sceneId }, data: { avatarVideoUrl: finalUrl, status: 'completed' } })
           deleteOldUpload(entry.oldAvatarVideoUrl, finalUrl)
@@ -197,7 +198,8 @@ async function generateModuleAvatarBatchHandler(
       join(UPLOAD_DIR, `heygen_modulebatch_${body.module_id}.json`),
       JSON.stringify({
         moduleId: body.module_id, videoId: job.videoId, cachePath: job.cachePath,
-        chromaKey: job.chromaKey, createdAt: Date.now(), scenes: sceneEntries,
+        chromaKey: job.chromaKey, avatarBackground: project.avatarBackground || null,
+        createdAt: Date.now(), scenes: sceneEntries,
       })
     )
     writeFileSync(

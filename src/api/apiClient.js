@@ -32,7 +32,13 @@ apiClient.interceptors.response.use(
     // the login page, etc.). AppLayout's route guard is what actually sends
     // a signed-out user to /login, based on AuthContext's isAuthenticated
     // state — not a blanket rule here.
-    return Promise.reject({ status, message })
+    //
+    // `data` (the full error response body, not just `.error`) is included
+    // so callers can read extra structured fields beyond the message — e.g.
+    // login.ts's 403 for an unverified account also sends { needsVerification,
+    // email }, which Login.jsx needs to route to the verify-code screen
+    // instead of just displaying the message inline.
+    return Promise.reject({ status, message, data: err.response?.data })
   }
 )
 

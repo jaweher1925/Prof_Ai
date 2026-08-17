@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -6,6 +6,8 @@ import {
   Sun,
   Moon,
   LogOut,
+  ShieldCheck,
+  ChevronUp,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/ThemeContext'
@@ -51,6 +53,29 @@ export default function Sidebar() {
   // belongs to the editor.
   const isCompact = location.pathname.includes('/workspace') || location.pathname.includes('/projects')
   const showLabels = !isCompact
+
+  // Account menu (2026-08-13 — "navbar should be with icon account and user
+  // also"): the old profile block only ever rendered on large screens
+  // (hidden lg:block) and outside compact/workspace mode, so on a narrower
+  // window or while actually working in a project there was NO sign-in
+  // indicator or way to sign out at all. This is now a real avatar button
+  // that's always visible, everywhere, and opens a small menu with the
+  // account's name/email/role and sign-out instead of relying on a
+  // hover-only reveal (which touch devices can't trigger anyway).
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocClick = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false) }
+    const onKey = (e) => e.key === 'Escape' && setMenuOpen(false)
+    document.addEventListener('mousedown', onDocClick)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDocClick); window.removeEventListener('keydown', onKey) }
+  }, [menuOpen])
+  // Close automatically on navigation so it doesn't linger open over the new page.
+  useEffect(() => { setMenuOpen(false) }, [location.pathname])
+  const initials = (user?.name || user?.email || '?')[0].toUpperCase()
+  const isAdmin = user?.role === 'admin'
 
   return (
     <aside className={cn(
@@ -126,25 +151,72 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {/* ── 4. Profile ──────────────────────────────────────────────────── */}
-      {showLabels && (
-        <div className="hidden lg:block border-t border-slate-200 dark:border-white/[0.06] p-3">
-          <div className="group flex items-center gap-3 px-3 py-2.5 rounded-lg bg-white dark:bg-white/5 border border-slate-200 dark:border-transparent">
-            <LogoBadge size="w-7 h-7" />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">{user?.name || user?.email || 'Professor'}</p>
-              <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{user?.name ? user.email : 'Educator'}</p>
+      {/* ── 4. Account ──────────────────────────────────────────────────── */}
+      <div ref={menuRef} className="relative border-t border-slate-200 dark:border-white/[0.06] p-2 lg:p-3">
+        {/* The menu itself — anchored above the trigger since this rail sits
+            at the bottom of the screen (a dropdown BELOW would run off the
+            viewport). z-50 so it clears workspace panels/modals below it. */}
+        {menuOpen && (
+          <div className="absolute bottom-full left-2 right-2 lg:left-3 lg:right-3 mb-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-xl overflow-hidden z-50">
+            <div className="px-3.5 py-3 border-b border-slate-100 dark:border-white/[0.06]">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">{user?.name || 'Account'}</p>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate">{user?.email}</p>
+              <span className={cn(
+                'inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium',
+                isAdmin ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-300' : 'bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-300'
+              )}>
+                {isAdmin && <ShieldCheck className="w-3 h-3" />}
+                {isAdmin ? 'Admin' : 'Professor'}
+              </span>
             </div>
+            {isAdmin && (
+              <button
+                onClick={() => navigate('/admin')}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4 flex-shrink-0" /> Admin console
+              </button>
+            )}
             <button
               onClick={handleLogout}
-              title="Sign out"
-              className="flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-500/10 dark:hover:text-rose-400 transition-colors opacity-0 group-hover:opacity-100"
+              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors"
             >
-              <LogOut className="w-3.5 h-3.5" />
+              <LogOut className="w-4 h-4 flex-shrink-0" /> Sign out
             </button>
           </div>
-        </div>
-      )}
+        )}
+
+        <button
+          onClick={() => setMenuOpen((v) => !v)}
+          title={user?.name || user?.email || 'Account'}
+          className={cn(
+            'w-full flex items-center justify-center lg:justify-start gap-2.5 px-2 lg:px-2.5 py-2 rounded-lg transition-colors',
+            menuOpen ? 'bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10' : 'border border-transparent hover:bg-white dark:hover:bg-white/5'
+          )}
+        >
+          {/* Real account icon — initials on a gradient badge, same style used
+              for user avatars in the Admin console, instead of the generic
+              app logo that used to sit here (didn't identify WHO was signed
+              in at a glance). */}
+          <span className="relative flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center text-[12px] font-bold text-white">
+            {initials}
+            {isAdmin && (
+              <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-slate-100 dark:border-slate-950 flex items-center justify-center">
+                <ShieldCheck className="w-2 h-2 text-white" />
+              </span>
+            )}
+          </span>
+          {showLabels && (
+            <>
+              <div className="hidden lg:block flex-1 min-w-0 text-left">
+                <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">{user?.name || user?.email || 'Account'}</p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{isAdmin ? 'Admin' : 'Professor'}</p>
+              </div>
+              <ChevronUp className={cn('hidden lg:block w-3.5 h-3.5 text-slate-400 flex-shrink-0 transition-transform', menuOpen && 'rotate-180')} />
+            </>
+          )}
+        </button>
+      </div>
     </aside>
   )
 }

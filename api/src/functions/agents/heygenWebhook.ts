@@ -114,7 +114,6 @@ async function heygenWebhookHandler(
       // pipeline — acknowledge and ignore rather than error.
       context.log(`heygenWebhook: ignoring unhandled event type ${eventType}`)
     }
-
     // Always 200 quickly on a request we understood — HeyGen retries with
     // exponential backoff for up to 24h on non-2xx, so a real transient error
     // (e.g. DB hiccup) still gets another chance rather than being swallowed.

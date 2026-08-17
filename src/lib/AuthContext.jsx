@@ -30,8 +30,18 @@ export const AuthProvider = ({ children }) => {
     return data.user
   }, [])
 
+  // No longer logs in immediately (2026-08-15, email verification) — the
+  // account is created but gated until the code is entered, so this just
+  // returns the raw signup response ({ needsVerification: true, email, ...})
+  // for Signup.jsx to route on, instead of assuming a session was created.
   const signup = useCallback(async (email, password, name) => {
-    const data = await authService.signup(email, password, name)
+    return authService.signup(email, password, name)
+  }, [])
+
+  // Completes the code-entry step — this IS the moment a new account
+  // actually gets a session, mirroring what signup used to do on its own.
+  const verifyEmail = useCallback(async (email, code) => {
+    const data = await authService.verify(email, code)
     setUser(data.user)
     setIsAuthenticated(true)
     return data.user
@@ -44,7 +54,7 @@ export const AuthProvider = ({ children }) => {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, isLoading, login, signup, verifyEmail, logout }}>
       {children}
     </AuthContext.Provider>
   )

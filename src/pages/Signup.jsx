@@ -37,8 +37,12 @@ export default function Signup() {
     }
     setSubmitting(true)
     try {
-      await signup(email.trim().toLowerCase(), password, name.trim())
-      navigate('/dashboard', { replace: true })
+      const data = await signup(email.trim().toLowerCase(), password, name.trim())
+      // Signup no longer logs in directly (email verification) — route to
+      // the code-entry screen with the email it needs, carrying along any
+      // send failure so VerifyEmail can surface it instead of a silent
+      // "check your email" that never arrives.
+      navigate('/verify-email', { replace: true, state: { email: data.email, emailError: data.emailError } })
     } catch (err) {
       setError(err?.message || 'Something went wrong. Try again.')
     } finally {

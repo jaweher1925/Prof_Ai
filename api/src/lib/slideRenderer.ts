@@ -14,6 +14,58 @@
  * design data.
  */
 
+import { readFileSync, existsSync } from 'fs'
+import { join } from 'path'
+
+// Mirrors ffmpegVideo.ts's UPLOAD_DIR — this file has no access to that
+// module's private constant, and importing it would create a layering
+// inversion (ffmpegVideo.ts imports FROM slideRenderer.ts already).
+const UPLOAD_DIR = join(process.cwd(), 'uploads')
+
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+}
+
+/**
+ * This SVG is rasterized by sharp/libvips (rasterizeSvg in ffmpegVideo.ts),
+ * NOT rendered in a browser — so an `<image href="/api/uploads/xxx.png">`
+ * pointing at a root-relative URL path does not resolve the way it does in
+ * the Visual Designer's live DOM (where the browser resolves it against its
+ * own origin). librsvg treats that as a literal filesystem path from disk
+ * root, which doesn't exist, so the image silently fails to draw — the rest
+ * of the slide renders fine, so this was invisible unless you knew to look
+ * for the missing image specifically. This is exactly the "generate img in
+ * the slide but did not appear in the vd but i can see it in scene form"
+ * report (2026-08-15): the Visual Designer's own WYSIWYG snapshot path
+ * (renderedSlideUrl) sidesteps this entirely since it's a real browser
+ * screenshot, but any segment that falls back to server-side SVG rebuild —
+ * or the "Generate Slide Image" still-preview button, which always uses this
+ * path — hit this.
+ *
+ * Fix: inline local /api/uploads/ images as base64 data URIs, which any SVG
+ * rasterizer can decode with no filesystem/network resolution at all. Falls
+ * back to the raw URL unchanged for data: URIs (already inline) and for
+ * external http(s) URLs (out of scope here — same network-fetch restriction
+ * librsvg has by default; pasted external image URLs predate this fix and
+ * aren't the reported case).
+ */
+function resolveImageForSvg(url: string): string {
+  if (!url || url.startsWith('data:')) return url
+  const match = url.match(/\/api\/uploads\/([^/?]+)/)
+  if (!match) return url // external URL — best-effort, not embeddable here
+  try {
+    const localPath = join(UPLOAD_DIR, match[1])
+    if (!existsSync(localPath)) return url
+    const ext = (match[1].match(/\.[a-zA-Z0-9]+$/)?.[0] || '').toLowerCase()
+    const mime = IMAGE_MIME_BY_EXT[ext] || 'image/png'
+    const b64 = readFileSync(localPath).toString('base64')
+    return `data:${mime};base64,${b64}`
+  } catch {
+    return url // best-effort — a broken image is better than a crashed render
+  }
+}
+
 export interface SlideBullet { text: string; level?: number; color?: string; bold?: boolean; italic?: boolean }
 export interface SlideBlock {
   type: 'bullets' | 'definition' | 'quote' | 'two-column' | 'key-concept' | 'summary'
@@ -249,6 +301,48 @@ const SUBTITLE_Y      = 330
 const DIVIDER_Y        = 380
 const CONTENT_Y        = 460
 
+// Per-layout default layer positions — MUST mirror VisualDesignerPanel.jsx's
+// own DEFAULT_POSITIONS table exactly. The editor's canvas positions
+// title/subtitle/content/image layers with `left: x%, top: y%` — an ABSOLUTE
+// position on the 1920x1080 slide, not an offset from anywhere. Whatever's
+// saved in slide.positions[key] (a user's drag) REPLACES that layout's
+// default for that key entirely; it never gets added on top of anything.
+// This file used to instead read positions[key].x/y as a DELTA added to a
+// flat, layout-independent pixel base (TITLE_BASE_Y=200, CONTENT_Y=460) —
+// a completely different coordinate system from what the editor actually
+// draws. A title dragged to the WYSIWYG canvas's (48%, 40%) rendered around
+// (100px, 628px) ≈ (5%, 58%) in the exported slide/video instead — content
+// dragged into the two-column composition next to the avatar landed almost
+// entirely below the bottom edge and effectively vanished. Reported
+// 2026-08-13 ("the generated video doesn't match Visual Design" — title in
+// the wrong place, the content bullet missing entirely). resolvePos() below
+// reproduces the editor's own default-merged-with-saved, then converts
+// straight to absolute pixels — no added base.
+const DEFAULT_POSITIONS: Record<string, Record<string, { x: number; y: number }>> = {
+  'bullets':    { title: { x: 7,  y: 15 }, subtitle: { x: 7,  y: 32 }, content: { x: 7,  y: 44 } },
+  'title-hero': { title: { x: 10, y: 24 }, subtitle: { x: 10, y: 48 }, content: { x: 10, y: 66 } },
+  'two-column': { title: { x: 7,  y: 11 }, subtitle: { x: 7,  y: 28 }, content: { x: 7,  y: 40 } },
+  'icon-grid':  { title: { x: 7,  y: 10 }, subtitle: { x: 7,  y: 27 }, content: { x: 7,  y: 39 } },
+  'key-stats':  { title: { x: 7,  y: 11 }, subtitle: { x: 7,  y: 28 }, content: { x: 7,  y: 40 } },
+  'chart':      { title: { x: 7,  y: 10 }, subtitle: { x: 7,  y: 27 }, content: { x: 7,  y: 39 } },
+  'definition': { title: { x: 7,  y: 12 }, subtitle: { x: 7,  y: 30 }, content: { x: 7,  y: 48 } },
+  'quote':      { title: { x: 12, y: 12 }, subtitle: { x: 12, y: 82 }, content: { x: 12, y: 26 } },
+  'summary':    { title: { x: 7,  y: 11 }, subtitle: { x: 7,  y: 28 }, content: { x: 7,  y: 40 } },
+}
+
+function resolvePos(
+  layout: string,
+  key: 'title' | 'subtitle' | 'content',
+  saved?: { x?: number; y?: number; scale?: number } | null
+): { x: number; y: number; scale: number } {
+  const def = (DEFAULT_POSITIONS[layout] || DEFAULT_POSITIONS['bullets'])[key]
+  return {
+    x: typeof saved?.x === 'number' ? saved.x : def.x,
+    y: typeof saved?.y === 'number' ? saved.y : def.y,
+    scale: typeof saved?.scale === 'number' ? saved.scale : 1,
+  }
+}
+
 // Roadmap layout constants (for visual flow diagrams)
 const ROADMAP_CIRCLE_RADIUS = 70
 const ROADMAP_START_Y = 450
@@ -269,8 +363,15 @@ const ROADMAP_CIRCLE_SPACING = 360
 function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], startY: number, offsetX: number = 0, wrapChars: number = 60): string {
   const items = blocks.find(b => b.type === 'bullets')?.items || []
   if (!items || items.length === 0) return ''
-  const baseX = 108 + offsetX
-  const boxX = 96 + offsetX
+  // Marker column sits at the content block's own left edge; text starts
+  // clear of it. These used to be baseX=108 / boxX=96 — i.e. the marker
+  // began just 12px left of the text while being up to 16px WIDE, so it
+  // always overlapped the first character ("▪kubectl installed", reported
+  // 2026-08-15 as "the placement of text and icon not good"). Text x is now
+  // derived from the marker's actual width below instead of a fixed 12px
+  // guess, matching the editor's own bullet row (marker, then a real gap,
+  // then text — see VisualDesignerPanel.jsx's BulletsContent).
+  const markerX = 96 + offsetX
   const dotX1 = 128 + offsetX
   const dotX2 = 160 + offsetX
   // Sub-point wrap widths scale proportionally with the main wrapChars so
@@ -348,10 +449,11 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
     // "frame" ("cadre") behind every bullet that didn't match the editor.
     const mainLines = wrap(esc(mainIdea.text), wrapChars)
     const markerSize = Math.max(10, Math.round(16 * scale))
-    svg += `<rect x="${boxX}" y="${y - markerSize + 4}" width="${markerSize}" height="${markerSize}" rx="3" fill="${mainIdea.color || t.accent}"/>`
+    const textX = markerX + markerSize + 14
+    svg += `<rect x="${markerX}" y="${y - markerSize + 4}" width="${markerSize}" height="${markerSize}" rx="3" fill="${mainIdea.color || t.accent}"/>`
 
     for (let i = 0; i < mainLines.length; i++) {
-      svg += `<text x="${baseX}" y="${y + i * mainLineH}" font-family="Arial,sans-serif" font-size="${mainFontSize}" 
+      svg += `<text x="${textX}" y="${y + i * mainLineH}" font-family="Arial,sans-serif" font-size="${mainFontSize}"
         fill="${mainIdea.color || t.title}" font-weight="700" letter-spacing="-0.5">${mainLines[i]}</text>`
     }
 
@@ -367,8 +469,11 @@ function renderBullets(blocks: SlideBlock[], t: typeof THEMES['dark-navy'], star
 
       svg += `<circle cx="${indentX}" cy="${y - 8}" r="${indentDot}" fill="${supportPoint.color || t.muted}" opacity="0.6"/>`
 
+      // Text clears the dot's RIGHT edge (cx + r), not its center — same
+      // overlap bug the main marker had just above.
+      const subTextX = indentX + indentDot + 14
       for (let i = 0; i < supportLines.length; i++) {
-        svg += `<text x="${indentX + 20}" y="${y + i * subLineH}" font-family="Arial,sans-serif" font-size="${isLevel2 ? subFontSize2 : subFontSize1}"
+        svg += `<text x="${subTextX}" y="${y + i * subLineH}" font-family="Arial,sans-serif" font-size="${isLevel2 ? subFontSize2 : subFontSize1}"
           fill="${supportPoint.color || (isLevel2 ? t.muted : t.body)}" font-weight="${supportPoint.bold ? '600' : '400'}"
           font-style="${supportPoint.italic ? 'italic' : 'normal'}">${supportLines[i]}</text>`
       }
@@ -632,23 +737,65 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
 
   // Extract position offsets from Visual Designer (percentage-based)
   const positions = slide.positions || {}
-  const titlePos = positions.title || { x: 0, y: 0, scale: 1 }
-  const subtitlePos = positions.subtitle || { x: 0, y: 0, scale: 1 }
-  const contentPos = positions.content || { x: 0, y: 0, scale: 1 }
   const imagePos = positions.image || { x: 0, y: 0, scale: 1 }
-  
-  // Convert percentage offsets to pixels
-  const titleOffsetX = (W * titlePos.x) / 100 || 0
-  const titleOffsetY = (H * titlePos.y) / 100 || 0
-  const subtitleOffsetX = (W * subtitlePos.x) / 100 || 0
-  const subtitleOffsetY = (H * subtitlePos.y) / 100 || 0
-  const contentOffsetX = (W * contentPos.x) / 100 || 0
-  const contentOffsetY = (H * contentPos.y) / 100 || 0
+
+  // Image placement is the one remaining offset-based (not absolute) spot —
+  // left as-is, see the legacy image-placement branch further down.
   const imageOffsetX = (W * imagePos.x) / 100 || 0
   const imageOffsetY = (H * imagePos.y) / 100 || 0
 
-  const titleY = (layout === 'title-hero' ? 440 : TITLE_BASE_Y) + titleOffsetY
-  const titleFontSize = (layout === 'title-hero' ? 84 : 64) * (titlePos.scale || 1)
+  // The other 8 layouts: resolvePos() merges each saved position over that
+  // layout's own default (same shallow merge the editor's canvas does), then
+  // this converts straight to ABSOLUTE pixels on the 1920x1080 slide — no
+  // added base — matching `left: x%, top: y%` on the editor's DraggableLayer.
+  const resolvedTitle    = resolvePos(layout, 'title', positions.title)
+  const resolvedContent  = resolvePos(layout, 'content', positions.content)
+
+  // A scene that's never been opened/dragged in Visual Design (no saved
+  // positions at all) with genuinely SHORT content — one bullet line, no
+  // sub-points — renders title/subtitle/content all cramped into the
+  // default top-left anchors (15%/32%/44%), leaving roughly the bottom half
+  // of the slide completely empty. Reads as sparse/unfinished rather than a
+  // deliberate design choice — reported 2026-08-15 ("text is mal placed and
+  // not good, remember this for a student"). Nudging the whole group down
+  // toward vertical center fixes that WITHOUT touching anything the user
+  // actually customized (this only fires when positions/positionedBlocks
+  // are both entirely absent) and without risking longer content — a scene
+  // with real substance keeps its normal top anchor so wrapped lines still
+  // have room to run before hitting the avatar or the bottom edge.
+  const hasCustomTextPositions = !!(positions.title || positions.subtitle || positions.content)
+  const contentItemCount = slide.blocks?.[0]?.items?.length || 0
+  const isSparseDefaultSlide = !hasCustomTextPositions
+    && !(slide.positionedBlocks && slide.positionedBlocks.length)
+    && contentItemCount <= 1
+    && layout !== 'title-hero'
+  // Not capped against the avatar's own box the way hero's text is above —
+  // the existing horizontal wrap budget (availableWidthPct/titleWrapChars,
+  // computed below from the avatar's LEFT edge) already keeps a bullet line
+  // from running into the avatar's column regardless of which Y it starts
+  // at, and sparse content is by definition short enough to comfortably fit
+  // inside that budget.
+  const sparseShiftPct = isSparseDefaultSlide ? 12 : 0
+
+  const titleXPx    = (W * resolvedTitle.x) / 100
+  const titleYPx    = (H * (resolvedTitle.y + sparseShiftPct)) / 100
+  const contentXPx  = (W * resolvedContent.x) / 100
+  const contentYPx  = (H * (resolvedContent.y + sparseShiftPct)) / 100
+
+  // Absolute for every layout, hero included — see resolvePos()'s comment.
+  // Hero was originally left on the OLD "960 + a small offset nudge" model
+  // on the theory that its centered composition needed different math, but
+  // VisualDesignerPanel.jsx's TitleLayer positions hero's title through the
+  // exact same absolute-position DraggableLayer every other layout uses
+  // (only the CSS text-align changes to centered) — so hero needs the same
+  // absolute-position fix, just centered within its own box instead of
+  // left-aligned. Reported 2026-08-14: with a saved `positions.title` that
+  // happened to equal the layout's own default ({x:10,y:24}), the old
+  // formula still added it as an offset on top of the hero-only base of
+  // 440px, landing the title around y=699px (~65% down) — deep inside the
+  // avatar's own vertical footprint instead of safely above it.
+  const titleY = titleYPx
+  const titleFontSize = (layout === 'title-hero' ? 84 : 64) * resolvedTitle.scale
   const titleText = esc((slide.title || '').slice(0, 90))
   // Subtitle ("Key Insight") — restored (2026-08-11): it was forced empty
   // here to match the Visual Designer canvas, which used to suppress it too.
@@ -689,24 +836,97 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
     ? Math.max(30, Math.min(90, 96 - contentBaseLeftPct))
     : Math.max(40, Math.min(90, avatarLeftEdgePct - 2))
   
-  // Calculate subtitle Y based on number of title lines to avoid overlap
-  // If title is multi-line, push subtitle down further
-  const subtitleYAdjust = (layout === 'title-hero' 
-    ? 330 
-    : Math.max(330, TITLE_BASE_Y + titleLines.length * TITLE_LINE_H + 30)) + subtitleOffsetY
+  // NOTE: non-hero layouts deliberately draw NO subtitle and no divider
+  // rule. VisualDesignerPanel.jsx removed the subtitle layer from its canvas
+  // ("Subtitle (Key Insight) no longer shown on the slide — removed per
+  // request"): `positions.subtitle` still exists in saved data, but nothing
+  // renders into it, and BulletsContent et al ignore the subtitle prop
+  // entirely. This renderer kept drawing it anyway, at whatever
+  // positions.subtitle happened to hold — usually the layout DEFAULT, which
+  // sits ABOVE where a dragged-down title ends up, so it printed the
+  // subtitle straight through the title ("Kubernetes Command-Line" over
+  // "Local Environment Prerequisites", reported 2026-08-15). Only hero
+  // still shows a subtitle, drawn inside heroTitleSvg from the content
+  // box's position, exactly like the editor's TitleHeroContent does.
 
   let contentSvg = ''
   const blocks = slide.blocks || []
 
+  // Hero centers its title WITHIN its own draggable box rather than at a
+  // fixed screen x=960 — VisualDesignerPanel.jsx's LAYER_WIDTHS makes that
+  // box 65% wide, CSS text-align:center then centers the text inside it, so
+  // the true visual center is `positions.title.x + 65/2`, not just
+  // `positions.title.x` (that's the box's LEFT edge) and not screen-center
+  // either unless the box also happens to be screen-centered. Hero's
+  // subtitle + key-point line (TitleHeroContent) render inside the CONTENT
+  // box instead — a separate draggable layer with its own position
+  // (positions.content) and its own scale, not tied to the title at all.
+  const HERO_BOX_WIDTH_PCT = 65 // VisualDesignerPanel.jsx's LAYER_WIDTHS.title / .content
+  const heroTitleCenterXPct = resolvedTitle.x + HERO_BOX_WIDTH_PCT / 2
+  const heroContentCenterXPct = resolvedContent.x + HERO_BOX_WIDTH_PCT / 2
+  const heroTitleCenterXPx = (W * heroTitleCenterXPct) / 100
+  const heroContentCenterXPx = (W * heroContentCenterXPct) / 100
+
+  // Shrinks a hero text block's font so its estimated rendered half-width
+  // clears the avatar box, but only when that block's own vertical band
+  // actually overlaps the avatar's — the avatar composites ON TOP of the
+  // finished slide, so text underneath it is simply hidden rather than
+  // safely running behind it. This grew into a real problem across several
+  // earlier crop/headroom fixes that each made the avatar box bigger
+  // (aspect 16:9 -> 4:3 -> 1:1, default width 19% -> 22%) without hero's
+  // text ever being told to make room for it — reported 2026-08-14
+  // ("hair... on top of the title") for the plain DEFAULT bottom-right box.
+  const heroAvoidScale = (centerXPct: number, yPct: number, fontPx: number, textLen: number): number => {
+    if (typeof slide.avatarX !== 'number' || typeof slide.avatarWidth !== 'number' || typeof slide.avatarY !== 'number') return 1
+    if (!textLen) return 1
+    const avHalfWPct = slide.avatarWidth / 2
+    const avLeftPct = slide.avatarX - avHalfWPct
+    const avRightPct = slide.avatarX + avHalfWPct
+    // Box height in % follows the SAME width->height rule as the actual
+    // composited box (ffmpegVideo.ts: boxHPx = boxWPx * AVATAR_BOX_ASPECT(1)
+    // in PIXELS on the 1920x1080 canvas — folding in the 16:9 aspect to
+    // convert that to a HEIGHT PERCENTAGE gives width% * 16/9).
+    const avHalfHPct = (slide.avatarWidth * (16 / 9)) / 2
+    const avTopPct = slide.avatarY - avHalfHPct
+    const avBottomPct = slide.avatarY + avHalfHPct
+    const lineHalfHPct = ((fontPx * 0.9) / H) * 100
+    const bandTopPct = yPct - lineHalfHPct
+    const bandBottomPct = yPct + lineHalfHPct
+    if (!(avTopPct < bandBottomPct && avBottomPct > bandTopPct)) return 1
+    const safeHalfPct = centerXPct <= slide.avatarX
+      ? Math.max(10, avLeftPct - centerXPct - 2)
+      : Math.max(10, centerXPct - avRightPct - 2)
+    // Rough estimate of the text's natural rendered half-width at full
+    // size — bold Arial averages close to 0.56x font-size per character,
+    // good enough to pick a font SCALE with, not a pixel-exact layout.
+    const naturalHalfWidthPct = ((textLen * fontPx * 0.56) / 2 / W) * 100
+    if (naturalHalfWidthPct <= safeHalfPct) return 1
+    return Math.max(0.55, safeHalfPct / naturalHalfWidthPct)
+  }
+
+  const heroTitleScale = layout === 'title-hero' ? heroAvoidScale(heroTitleCenterXPct, resolvedTitle.y, titleFontSize, titleText.length) : 1
+  const heroTitleFontSize = titleFontSize * heroTitleScale
+  const heroSubtitleFontSizeBase = 40 * (resolvedContent.scale || 1)
+  const heroSubtitleScale = layout === 'title-hero' ? heroAvoidScale(heroContentCenterXPct, resolvedContent.y, heroSubtitleFontSizeBase, subtitleText.length) : 1
+  const heroSubtitleFontSize = heroSubtitleFontSizeBase * heroSubtitleScale
+  const heroKeyPointFontSizeBase = 34 * (resolvedContent.scale || 1)
+  const heroKeyPointText = esc((blocks[0]?.items?.[0]?.text || '').slice(0, 140))
+  const heroKeyPointScale = layout === 'title-hero' ? heroAvoidScale(heroContentCenterXPct, resolvedContent.y + 3, heroKeyPointFontSizeBase, heroKeyPointText.length) : 1
+  const heroKeyPointFontSize = heroKeyPointFontSizeBase * heroKeyPointScale
+
   // Title text itself is always drawn from the shared title/subtitle SVG
   // below for non-hero layouts; title-hero draws its own centered title
-  // right here since it's visually a different composition entirely.
+  // right here since it's visually a different composition entirely. The
+  // subtitle + key-point line both live in the CONTENT box's position
+  // (resolvedContent), stacked with a small fixed gap between them —
+  // matching TitleHeroContent's own `flex flex-col gap-[3%]` stack.
   const heroTitleSvg = layout === 'title-hero' ? `
-      <text x="${960 + titleOffsetX}" y="${titleY}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
+      <text x="${heroTitleCenterXPx}" y="${titleY}" font-family="Arial,sans-serif" font-size="${heroTitleFontSize}"
         fill="${t.title}" font-weight="800" text-anchor="middle">${titleText}</text>
-      ${subtitleText ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 100}" font-family="Arial,sans-serif" font-size="${40 * (subtitlePos.scale || 1)}"
+      ${subtitleText ? `<text x="${heroContentCenterXPx}" y="${contentYPx}" font-family="Arial,sans-serif" font-size="${heroSubtitleFontSize}"
         fill="${t.accent}" text-anchor="middle" font-weight="500">${subtitleText}</text>` : ''}
-      <rect x="${760 + subtitleOffsetX}" y="${titleY + 140}" width="400" height="3" rx="2" fill="${t.accent}" opacity="0.6"/>
+      ${heroKeyPointText ? `<text x="${heroContentCenterXPx}" y="${contentYPx + (subtitleText ? 46 : 0)}" font-family="Arial,sans-serif" font-size="${heroKeyPointFontSize}"
+        fill="${t.body}" text-anchor="middle" font-weight="500">${heroKeyPointText}</text>` : ''}
   ` : ''
 
   if (slide.positionedBlocks && slide.positionedBlocks.length > 0) {
@@ -725,8 +945,11 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
     // before instead of rendering blank.
     switch (layout) {
       case 'title-hero':
-        contentSvg = heroTitleSvg + (blocks[0]?.items?.[0] ? `<text x="${960 + subtitleOffsetX}" y="${titleY + 230}" font-family="Arial,sans-serif" font-size="34"
-          fill="${t.body}" text-anchor="middle" opacity="0.9">${esc(blocks[0].items[0].text)}</text>` : '')
+        // Key-point line is already drawn inside heroTitleSvg above (it
+        // reads the same blocks[0].items[0].text), positioned with the rest
+        // of the content box instead of a title-relative offset — nothing
+        // left to add here.
+        contentSvg = heroTitleSvg
         break
       case 'definition':
         contentSvg = renderDefinition(blocks, t)
@@ -744,12 +967,14 @@ export function buildSlide(slide: SlideContent, moduleTitle: string, sceneIndex:
         contentSvg = renderRoadmap(blocks, t, (slide as any).segments)
         break
       default:
-        // Content block position now responds to the user's own drag offset
-        // (positions.content), same as title/subtitle — previously this was
-        // hardcoded to CONTENT_Y and ignored contentOffsetX/contentOffsetY.
-        // wrapChars narrows the same way titleWrapChars does, so bullets never
-        // run under the avatar placeholder either.
-        contentSvg = renderBullets(blocks, t, CONTENT_Y + contentOffsetY, contentOffsetX, titleWrapChars)
+        // Content block position is the user's own absolute drag position
+        // (positions.content, resolved against this layout's default — see
+        // resolvePos() above), not CONTENT_Y-plus-an-offset. renderBullets'
+        // own baseX already starts at 108px, so subtract that back out here
+        // rather than change its signature. wrapChars narrows the same way
+        // titleWrapChars does, so bullets never run under the avatar
+        // placeholder either.
+        contentSvg = renderBullets(blocks, t, contentYPx, contentXPx - 108, titleWrapChars)
     }
   }
 
@@ -791,7 +1016,7 @@ ${layout !== 'title-hero' ? (() => {
   const pillLabel = esc(moduleTitle.toUpperCase().slice(0, 40))
   const pillW = Math.min(700, Math.max(220, pillLabel.length * 15 + 80))
   const titleLinesSvg = titleLines.map((line, i) =>
-    `<text x="100" y="${TITLE_BASE_Y + i * TITLE_LINE_H}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
+    `<text x="${titleXPx}" y="${titleYPx + i * TITLE_LINE_H}" font-family="Arial,sans-serif" font-size="${titleFontSize}"
       fill="${t.title}" font-weight="700" letter-spacing="-1">${line}</text>`
   ).join('\n')
   // Module tag pill starts clear of the logo circle (centered at 80,80,
@@ -812,9 +1037,6 @@ ${layout !== 'title-hero' ? (() => {
 
 <!-- Main title — fixed-height band, never overlaps content below -->
 ${titleLinesSvg}
-${subtitleText ? `<text x="100" y="${subtitleYAdjust}" font-family="Arial,sans-serif" font-size="32"
-  fill="${t.accent}" font-weight="500" opacity="0.9">${subtitleText}</text>` : ''}
-<rect x="100" y="${Math.max(DIVIDER_Y, subtitleYAdjust + 50)}" width="900" height="2" fill="${t.accent}" opacity="0.4" rx="1"/>
 `
 })() : `
 <!-- Hero: module label centered at top -->
@@ -856,8 +1078,10 @@ ${slide.imageUrl ? (() => {
     ? 30
     : 8
   
-  // Safe image URL handling - escape special chars for SVG
-  const safeImageUrl = (slide.imageUrl || '')
+  // Safe image URL handling - resolve local uploads to inline base64 (see
+  // resolveImageForSvg) so sharp/librsvg can actually decode them, then
+  // escape special chars for SVG attribute embedding.
+  const safeImageUrl = resolveImageForSvg(slide.imageUrl || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

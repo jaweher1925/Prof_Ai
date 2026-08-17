@@ -3,13 +3,20 @@
  *
  * This is now where all avatar generation actually happens (Module Editing is
  * transitions + approval only). Clicking "Generate" on a module opens a modal
- * listing every scene in that module — scenes are rendered ONE AT A TIME, by
- * hand, so a run never hammers HeyGen with a big batch at once (that's what was
- * triggering "Insufficient credit" / rate-limit style failures before). Once
- * every scene in the modal has a rendered clip, "Generate module video" merges
- * them into the module's final video, which can then be downloaded.
+ * listing every PART of every scene in that module (one row per segment for a
+ * multi-part scene, matching Visual Design's numbering exactly — see the
+ * flattening logic in GenerateModuleModal below) — rendered ONE AT A TIME, by
+ * hand, so a run never hammers HeyGen with several jobs at once (that's what
+ * was triggering "Insufficient credit" / rate-limit style failures, and also
+ * why a multi-part scene used to fire off all its segments simultaneously —
+ * removed by request). Once every part in the modal has a rendered clip
+ * (multi-part scenes auto-stitch into one scene video once all their parts
+ * are done — see heygenFinalize.ts's stitchSceneFromSegments), "Generate
+ * module video" merges every scene into the module's final video, which can
+ * then be downloaded.
  */
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { modulesService } from '@/services/modules'
 import { scenesService } from '@/services/scenes'
@@ -25,14 +32,26 @@ function errorToString(e) {
   try { return JSON.stringify(e) } catch { return 'Something went wrong' }
 }
 
-// Has this scene already got a finished avatar video? If so it's skipped by
+// Has this part already got a finished avatar video? If so it's skipped by
 // default (saves HeyGen credits + time on a re-run). A `heygen:` value is a
 // still-pending job, so it doesn't count as done.
 const isRendered = (v) => !!v && !String(v).startsWith('heygen:')
+// Backend sentinel for "submitted, HeyGen hasn't finished yet" — see
+// generateHeyGenAvatar.ts, which writes `avatarVideoUrl: heygen:<videoId>`
+// the moment a job is accepted. Recognizing this lets the UI tell a
+// still-rendering part apart from one that was never started, INCLUDING
+// right after the generate modal is closed and reopened — otherwise a part
+// that's actually mid-render on HeyGen's side looked identical to an
+// untouched one, and was still clickable, risking a second HeyGen job being
+// fired for the same part (reported 2026-08-13: "if i close that window
+// when i open it again can i see it again and still running").
+const isPending = (v) => !!v && String(v).startsWith('heygen:')
+const pendingVideoId = (v) => String(v).slice('heygen:'.length)
 
 // mm:ss for the live elapsed-time readout — HeyGen render time varies a lot
-// (a few minutes to 8+ for a long, multi-part scene), so a live "how long
-// this is taking so far" counter is more honest than a fixed ETA guess.
+// (a few minutes to well over 15+ depending on account concurrency/queueing),
+// so a live "how long this is taking so far" counter is more honest than a
+// fixed ETA guess.
 function formatElapsed(sec) {
   const m = Math.floor(sec / 60)
   const s = sec % 60
@@ -55,8 +74,8 @@ function StepProgress({ label, sublabel }) {
   )
 }
 
-// The per-module modal: lists every scene, generates them one at a time on
-// request, then merges once they're all done.
+// The per-module modal: lists every PART (segment) of every scene, generates
+// them one at a time on request, then merges once every scene is done.
 function GenerateModuleModal({ module, project, onClose }) {
   const queryClient = useQueryClient()
   const { data: scenes = [], isLoading } = useQuery({
@@ -64,36 +83,77 @@ function GenerateModuleModal({ module, project, onClose }) {
     queryFn: () => scenesService.listByModule(module.id),
     enabled: !!module.id,
   })
-  const ordered = [...scenes].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
+  const orderedScenes = [...scenes].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
 
-  // { [sceneId]: { status: 'busy'|'done'|'warning'|'error', message } } — a
-  // scene not in this map yet falls back to whatever the backend already has
-  // (isRendered(scene.avatarVideoUrl)), so previously-rendered scenes show as
+  // Flatten scenes into one row PER SEGMENT — mirrors VisualDesignerPanel's
+  // menu exactly (same rule: a scene's rows are its segments, or a single
+  // implicit row if it has none; one running counter numbers every row
+  // across the WHOLE module, not restarting per scene), so "part 3" here
+  // means the same thing it does in Visual Design.
+  //
+  // A scene with MORE THAN ONE segment renders and tracks completion PER
+  // SEGMENT — each part is its own HeyGen job, its own click, its own
+  // SceneSegment.avatarVideoUrl, auto-stitched into the scene's real video
+  // once every sibling part is also done (heygenFinalize.ts's
+  // stitchSceneFromSegments — no more auto-firing every part at once).
+  // A scene with exactly one segment (or none — legacy single-slide scenes)
+  // still renders/tracks at the SCENE level (Scene.avatarVideoUrl), same as
+  // before — it's still just one row, one click, one job either way.
+  let rowNumber = 0
+  const rows = orderedScenes.flatMap((scene) => {
+    const segs = (scene.segments && scene.segments.length > 0) ? scene.segments : [null]
+    const multiPart = segs.length > 1
+    return segs.map((seg) => {
+      rowNumber += 1
+      return {
+        key: seg ? seg.id : scene.id,
+        displayNumber: rowNumber,
+        scene,
+        // Only pass segment_id to the backend when it actually changes
+        // behavior (a true multi-part scene) — for a single-segment scene
+        // the backend treats it as a normal whole-scene render regardless.
+        segmentId: multiPart ? seg?.id : null,
+        renderedUrl: multiPart ? seg?.avatarVideoUrl : scene.avatarVideoUrl,
+        thumb: seg?.visualAssetUrl || scene.visualAssetUrl,
+        label: seg?.segmentType
+          ? seg.segmentType.charAt(0).toUpperCase() + seg.segmentType.slice(1)
+          : (scene.sceneKind === 'welcome' ? 'Intro' : scene.sceneKind === 'quiz' ? 'Quiz' : 'Scene'),
+      }
+    })
+  })
+
+  // { [rowKey]: { status: 'busy'|'done'|'warning'|'error', message } } — a
+  // row not in this map yet falls back to whatever the backend already has
+  // (isRendered(row.renderedUrl)), so previously-rendered parts show as
   // done immediately without needing a click.
-  const [sceneStates, setSceneStates] = useState({})
-  const [activeSceneId, setActiveSceneId] = useState(null) // one at a time, by design
-  const [autoRunning, setAutoRunning] = useState(false) // true while "Generate scenes" is chaining through all of them
-  const [autoError, setAutoError] = useState(null)
+  const [rowStates, setRowStates] = useState({})
+  const [activeRowKey, setActiveRowKey] = useState(null) // one at a time, by design — set by whichever tile was clicked
+  // Which row's rendered clip is currently open in the preview player. Stored
+  // as just the key (not the row object) so it stays fresh across re-renders
+  // — e.g. after a regenerate, `rows` is recomputed with a new renderedUrl
+  // and the preview should show the NEW clip, not a stale snapshot.
+  const [previewKey, setPreviewKey] = useState(null)
 
-  const statusOf = (scene) => sceneStates[scene.id]?.status
-    || (isRendered(scene.avatarVideoUrl) ? 'done' : 'idle')
-  const messageOf = (scene) => sceneStates[scene.id]?.message
+  // Server-known pending state (isPending) is checked even when this row has
+  // no LOCAL rowStates entry yet — that's exactly the case right after the
+  // modal is reopened, before the resume effect below has had a chance to
+  // attach its own 'busy' state.
+  const statusOf = (row) => rowStates[row.key]?.status
+    || (isPending(row.renderedUrl) ? 'busy' : isRendered(row.renderedUrl) ? 'done' : 'idle')
+  const messageOf = (row) => rowStates[row.key]?.message
+    || (isPending(row.renderedUrl) && !rowStates[row.key] ? 'Still rendering on HeyGen…' : undefined)
 
-  // Live "how long has this scene been rendering" counter — HeyGen's own
-  // render time isn't something we control or can predict precisely (it
-  // ranged from ~2 to ~8+ minutes across recent runs), so a ticking elapsed
-  // clock is a more honest signal than a made-up ETA.
   const [elapsedSec, setElapsedSec] = useState(0)
   useEffect(() => {
-    if (!activeSceneId) { setElapsedSec(0); return }
+    if (!activeRowKey) { setElapsedSec(0); return }
     const start = Date.now()
     setElapsedSec(0)
     const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - start) / 1000)), 1000)
     return () => clearInterval(id)
-  }, [activeSceneId])
+  }, [activeRowKey])
 
-  const doneCount = ordered.filter(sc => statusOf(sc) === 'done' || statusOf(sc) === 'warning').length
-  const total = ordered.length
+  const doneCount = rows.filter(row => statusOf(row) === 'done' || statusOf(row) === 'warning').length
+  const total = rows.length
   const allDone = total > 0 && doneCount === total
 
   const pollScene = (sceneId, videoId) => new Promise((resolve) => {
@@ -103,7 +163,7 @@ function GenerateModuleModal({ module, project, onClose }) {
         const r = await agentsService.pollHeyGen(videoId, sceneId)
         if (r?.completed) return resolve({ status: r?.avatar_warning ? 'warning' : 'done', message: r?.avatar_warning })
         if (r?.status === 'failed' || r?.status === 'error') {
-          return resolve({ status: 'error', message: r?.error || 'HeyGen could not render this scene.' })
+          return resolve({ status: 'error', message: r?.error || 'HeyGen could not render this part.' })
         }
         setTimeout(() => tick(n + 1), 5000)
       } catch (e) { resolve({ status: 'error', message: errorToString(e) }) }
@@ -111,145 +171,70 @@ function GenerateModuleModal({ module, project, onClose }) {
     tick(0)
   })
 
-  const generateScene = async (sceneId) => {
-    if (activeSceneId) return // one at a time
+  const anyPending = rows.some(row => isPending(row.renderedUrl))
+
+  const generateRow = async (row) => {
+    if (activeRowKey || anyPending) return // one at a time
     if (!project?.defaultAvatarId || !project?.defaultVoiceId) {
-      setSceneStates(prev => ({ ...prev, [sceneId]: { status: 'error', message: 'Choose an avatar and a voice in Casting settings first.' } }))
+      setRowStates(prev => ({ ...prev, [row.key]: { status: 'error', message: 'Choose an avatar and a voice in Casting settings first.' } }))
       return
     }
-    setActiveSceneId(sceneId)
-    setSceneStates(prev => ({ ...prev, [sceneId]: { status: 'busy', message: 'Rendering the slide and submitting to HeyGen…' } }))
+    setActiveRowKey(row.key)
+    setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'Rendering the slide and submitting to HeyGen…' } }))
     try {
-      const r = await agentsService.runHeyGenAvatar(sceneId, project.defaultAvatarId, project.defaultVoiceId, true)
+      const r = await agentsService.runHeyGenAvatar(row.scene.id, project.defaultAvatarId, project.defaultVoiceId, true, row.segmentId || undefined)
       if (r?.video_id) {
-        setSceneStates(prev => ({ ...prev, [sceneId]: { status: 'busy', message: 'HeyGen is rendering the talking avatar (usually 1–2 min)…' } }))
-        const outcome = await pollScene(sceneId, r.video_id)
-        setSceneStates(prev => ({ ...prev, [sceneId]: outcome }))
+        setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'HeyGen is rendering the talking avatar (usually 1–2 min)…' } }))
+        const outcome = await pollScene(row.scene.id, r.video_id)
+        setRowStates(prev => ({ ...prev, [row.key]: outcome }))
       } else {
-        setSceneStates(prev => ({ ...prev, [sceneId]: r?.avatar_warning ? { status: 'warning', message: r.avatar_warning } : { status: 'done' } }))
+        setRowStates(prev => ({ ...prev, [row.key]: r?.avatar_warning ? { status: 'warning', message: r.avatar_warning } : { status: 'done' } }))
       }
     } catch (e) {
-      setSceneStates(prev => ({ ...prev, [sceneId]: { status: 'error', message: errorToString(e) } }))
+      setRowStates(prev => ({ ...prev, [row.key]: { status: 'error', message: errorToString(e) } }))
     } finally {
-      setActiveSceneId(null)
+      setActiveRowKey(null)
       queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
     }
   }
 
-  // Fallback path — generate every not-yet-done scene in order, one at a
-  // time (still one HeyGen job in flight at once, same pacing as clicking
-  // each scene by hand, just automated). A scene that already has a video
-  // (or one you regenerate individually below) is skipped. Kept as a manual
-  // fallback under the primary batch button below — slower (one HeyGen job
-  // per scene) but each scene succeeds/fails independently, which the
-  // all-or-nothing batch below doesn't offer.
-  const generateAllScenes = async (force = false) => {
-    if (autoRunning || activeSceneId || batchRunning) return
-    if (!project?.defaultAvatarId || !project?.defaultVoiceId) {
-      setAutoError('Choose an avatar and a voice in Casting settings first.')
-      return
-    }
-    setAutoRunning(true); setAutoError(null)
-    for (const scene of ordered) {
-      const st = statusOf(scene)
-      // force=true is passed when every scene is already done ("Regenerate
-      // all scenes" was clicked) — without it, every scene would just skip
-      // itself as already-done and the button would silently do nothing.
-      if (!force && (st === 'done' || st === 'warning')) continue
-      await generateScene(scene.id)
-    }
-    setAutoRunning(false)
+  // Picks a still-rendering part back up after this modal is closed and
+  // reopened (or the page is refreshed) mid-render. generateRow() submits
+  // the job AND polls it in one call, but a fresh mount of this modal only
+  // knows what's in the `scenes` query — it never called generateRow itself,
+  // so there's no polling loop running for that part anymore. The HeyGen job
+  // itself is unaffected (it's a backend job, not tied to this component
+  // being mounted), so all that's missing is watching for its completion —
+  // resumeRow() re-attaches exactly that, using the videoId embedded in the
+  // `heygen:<id>` sentinel (see isPending/pendingVideoId above) instead of
+  // resubmitting a brand new job.
+  const resumeRow = (row) => {
+    const videoId = pendingVideoId(row.renderedUrl)
+    setActiveRowKey(row.key)
+    setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'Still rendering on HeyGen — picked back up after reopening…' } }))
+    pollScene(row.scene.id, videoId).then((outcome) => {
+      setRowStates(prev => ({ ...prev, [row.key]: outcome }))
+    }).finally(() => {
+      setActiveRowKey(null)
+      queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
+    })
   }
-  const activeIndex = ordered.findIndex(s => s.id === activeSceneId)
 
-  // Primary action (#46) — bundle every not-yet-done scene's narration into
-  // ONE HeyGen job instead of one job per scene, cutting total fixed
-  // per-job overhead (see generateModuleAvatarBatch.ts's docs). All-or-
-  // nothing: every scene in the batch finishes together when the one job
-  // lands, rather than showing individual progress as each completes —
-  // that trade-off is why generateAllScenes above is kept as a fallback.
-  const [batchRunning, setBatchRunning] = useState(false)
-  const [batchError, setBatchError] = useState(null)
-  const [batchElapsedSec, setBatchElapsedSec] = useState(0)
+  // Runs on every render (cheap — just an array scan) but is self-limiting:
+  // resumeRow() sets a rowStates entry for that key synchronously via
+  // setState, so the very next render's `.find()` no longer matches it,
+  // and activeRowKey being set blocks starting a second resume in parallel.
   useEffect(() => {
-    if (!batchRunning) { setBatchElapsedSec(0); return }
-    const start = Date.now()
-    setBatchElapsedSec(0)
-    const id = setInterval(() => setBatchElapsedSec(Math.floor((Date.now() - start) / 1000)), 1000)
-    return () => clearInterval(id)
-  }, [batchRunning])
-
-  const pollBatch = (videoId) => new Promise((resolve) => {
-    const tick = async (n) => {
-      if (n > 180) return resolve({ status: 'error', message: 'Timed out waiting on HeyGen (~15 min).' })
-      try {
-        const r = await agentsService.pollHeyGen(videoId)
-        if (r?.completed) return resolve({ status: 'done' })
-        if (r?.status === 'failed' || r?.status === 'error') {
-          return resolve({ status: 'error', message: r?.error || 'HeyGen could not render this batch.' })
-        }
-        setTimeout(() => tick(n + 1), 5000)
-      } catch (e) { resolve({ status: 'error', message: errorToString(e) }) }
-    }
-    tick(0)
+    if (activeRowKey || isLoading) return
+    const orphaned = rows.find(row => isPending(row.renderedUrl) && !rowStates[row.key])
+    if (orphaned) resumeRow(orphaned)
   })
 
-  const generateBatch = async (force = false) => {
-    if (batchRunning || autoRunning || activeSceneId) return
-    if (!project?.defaultAvatarId || !project?.defaultVoiceId) {
-      setBatchError('Choose an avatar and a voice in Casting settings first.')
-      return
-    }
-    const targets = force ? ordered : ordered.filter((sc) => {
-      const st = statusOf(sc)
-      return st !== 'done' && st !== 'warning'
-    })
-    if (!targets.length) return
-    setBatchRunning(true); setBatchError(null)
-    setSceneStates((prev) => {
-      const next = { ...prev }
-      targets.forEach((sc) => { next[sc.id] = { status: 'busy', message: 'Batched into one HeyGen job with the rest of this module…' } })
-      return next
-    })
-    try {
-      const r = await agentsService.runGenerateModuleAvatarBatch(module.id, targets.map((sc) => sc.id))
-      if (r?.status === 'completed') {
-        setSceneStates((prev) => {
-          const next = { ...prev }
-          targets.forEach((sc) => { next[sc.id] = { status: 'done' } })
-          return next
-        })
-      } else if (r?.video_id) {
-        const outcome = await pollBatch(r.video_id)
-        setSceneStates((prev) => {
-          const next = { ...prev }
-          targets.forEach((sc) => {
-            next[sc.id] = outcome.status === 'done' ? { status: 'done' } : { status: 'error', message: outcome.message }
-          })
-          return next
-        })
-        if (outcome.status === 'error') setBatchError(outcome.message)
-      } else {
-        setBatchError(r?.error || 'Batch generation failed.')
-        setSceneStates((prev) => {
-          const next = { ...prev }
-          targets.forEach((sc) => { next[sc.id] = { status: 'error', message: r?.error } })
-          return next
-        })
-      }
-    } catch (e) {
-      const msg = e?.response?.data?.error || errorToString(e)
-      setBatchError(msg)
-      setSceneStates((prev) => {
-        const next = { ...prev }
-        targets.forEach((sc) => { next[sc.id] = { status: 'error', message: msg } })
-        return next
-      })
-    } finally {
-      setBatchRunning(false)
-      queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
-    }
-  }
+  // No auto-chain "generate everything" action (removed by request) and no
+  // auto parallel multi-segment fan-out either — every row (scene OR
+  // segment) only ever starts on its own explicit click, one at a time.
+  const activeIndex = rows.findIndex(row => row.key === activeRowKey)
+  const previewRow = rows.find(row => row.key === previewKey) || null
 
   // Merge — only meaningful once scenes have rendered clips to stitch together.
   const [mergeStatus, setMergeStatus] = useState(null) // null | 'busy' | 'done' | 'error'
@@ -289,14 +274,28 @@ function GenerateModuleModal({ module, project, onClose }) {
     }
   }
 
+  // Both overlays below are portaled straight to document.body. The panel
+  // this modal is opened from (FinalVideoPanel's root div) carries the
+  // shared `pa-page-enter` entrance-animation class, whose CSS animation
+  // ends on `transform: translateY(0) scale(1)` with fill-mode "both" — that
+  // final transform value NEVER clears (fill-mode keeps it applied forever
+  // after the animation finishes), and ANY transform on an ancestor — even
+  // an identity one — turns it into the containing block for descendant
+  // `position: fixed` elements per the CSS spec. Left un-portaled, both
+  // "fixed inset-0" overlays here would size/position themselves against
+  // that narrow max-w-3xl panel div instead of the real viewport (this is
+  // the same bug already worked around this way elsewhere, see
+  // VisualDesignerPanel.jsx's createPortal modals).
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto" onClick={onClose}>
+    <>
+    {createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-xl my-auto flex flex-col rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 dark:border-white/[0.06] flex-shrink-0">
+        className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-100 dark:border-white/[0.06] flex-shrink-0">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">{module.title || 'Module'}</p>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Generate each scene, then merge into the final video</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Generate each part, then merge into the final video</p>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5 flex-shrink-0">
             <X className="w-4 h-4" />
@@ -304,87 +303,97 @@ function GenerateModuleModal({ module, project, onClose }) {
         </div>
 
         {/* Helper text — explains the flow up front, every time. */}
-        <div className="mx-5 mt-4 flex items-start gap-2 px-3 py-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+        <div className="mx-5 mt-3 flex-shrink-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
           <Info className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 flex-shrink-0 mt-0.5" />
           <p className="text-[11px] text-indigo-700 dark:text-indigo-300">
-            Generate each scene below, then "Generate module video" merges them.
+            Click a part below to generate it — numbered the same way as in Visual Design. Once it's done, click it again to preview the clip before moving on to the next part.
           </p>
         </div>
 
-        {/* Primary action — per-scene (switched back from batched after a
-            real 20+min batch run on a 9-scene module — see FinalVideoPanel
-            docs / heygenFinalize.ts's module-batch section for the
-            trade-off). Batch is now the fallback, not removed — still useful
-            for smaller modules or once its timing is better understood. */}
-        <div className="mx-5 mt-3 flex-shrink-0">
-          <button onClick={() => generateAllScenes(allDone)} disabled={autoRunning || !!activeSceneId || batchRunning || total === 0}
-            className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-semibold transition-colors">
-            {autoRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {autoRunning
-              ? `Generating scene ${activeIndex >= 0 ? activeIndex + 1 : ''} of ${total}… (${formatElapsed(elapsedSec)} elapsed)`
-              : allDone ? 'Regenerate all scenes' : 'Generate scenes'}
-          </button>
-          {autoError && <p className="mt-1.5 text-[11px] text-red-500 dark:text-red-400">{autoError}</p>}
-          {!batchRunning && !autoRunning && !activeSceneId && (
-            <button onClick={() => generateBatch(allDone)}
-              className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 underline transition-colors">
-              …or batch it into one HeyGen job instead (can be faster, but all-or-nothing and unpredictable for large modules)
-            </button>
-          )}
-          {batchRunning && (
-            <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin" /> Rendering {total} scene{total === 1 ? '' : 's'} in one batch… ({formatElapsed(batchElapsedSec)} elapsed)
-            </p>
-          )}
-          {batchError && <p className="mt-1.5 text-[11px] text-red-500 dark:text-red-400">{batchError}</p>}
-        </div>
+        {/* No "generate all"/auto-chain button, and no auto parallel
+            multi-segment fan-out (both removed by request — a multi-part
+            scene used to fire ALL its segments as simultaneous HeyGen jobs
+            from one click). Every row now only starts when its own tile
+            below is clicked — see generateRow() above and the grid's
+            onClick just below. */}
+        {activeRowKey && (
+          <div className="mx-5 mt-3 flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+            <Loader2 className="w-3.5 h-3.5 text-indigo-500 animate-spin flex-shrink-0" />
+            <p className="text-[11px] text-indigo-700 dark:text-indigo-300">Rendering part {activeIndex >= 0 ? activeIndex + 1 : ''}… ({formatElapsed(elapsedSec)} elapsed)</p>
+          </div>
+        )}
 
         {/* Overall progress */}
         <div className="mx-5 mt-3 flex-shrink-0">
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1">
-            <span>{doneCount} of {total} scene{total === 1 ? '' : 's'} generated</span>
+            <span>{doneCount} of {total} part{total === 1 ? '' : 's'} generated</span>
           </div>
           <div className="h-1.5 rounded-full bg-slate-100 dark:bg-white/10 overflow-hidden">
             <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: total ? `${(doneCount / total) * 100}%` : '0%' }} />
           </div>
         </div>
 
-        {/* Scene grid — each scene is its own framed thumbnail card so you can
-            see at a glance what's generated. Not-yet-generated tiles pulse
-            (waiting its turn); a finished tile is a normal, static thumbnail.
-            No inner scrollbar here — the whole modal is the one scroll
-            surface (only kicks in if the modal is taller than the viewport),
-            so every scene is visible together instead of hidden in a box. */}
-        <div className="px-5 py-4">
+        {/* Part grid — each segment (or whole scene, if it has none) is its
+            own framed thumbnail card, numbered to match Visual Design, so you
+            can see at a glance what's generated. Not-yet-generated tiles
+            pulse (waiting for a click); a finished tile is a normal, static
+            thumbnail. This is the modal's ONE scroll surface (capped by the
+            card's max-h-[90vh] above) — header, progress bar and footer stay
+            put so the whole popup always fits on screen without the page
+            itself needing to scroll to reach it. */}
+        <div className="px-5 py-3 flex-1 min-h-0 overflow-y-auto">
           {isLoading ? (
             <div className="py-6 flex justify-center"><Spinner size="sm" /></div>
-          ) : ordered.length === 0 ? (
+          ) : rows.length === 0 ? (
             <p className="text-xs text-slate-400 dark:text-slate-500 text-center py-4">No scenes in this module.</p>
           ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-              {ordered.map((scene, i) => {
-                const status = statusOf(scene)
-                const message = messageOf(scene)
+            <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+              {rows.map((row) => {
+                const status = statusOf(row)
+                const message = messageOf(row)
                 const busy = status === 'busy'
-                const thumb = scene.visualAssetUrl
-                const sceneTitle = scene.slideComposition?.title || (scene.sceneKind === 'welcome' ? 'Intro' : scene.sceneKind === 'quiz' ? 'Quiz' : 'Scene')
+                // A rendered part opens a PREVIEW on click (see previewKey
+                // above) instead of immediately re-rendering — regenerating
+                // costs a real HeyGen job, so it now needs its own explicit
+                // click (the small refresh icon below), not an accidental
+                // click meant to just check the clip. Not-yet-rendered /
+                // errored parts still generate on click, same as before.
+                const isDoneish = status === 'done' || status === 'warning'
+                const canGenerate = !activeRowKey && !anyPending
+                const clickable = isDoneish || canGenerate
+                const handleTileClick = () => {
+                  if (isDoneish) { setPreviewKey(row.key); return }
+                  if (canGenerate) generateRow(row)
+                }
+                // Plain div, not <button> — it now contains its own nested
+                // regenerate button (invalid HTML to nest <button> inside
+                // <button>), with role="button" to keep it keyboard/AT
+                // accessible.
                 return (
-                  <div key={scene.id} title={message ? `${sceneTitle}: ${message}` : sceneTitle}
-                    className={`relative aspect-video rounded-xl border overflow-hidden bg-slate-100 dark:bg-slate-800 ${
+                  <div key={row.key} role="button" tabIndex={clickable ? 0 : -1}
+                    onClick={handleTileClick}
+                    onKeyDown={(e) => { if (clickable && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleTileClick() } }}
+                    aria-disabled={!clickable}
+                    title={
+                      message ? `${row.label}: ${message}`
+                        : isDoneish ? `${row.label} — click to preview`
+                        : `${row.label} — click to generate`
+                    }
+                    className={`relative aspect-video rounded-xl border overflow-hidden bg-slate-100 dark:bg-slate-800 text-left transition-all ${
                       status === 'done' ? 'border-emerald-500/40'
                         : status === 'warning' ? 'border-amber-500/40'
                         : status === 'error' ? 'border-red-500/40'
                         : busy ? 'border-indigo-500/40'
                         : 'border-slate-200 dark:border-white/10'
-                    }`}>
-                    {thumb ? (
-                      <img src={thumb} alt="" className={`absolute inset-0 w-full h-full object-cover ${status === 'idle' ? 'opacity-45' : ''}`} />
+                    } ${clickable ? 'hover:ring-2 hover:ring-indigo-400/50 cursor-pointer' : 'cursor-default opacity-60'}`}>
+                    {row.thumb ? (
+                      <img src={row.thumb} alt="" className={`absolute inset-0 w-full h-full object-cover ${status === 'idle' ? 'opacity-45' : ''}`} />
                     ) : (
-                      <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-base font-bold">{i + 1}</div>
+                      <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-base font-bold">{row.displayNumber}</div>
                     )}
-                    {/* Not generated yet — a gentle pulse marks it as still waiting its turn */}
+                    {/* Not generated yet — a gentle pulse marks it as waiting for a click */}
                     {status === 'idle' && <div className="absolute inset-0 bg-slate-400/10 animate-pulse" />}
-                    <span className="absolute top-1 left-1 w-5 h-5 rounded bg-black/45 text-white text-[10px] font-bold flex items-center justify-center">{i + 1}</span>
+                    <span className="absolute top-1 left-1 w-5 h-5 rounded bg-black/45 text-white text-[10px] font-bold flex items-center justify-center">{row.displayNumber}</span>
                     <div className={`absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center ${
                       status === 'done' ? 'bg-emerald-500/90' : status === 'warning' ? 'bg-amber-500/90' : status === 'error' ? 'bg-red-500/90' : busy ? 'bg-indigo-500/90' : 'bg-black/35'
                     }`}>
@@ -393,10 +402,22 @@ function GenerateModuleModal({ module, project, onClose }) {
                         : (status === 'warning' || status === 'error') ? <AlertCircle className="w-3 h-3 text-white" />
                         : null}
                     </div>
+                    <span className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/45 text-white text-[9px] font-medium max-w-[80%] truncate">
+                      {row.label}
+                    </span>
                     {busy && (
                       <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/55 text-white text-[9px] font-medium">
-                        {formatElapsed(batchRunning ? batchElapsedSec : elapsedSec)}
+                        {formatElapsed(elapsedSec)}
                       </span>
+                    )}
+                    {isDoneish && !busy && (
+                      <button type="button"
+                        onClick={(e) => { e.stopPropagation(); if (canGenerate) generateRow(row) }}
+                        disabled={!canGenerate}
+                        title={`Regenerate ${row.label} (uses another HeyGen render)`}
+                        className="absolute bottom-1 right-1 w-5 h-5 rounded-full bg-black/55 hover:bg-black/75 disabled:opacity-40 flex items-center justify-center text-white transition-colors">
+                        <RefreshCw className="w-3 h-3" />
+                      </button>
                     )}
                   </div>
                 )
@@ -406,7 +427,7 @@ function GenerateModuleModal({ module, project, onClose }) {
         </div>
 
         {/* Footer — merge action */}
-        <div className="px-5 py-4 border-t border-slate-100 dark:border-white/[0.06] flex-shrink-0 space-y-2.5">
+        <div className="px-5 py-3 border-t border-slate-100 dark:border-white/[0.06] flex-shrink-0 space-y-2">
           {mergeStatus === 'busy' && <StepProgress label="Merging scenes into the module video…" sublabel="Stitching every rendered clip together in order" />}
           {mergeStatus === 'error' && (
             <div className="flex items-start gap-1.5 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
@@ -425,7 +446,7 @@ function GenerateModuleModal({ module, project, onClose }) {
           )}
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] text-slate-400 dark:text-slate-500">
-              {allDone ? 'Every scene is generated — ready to merge.' : `${total - doneCount} scene${total - doneCount === 1 ? '' : 's'} left to generate.`}
+              {allDone ? 'Every part is generated — ready to merge.' : `${total - doneCount} part${total - doneCount === 1 ? '' : 's'} left to generate.`}
             </p>
             <button onClick={generateModuleVideo} disabled={mergeStatus === 'busy' || total === 0}
               title={!allDone ? 'You can still merge, but scenes without a rendered clip will be skipped' : undefined}
@@ -436,7 +457,48 @@ function GenerateModuleModal({ module, project, onClose }) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
+    )}
+
+    {/* Preview overlay — opened by clicking an already-rendered tile above.
+        Lets you check the clip (avatar, audio, lipsync) BEFORE moving on to
+        generate the next part, so a bad take gets caught and redone early
+        instead of only being noticed after the whole module is merged.
+        Portaled for the same containing-block reason as the modal above. */}
+    {previewRow && createPortal(
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70" onClick={() => setPreviewKey(null)}>
+        <div onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
+          <video controls autoPlay src={previewRow.renderedUrl} className="w-full aspect-video bg-black" />
+          <div className="p-4 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                Part {previewRow.displayNumber} — {previewRow.label}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                If this is good, close and generate the next part. Otherwise, regenerate it now.
+              </p>
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <button type="button"
+                onClick={() => { setPreviewKey(null); generateRow(previewRow) }}
+                disabled={!!activeRowKey || anyPending}
+                title="Regenerate this part (uses another HeyGen render)"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-50 transition-colors">
+                <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+              </button>
+              <button type="button" onClick={() => setPreviewKey(null)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 text-white transition-colors">
+                Looks good
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+    </>
   )
 }
 
@@ -491,7 +553,7 @@ export default function FinalVideoPanel({ project }) {
           <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
             <Info className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 flex-shrink-0 mt-0.5" />
             <p className="text-[11px] text-indigo-700 dark:text-indigo-300">
-              Press "Generate" on a module to open its scene list — render each scene's talking avatar one at a time, then merge into the module's final video.
+              Press "Generate" on a module to open its part list — render each talking avatar part one at a time, then merge into the module's final video.
             </p>
           </div>
           <div className={`px-4 py-2 rounded-lg text-xs border ${
@@ -554,7 +616,7 @@ export default function FinalVideoPanel({ project }) {
                       className="w-full aspect-video rounded-xl bg-indigo-600 hover:bg-indigo-500 flex flex-col items-center justify-center text-white gap-2.5 transition-colors shadow-sm">
                       <Sparkles className="w-8 h-8" />
                       <p className="text-sm font-semibold">Generate this module</p>
-                      <p className="text-[11px] text-indigo-100">Opens the scene-by-scene generator</p>
+                      <p className="text-[11px] text-indigo-100">Opens the part-by-part generator</p>
                     </button>
                   )}
                 </div>

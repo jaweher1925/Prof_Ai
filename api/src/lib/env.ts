@@ -40,4 +40,18 @@ export const env = {
   // local auth still works before .env is filled in — DO NOT rely on the
   // fallback in production; set a real random JWT_SECRET there.
   JWT_SECRET: process.env.JWT_SECRET || 'insecure-dev-only-secret-change-me',
+  // SMTP for the signup email-verification code (api/src/lib/mailer.ts).
+  // Not in REQUIRED above — deliberately optional so the app still starts
+  // without it; auth/signup.ts surfaces a clear error at signup time instead
+  // if these are missing, rather than every unrelated boot failing.
+  // Example (Gmail): host=smtp.gmail.com, port=587, user=you@gmail.com,
+  // pass=a 16-character App Password (NOT your normal Gmail password —
+  // Google blocks plain-password SMTP; generate one at
+  // https://myaccount.google.com/apppasswords, requires 2-Step Verification
+  // to be on). SMTP_FROM defaults to SMTP_USER if unset.
+  SMTP_HOST: process.env.SMTP_HOST || '',
+  SMTP_PORT: Number(process.env.SMTP_PORT) || 587,
+  SMTP_USER: process.env.SMTP_USER || '',
+  SMTP_PASS: process.env.SMTP_PASS || '',
+  SMTP_FROM: process.env.SMTP_FROM || '',
 }

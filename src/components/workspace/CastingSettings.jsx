@@ -44,20 +44,49 @@ function normGender(raw) {
 const AVATARS_QUERY = { queryKey: ['heygen-avatars'], queryFn: () => mediaService.listAvatars(), staleTime: 10 * 60 * 1000, initialData: () => mediaService.cachedAvatars(), initialDataUpdatedAt: 0 }
 const VOICES_QUERY  = { queryKey: ['elevenlabs-voices'], queryFn: () => mediaService.listVoices(),  staleTime: 10 * 60 * 1000 }
 
+// How much of the presenter each avatar shows. HeyGen bakes framing into the
+// avatar itself — its v3 API has NO framing parameter (v2's closeUp/normal was
+// dropped), so a chest-up avatar renders chest-up no matter what the slide
+// overlay does. Filtering here is the only way to actually get a fuller shot.
+// Labels come from api/src/functions/media.ts's classifyAvatarFraming().
+const FRAMING_FILTERS = [
+  { id: 'all',        label: 'All' },
+  { id: 'full-body',  label: 'Full body' },
+  { id: 'half-body',  label: 'Half body' },
+  { id: 'close-up',   label: 'Close-up' },
+]
+const FRAMING_LABELS = {
+  'full-body': 'Full body',
+  'half-body': 'Half body',
+  'close-up':  'Close-up',
+}
+
 // ─── Avatar Picker ────────────────────────────────────────────────────────────
 function AvatarPicker({ value, onChange }) {
   const [open, setOpen] = useState(false)
   const [manualMode, setManualMode] = useState(false)
   const [manualValue, setManualValue] = useState(value || '')
   const [refreshing, setRefreshing] = useState(false)
+  const [framing, setFraming] = useState('all')
   const ref = useRef(null)
   const queryClient = useQueryClient()
 
   const { data, isLoading: loading, error: queryError, isFetching } = useQuery(AVATARS_QUERY)
-  const avatars = data?.avatars || []
+  const allAvatars = data?.avatars || []
+  const avatars = framing === 'all'
+    ? allAvatars
+    : allAvatars.filter(a => a.framing === framing)
+  // Counts drive both the chip badges and the "nothing matched" copy below,
+  // so a filter that would come up empty is visibly empty BEFORE it's clicked.
+  const framingCounts = allAvatars.reduce((acc, a) => {
+    acc[a.framing || 'unknown'] = (acc[a.framing || 'unknown'] || 0) + 1
+    return acc
+  }, {})
+  // Checks allAvatars, not the filtered view — otherwise a framing filter
+  // that simply matches nothing would claim the whole HeyGen account is empty.
   const error = queryError
     ? (queryError?.message || 'Failed to load avatars. Check HEYGEN_API_KEY in api/.env.')
-    : (!loading && avatars.length === 0
+    : (!loading && allAvatars.length === 0
         ? 'Your HeyGen account has no listed avatars (common on free/trial keys). Use "Enter avatar ID manually" below, or try the free default avatar.'
         : null)
 
@@ -80,7 +109,10 @@ function AvatarPicker({ value, onChange }) {
     }
   }
 
-  const selected = avatars.find(a => a.avatar_id === value)
+  // Resolved against the UNFILTERED list on purpose — the chosen avatar's
+  // name/thumbnail must keep showing on the closed button even when the
+  // active framing filter happens to exclude it.
+  const selected = allAvatars.find(a => a.avatar_id === value)
 
   if (manualMode) {
     return (
@@ -140,6 +172,41 @@ function AvatarPicker({ value, onChange }) {
               </div>
             : <>
                 {error && <p className="text-xs text-amber-600 dark:text-amber-400 p-3 border-b border-slate-100 dark:border-white/[0.06] flex items-start gap-2"><AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" /> {error}</p>}
+
+                {/* Framing filter — the ONLY real control over how much of the
+                    presenter appears, since HeyGen's API exposes no framing
+                    option and the shot is fixed by the avatar's own footage. */}
+                {allAvatars.length > 0 && (
+                  <div className="px-2.5 pt-2.5 pb-2 border-b border-slate-100 dark:border-white/[0.06]">
+                    <div className="flex flex-wrap gap-1">
+                      {FRAMING_FILTERS.map(f => {
+                        const count = f.id === 'all' ? allAvatars.length : (framingCounts[f.id] || 0)
+                        const active = framing === f.id
+                        return (
+                          <button key={f.id} type="button"
+                            onClick={(e) => { e.stopPropagation(); setFraming(f.id) }}
+                            disabled={count === 0}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                              active
+                                ? 'bg-indigo-600 text-white border-transparent'
+                                : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:border-indigo-300'
+                            }`}>
+                            {f.label} <span className={active ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-500'}>{count}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5 leading-snug">
+                      Framing is fixed by the avatar itself — HeyGen can't zoom out. Labels are read from avatar names, so check the preview.
+                    </p>
+                  </div>
+                )}
+
+                {avatars.length === 0 && allAvatars.length > 0 && (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 p-3">
+                    No avatars matched this framing. Most of HeyGen's catalog is unlabelled — try “All” and check previews.
+                  </p>
+                )}
                 {avatars.length > 0 && (
                   <ul className="max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.04]">
                     {avatars.map((a, idx) => (
@@ -152,11 +219,18 @@ function AvatarPicker({ value, onChange }) {
                           : <div className="w-9 h-9 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center flex-shrink-0">
                               <User className="w-4 h-4 text-slate-500 dark:text-slate-400" />
                             </div>}
-                        <div>
-                          <p className="text-sm text-slate-900 dark:text-white">{a.avatar_name}</p>
-                          {normGender(a.gender) && (
-                            <p className="text-xs text-slate-500 dark:text-slate-500 capitalize">{normGender(a.gender)}</p>
-                          )}
+                        <div className="min-w-0">
+                          <p className="text-sm text-slate-900 dark:text-white truncate">{a.avatar_name}</p>
+                          <div className="flex items-center gap-1.5">
+                            {normGender(a.gender) && (
+                              <span className="text-xs text-slate-500 dark:text-slate-500 capitalize">{normGender(a.gender)}</span>
+                            )}
+                            {FRAMING_LABELS[a.framing] && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                                {FRAMING_LABELS[a.framing]}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         {a.avatar_id === value && <CheckCircle className="w-4 h-4 text-indigo-500 dark:text-indigo-400 ml-auto" />}
                       </li>

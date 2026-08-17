@@ -101,26 +101,42 @@ const LAYER_WIDTHS = { logo:16, title:65, subtitle:65, content:65, image:35 }
 // terms), which is why AVATAR_HEIGHT_RATIO below folds in the 16:9 frame's
 // own width:height ratio to get height-as-%-of-slide.
 //
-// AVATAR_BOX_ASPECT was 16/9 (a true 9:16 portrait sliver) — HeyGen v3 has no
-// framing control (closeUp/normal was dropped vs. v2), so its default
-// medium-shot already fills a good chunk of its native 16:9 frame; cropping
-// THAT down to another 9:16 box discarded ~70% of the frame width and
-// compounded into an extreme face-only close-up ("avatar zoomed too big",
-// reported 2026-08-11). Lowered to 4/3 — still a portrait presenter box, but
-// keeps meaningfully more of the original frame. MUST match
-// ffmpegVideo.ts's AVATAR_BOX_ASPECT exactly, or this placeholder stops
-// being WYSIWYG.
-const AVATAR_BOX_ASPECT = 4 / 3
+// AVATAR_BOX_ASPECT went 16/9 -> 4/3 -> 1 -> 9/16, each step chasing the same
+// complaint from a different angle: HeyGen v3 has no framing control
+// (closeUp/normal was dropped vs. v2), so its output was always a 16:9
+// medium shot, and ANY box shaped differently from that forced a crop —
+// 16/9 discarded ~70% of the frame width (an extreme face-only close-up,
+// "avatar zoomed too big", 2026-08-11), 4/3 ~58% ("sides crop, box small",
+// 2026-08-13), 1/1 still ~44% ("head not complete", 2026-08-15). 9/16 made
+// the box the SAME 16:9 shape as the source, so there was no crop left to
+// make ("i need a complet avatar all his body and face appear").
+//
+// 2026-08-15, same day ("i need to get avatar with all the frame full
+// portrait (9:16)"): flipped to 16/9 — a TALL box. This isn't a crop fix
+// like the earlier changes, it's a real layout change: createAvatarVideo
+// (heygenAvatar.ts) now requests aspect_ratio: '9:16' from HeyGen, so the
+// SOURCE clip is portrait-framed. The box just has to keep matching that
+// output shape so nothing gets cropped or squeezed, same principle as
+// before, mirrored.
+// MUST match ffmpegVideo.ts's AVATAR_BOX_ASPECT exactly, or this
+// placeholder stops being WYSIWYG.
+const AVATAR_BOX_ASPECT = 16 / 9
 const AVATAR_HEIGHT_RATIO = AVATAR_BOX_ASPECT * (16 / 9) // heightPct = widthPct * this
 // Widest the box is ever allowed to get. A width past this makes the box
 // TALLER than the slide itself (100% height) — no position could ever
 // contain it without spilling past the top and bottom edges. Keeping width
 // at or under this guarantees a valid, fully-on-slide y always exists.
+// With the 16/9 portrait AVATAR_BOX_ASPECT this works out to ~31%, which
+// already reads as a near-full-height strip — that's the point.
 const MAX_AVATAR_WIDTH = Math.floor(98 / AVATAR_HEIGHT_RATIO)
-// Slightly bigger default presenter, tucked into the lower-right but NOT
-// jammed into the corner — AVATAR_BORDER_MARGIN below keeps a gap from the
-// slide edges so it reads as intentionally placed, not clipped to the border.
-const DEFAULT_AVATAR = { x: 84, y: 68, width: 19 }
+// Full-height strip flush to the right edge, vertically centered —
+// AVATAR_BORDER_MARGIN keeps a gap from the slide edges so it reads as
+// intentionally placed, not clipped to the border. width:30 sits just under
+// MAX_AVATAR_WIDTH (a portrait box at 30% width is already ~95% of the
+// slide's height); y:50 is what clampAvatarBox forces anyway at this height
+// (minY===maxY===50), so it's written explicitly for clarity. Matches
+// ffmpegVideo.ts's render-side fallback box and 18-31 width range.
+const DEFAULT_AVATAR = { x: 82, y: 50, width: 30 }
 // Minimum breathing room (% of slide) kept between the avatar box and every
 // slide edge, so dragging/resizing can never flush it against the frame.
 const AVATAR_BORDER_MARGIN = 3
@@ -408,7 +424,7 @@ class SlideEditorBoundary extends Component {
             <span className="text-red-500 dark:text-red-400 text-xl">!</span>
           </div>
           <p className="text-slate-900 dark:text-white font-medium mb-1">Slide editor error</p>
-          <p className="text-slate-500 text-xs mb-4 max-w-xs">{this.state.error?.message || 'Unknown error'}</p>
+          <p className="text-slate-500 dark:text-slate-400 text-xs mb-4 max-w-xs">{this.state.error?.message || 'Unknown error'}</p>
           <button
             onClick={() => this.setState({ error: null })}
             className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm transition-colors"
@@ -600,6 +616,42 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
     } catch (e) { console.error('Failed to apply theme:', e) }
   }
 
+  // Ongoing (not just first-time-gate) theme propagation — SceneEditor's own
+  // Layout & Theme tab calls this after changing a scene's theme (2026-08-13:
+  // "if i change theme color in first scene it will not change to that all
+  // other [scenes]"). FIRST attempt at this excluded the scene being actively
+  // edited, reasoning that its own per-part save (setTheme + saveContent,
+  // targetSegmentId-scoped — see the #21 fix above the Theme button) already
+  // covered it. In practice that left that scene's OTHER parts (a multi-part
+  // scene's remaining hook/content/content/recap segments) stuck on the old
+  // theme — reported straight after: "all changing except [the] 4 first
+  // segment[s]". apply-theme-to-segments only ever touches the `theme` field
+  // of a segment's slideDesign (preserves layout/positions/everything else —
+  // see api/src/functions/scenes.ts), so calling it on the CURRENT scene too
+  // is safe and doesn't reintroduce the #21 bug (that was about a different
+  // action — freely editing one part's layout/content and having a THEME
+  // click on a totally different part silently overwrite it; deliberately
+  // clicking a theme swatch, by contrast, is a broad "retheme everything"
+  // action, and now applies that way everywhere, current scene included).
+  const applyThemeToRestOfModule = async (themeId) => {
+    if (!selectedModuleId) return
+    try {
+      const scenesRes = await fetch(`/api/modules/${selectedModuleId}/scenes`)
+      const moduleScenes = scenesRes.ok ? await scenesRes.json() : []
+      await Promise.all(
+        moduleScenes.map(s =>
+          fetch(`/api/scenes/${s.id}/apply-theme-to-segments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ theme: themeId }),
+          }).catch(() => {})
+        )
+      )
+      setModuleThemes(p => ({ ...p, [selectedModuleId]: themeId }))
+      queryClient.invalidateQueries({ queryKey: ['scenes'] })
+    } catch (e) { console.error('Failed to apply theme to the rest of the module:', e) }
+  }
+
   const handleGenerate = async (sceneId, segmentId) => {
     setGenerating(p => ({ ...p, [sceneId]: true }))
     try {
@@ -623,7 +675,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
   if (isLoading) return <div className="flex justify-center p-16"><Spinner /></div>
   if (!scripts.length) return (
     <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-      <Layers className="w-10 h-10 text-slate-700 mb-3" />
+      <Layers className="w-10 h-10 text-slate-400 dark:text-slate-700 mb-3" />
       <p className="text-slate-500 dark:text-slate-400">Complete the Script stage first.</p>
     </div>
   )
@@ -690,16 +742,17 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
                 avatarBackground={project?.avatarBackground}
                 onSaveAvatarSettings={(patch) => projectsService.update(project.id, patch).then(() => onUpdate?.())}
                 onEditAvatar={() => setManualAvatarPicker(true)}
+                onApplyThemeToModule={(themeId) => applyThemeToRestOfModule(themeId)}
                 initialSegmentId={selected.segmentId}
                 isGenerating={!!generating[selected.scene.id]} onGenerate={handleGenerate} />
             </SlideEditorBoundary>
           ) : (
             <div className="flex flex-col items-center justify-center h-full p-12 text-center">
               <div className="w-16 h-16 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/[0.06] flex items-center justify-center mb-4">
-                <Layers className="w-7 h-7 text-slate-700" />
+                <Layers className="w-7 h-7 text-slate-400 dark:text-slate-700" />
               </div>
               <p className="text-slate-900 dark:text-white font-medium mb-1">Select a scene</p>
-              <p className="text-slate-500 text-sm">Click any scene on the left to design its slide</p>
+              <p className="text-slate-500 dark:text-slate-400 text-sm">Click any scene on the left to design its slide</p>
             </div>
           )}
         </div>
@@ -800,29 +853,29 @@ function AvatarGatePopup({ onChoose, onSkip, onClose, voiceGender = null }) {
           {!gender ? (
             <>
               <p className="text-slate-900 dark:text-white font-medium mb-1">Choose your presenter</p>
-              <p className="text-slate-500 text-sm mb-5">
+              <p className="text-slate-500 dark:text-slate-400 text-sm mb-5">
                 Pick the avatar that presents every scene in this project. You can change it anytime.
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <button onClick={() => setGender('female')}
                   className="p-5 rounded-xl border border-slate-200 dark:border-white/10 hover:border-indigo-400 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all">
-                  <User className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                  <User className="w-6 h-6 text-slate-500 dark:text-slate-400 mx-auto mb-2" />
                   <p className="text-sm font-semibold text-slate-900 dark:text-white">Female</p>
                 </button>
                 <button onClick={() => setGender('male')}
                   className="p-5 rounded-xl border border-slate-200 dark:border-white/10 hover:border-indigo-400 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all">
-                  <User className="w-6 h-6 text-slate-400 mx-auto mb-2" />
+                  <User className="w-6 h-6 text-slate-500 dark:text-slate-400 mx-auto mb-2" />
                   <p className="text-sm font-semibold text-slate-900 dark:text-white">Male</p>
                 </button>
               </div>
-              <button onClick={onSkip} className="mt-5 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
+              <button onClick={onSkip} className="mt-5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
                 Skip for now — I'll set this up later
               </button>
             </>
           ) : (
             <>
               <p className="text-slate-900 dark:text-white font-medium mb-1 capitalize">Pick a {gender} presenter</p>
-              <p className="text-slate-500 text-sm mb-1">
+              <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
                 {voiceGender && gender === voiceGender
                   ? `Matched to your ${voiceGender} voice. Applies to every scene — change it anytime from Layout & Theme.`
                   : 'Applies to every scene — change it anytime from Layout & Theme.'}
@@ -840,8 +893,8 @@ function AvatarGatePopup({ onChoose, onSkip, onClose, voiceGender = null }) {
                   {gender === 'female' && (
                     <button onClick={() => pick(DEFAULT_AVATAR_ID)}
                       className="relative aspect-square rounded-xl border-2 border-slate-200 dark:border-white/10 hover:border-indigo-400 overflow-hidden flex flex-col items-center justify-center gap-1 bg-slate-100 dark:bg-slate-800/60 transition-colors">
-                      <User className="w-6 h-6 text-slate-400" />
-                      <span className="text-[10px] text-slate-500">Daisy (default)</span>
+                      <User className="w-6 h-6 text-slate-500 dark:text-slate-400" />
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">Daisy (default)</span>
                     </button>
                   )}
                   {filtered.map((a, idx) => (
@@ -849,27 +902,27 @@ function AvatarGatePopup({ onChoose, onSkip, onClose, voiceGender = null }) {
                       className="relative aspect-square rounded-xl border-2 border-slate-200 dark:border-white/10 hover:border-indigo-400 overflow-hidden transition-colors">
                       {a.preview_image_url
                         ? <img src={a.preview_image_url} className="w-full h-full object-cover" alt={a.avatar_name} />
-                        : <div className="w-full h-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"><User className="w-6 h-6 text-slate-400" /></div>}
+                        : <div className="w-full h-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"><User className="w-6 h-6 text-slate-500 dark:text-slate-400" /></div>}
                       <div className="absolute bottom-0 inset-x-0 bg-black/60 px-1 py-0.5">
                         <span className="text-[9px] text-white truncate block">{a.avatar_name}</span>
                       </div>
                     </button>
                   ))}
                   {!filtered.length && gender !== 'female' && (
-                    <p className="col-span-3 text-xs text-slate-400 py-6">
+                    <p className="col-span-3 text-xs text-slate-500 dark:text-slate-400 py-6">
                       No {gender} avatars found in your HeyGen account — use the free default, or pick one later from Layout &amp; Theme → Edit Avatar.
                     </p>
                   )}
                 </div>
               )}
-              <button onClick={() => setGender(null)} className="mt-4 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
+              <button onClick={() => setGender(null)} className="mt-4 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
                 ← Back
               </button>
             </>
           )}
 
           {onClose && (
-            <button onClick={onClose} className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+            <button onClick={onClose} className="absolute top-3 right-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
           )}
         </div>
       </div>
@@ -898,7 +951,7 @@ function ProjectThemeGatePopup({ onChoose, onSkip, onClose }) {
             <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400 drop-shadow-sm" />
           </div>
           <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this project</p>
-          <p className="text-slate-500 text-sm mb-5">
+          <p className="text-slate-500 dark:text-slate-400 text-sm mb-5">
             Applies to every scene in every module right away — you can still change any scene individually later.
           </p>
           {applying ? (
@@ -928,11 +981,11 @@ function ProjectThemeGatePopup({ onChoose, onSkip, onClose }) {
               ))}
             </div>
           )}
-          <button onClick={onSkip} className="mt-5 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
+          <button onClick={onSkip} className="mt-5 text-xs text-slate-500 dark:text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
             Skip for now — I'll choose a theme per module instead
           </button>
           {onClose && (
-            <button onClick={onClose} className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+            <button onClick={onClose} className="absolute top-3 right-3 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
           )}
         </div>
       </div>
@@ -954,7 +1007,7 @@ function ModuleThemeGate({ moduleTitle, onChoose }) {
           <Sparkles className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />
         </div>
         <p className="text-slate-900 dark:text-white font-medium mb-1">Choose a theme for this module</p>
-        <p className="text-slate-500 text-sm mb-5">
+        <p className="text-slate-500 dark:text-slate-400 text-sm mb-5">
           "{moduleTitle}" — applies to every scene in this module
         </p>
         <div className="space-y-1.5">
@@ -1139,8 +1192,8 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
         title={locked ? 'Finish (approve) the previous module first' : undefined}
         className={`w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors ${locked ? 'cursor-not-allowed' : 'hover:bg-slate-50 dark:hover:bg-white/[0.03]'}`}>
         {locked
-          ? <Lock className="w-3 h-3 flex-shrink-0 text-slate-400" />
-          : <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />}
+          ? <Lock className="w-3 h-3 flex-shrink-0 text-slate-500 dark:text-slate-400" />
+          : <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 text-slate-500 dark:text-slate-400 transition-transform ${open ? '' : '-rotate-90'}`} />}
         <div className="min-w-0 flex-1">
           <p className={`text-[9px] font-bold uppercase tracking-widest ${locked ? 'text-slate-400 dark:text-slate-500' : 'text-blue-500 dark:text-blue-400'}`}>Module {videoIndex + 1}</p>
           <p className={`text-xs font-medium truncate ${locked ? 'text-slate-400 dark:text-slate-500' : 'text-slate-900 dark:text-white'}`}>{script.title}</p>
@@ -1217,7 +1270,7 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-slate-900 dark:text-white truncate">{rowTitle}</p>
-                      <p className="text-[10px] text-slate-500 truncate">
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
                         {rowApproved ? '✓ Approved' : sceneGenerated ? 'Generated' : isGen ? 'Generating...' : rowReady ? 'Designed' : 'Draft'}
                       </p>
                     </div>
@@ -1273,7 +1326,7 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
           }) })()
       }
       <button onClick={handleAddScene} disabled={adding}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 border-b border-slate-100 dark:border-white/[0.03] transition-colors disabled:opacity-50">
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-xs text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 border-b border-slate-100 dark:border-white/[0.03] transition-colors disabled:opacity-50">
         {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
         Add scene
       </button>
@@ -1284,7 +1337,7 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
 
 // ─── Right: scene editor ──────────────────────────────────────────────────────
 
-function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, avatarStyle, avatarBackground, onSaveAvatarSettings, onEditAvatar, initialSegmentId, isGenerating, onGenerate }) {
+function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, avatarStyle, avatarBackground, onSaveAvatarSettings, onEditAvatar, onApplyThemeToModule, initialSegmentId, isGenerating, onGenerate }) {
   // Fetch the avatar list once (cached project-wide via react-query, so this
   // is instant after the first load — see also CastingSettings
   // which share the same query key) purely to find the selected avatar's
@@ -1355,6 +1408,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   // For fresh scenes (no saved positions = never customized) fall back to the
   // module's theme chosen via the per-module theme gate, not a hardcoded value.
   const [theme,     setTheme]     = useState(parsed.positions ? (parsed.theme || defaultTheme) : defaultTheme)
+  // Brief inline status while onApplyThemeToModule pushes the newly-picked
+  // theme out to every OTHER scene in this module (2026-08-13) — that call
+  // touches every sibling scene's slide image, so it's not instant.
+  const [applyingModuleTheme, setApplyingModuleTheme] = useState(false)
   const [title,     setTitle]     = useState(parsed.title     || '')
   // Guard against older/legacy slide data that accidentally used the voiceover
   // script as the slide subtitle (the presenter's narration, not on-slide copy) —
@@ -2551,7 +2608,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
               <div>
                 <label className="block text-xs font-semibold text-slate-900 dark:text-white mb-1.5">
-                  Slide Title <span className="font-normal text-slate-500">(optional - leave blank for untitled intro)</span>
+                  Slide Title <span className="font-normal text-slate-500 dark:text-slate-400">(optional - leave blank for untitled intro)</span>
                 </label>
                 <input value={title} onChange={e=>setTitle(e.target.value)} onBlur={saveContent}
                   placeholder="Key concept students will learn"
@@ -2587,7 +2644,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     ))}
                     <button onClick={() => { setBullets(originalBulletsRef.current); setTimeout(saveContent,0) }}
                       disabled={aiLoading} title="Reset to original AI-generated content"
-                      className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-500 hover:text-amber-400 hover:border-amber-500/30 transition-colors">
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-lg border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 hover:text-amber-400 hover:border-amber-500/30 transition-colors">
                       <RotateCw className="w-3 h-3" /> Reset
                     </button>
                   </div>
@@ -2598,7 +2655,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     <div key={i} className="flex items-center gap-2 group">
                       <button onClick={() => setBullets(bs=>bs.map((x,idx)=>idx===i?{...x,level:x.level===1?2:1}:x))}
                         className={`w-5 h-5 rounded text-xs font-bold flex items-center justify-center flex-shrink-0 transition-colors ${
-                          b.level===2?'bg-slate-700 text-slate-400':'bg-indigo-500/20 text-indigo-500 dark:text-indigo-400'}`}>
+                          b.level===2?'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400':'bg-indigo-500/20 text-indigo-500 dark:text-indigo-400'}`}>
                         {b.level===2?'◦':'•'}
                       </button>
                       <input value={b.text}
@@ -2616,7 +2673,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 </div>
                 <div className="flex gap-4 mt-2">
                   <button onClick={()=>setBullets(b=>[...b,{text:'',level:1}])}
-                    className="flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
+                    className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
                     <Plus className="w-3 h-3"/>Add point
                   </button>
                   <button onClick={()=>setBullets(b=>[...b,{text:'',level:2}])}
@@ -2664,25 +2721,32 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 <p className="text-xs font-semibold text-slate-900 dark:text-white mb-2">Theme</p>
                 <div className="flex flex-wrap gap-2">
                   {THEMES.map(th => (
-                    <button key={th.id} onClick={async () => {
-                      // Scoped to ONLY the part currently being edited (#21) —
-                      // this used to call apply-theme-to-segments, which pushes
-                      // the chosen theme onto EVERY part of the scene (all of a
-                      // welcome scene's hook/content/content/recap, or every
-                      // quiz question), so changing the theme on one part
-                      // always changed all its siblings too (reported: "the 4
+                    <button key={th.id} disabled={applyingModuleTheme} onClick={async () => {
+                      // This part (#21) is scoped to ONLY the part currently
+                      // being edited — saveContent's targetSegmentId keeps a
+                      // theme change here from cascading onto this scene's
+                      // OWN sibling parts (a welcome scene's hook/content/
+                      // content/recap, or every quiz question), which is what
+                      // used to happen and was reported as unwanted ("the 4
                       // first scenes are related... if I change theme in one
-                      // of them it changes all the others"). Every other
-                      // per-part property here (layout, image, bullets, ...)
-                      // already only ever saves to THIS segment via
-                      // saveContent's targetSegmentId — theme now matches that
-                      // same pattern instead of being the one exception.
+                      // of them it changes all the others").
                       setTheme(th.id)
                       await saveContent()
                       setPreviewKey(k => k + 1)
+                      // Separately, push this theme out to every OTHER scene
+                      // in the module (2026-08-13: "if i change theme color
+                      // in first scene it will not change to that all
+                      // other") — deliberately a second, independent call
+                      // rather than reusing the old apply-theme-to-segments-
+                      // on-this-scene path, so the within-scene fix above
+                      // isn't undone by the cross-scene sync below.
+                      if (onApplyThemeToModule) {
+                        setApplyingModuleTheme(true)
+                        try { await onApplyThemeToModule(th.id) } finally { setApplyingModuleTheme(false) }
+                      }
                     }}
                       title={th.label}
-                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-all ${
+                      className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border transition-all disabled:opacity-50 disabled:cursor-wait ${
                         theme===th.id?'border-indigo-400 bg-indigo-500/15 shadow-md shadow-indigo-500/15':'border-slate-200 dark:border-white/[0.10] bg-slate-100 dark:bg-slate-800/50 hover:border-slate-300 dark:hover:border-white/25 hover:bg-slate-200 dark:hover:bg-slate-800/80'}`}>
                       <div className="w-3.5 h-3.5 rounded-full border border-slate-300 dark:border-white/30" style={{ backgroundColor: th.accent }}/>
                       <span className={`text-xs font-medium whitespace-nowrap ${theme===th.id?'text-slate-900 dark:text-white':'text-slate-600 dark:text-slate-300'}`}>{th.label}</span>
@@ -2690,6 +2754,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     </button>
                   ))}
                 </div>
+                {applyingModuleTheme && (
+                  <p className="flex items-center gap-1.5 text-[11px] text-slate-400 dark:text-slate-500 mt-2">
+                    <Spinner size="sm" className="w-3 h-3" /> Applying this theme to the rest of the module…
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-white/[0.06]">
@@ -2699,7 +2768,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   </div>
                   <div>
                     <p className="text-xs font-semibold text-slate-900 dark:text-white">GVSU Logo</p>
-                    <p className="text-[10px] text-slate-500">Drag on slide to reposition</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400">Drag on slide to reposition</p>
                   </div>
                 </div>
                 <button
@@ -2707,7 +2776,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                     showLogo
                       ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-700 dark:text-indigo-300'
-                      : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500'
+                      : 'bg-slate-100 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400'
                   }`}
                 >
                   {showLogo ? <><Eye className="w-3 h-3" />Visible</> : <><EyeOff className="w-3 h-3" />Hidden</>}
@@ -2801,12 +2870,12 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                       </div>
                       <div>
                         <p className="text-xs font-semibold text-slate-900 dark:text-white">Image added</p>
-                        <p className="text-[10px] text-slate-500">Drag on the slide preview to reposition</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">Drag on the slide preview to reposition</p>
                       </div>
                     </div>
                     <div>
                       <div className="flex justify-between mb-1">
-                        <span className="text-[10px] text-slate-500">Width on slide</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">Width on slide</span>
                         <span className="text-[10px] text-slate-500 dark:text-slate-400">{imageWidth}%</span>
                       </div>
                       <input type="range" min="15" max="70" value={imageWidth}
@@ -2820,7 +2889,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                           className={`px-2 py-1 rounded-md text-[10px] font-medium border transition-all ${
                             imageShape===v
                               ? 'bg-violet-600/20 border-violet-500/40 text-violet-700 dark:text-violet-300'
-                              : 'bg-white dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 hover:border-slate-300 dark:hover:border-white/20'
+                              : 'bg-white dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20'
                           }`}>{l}</button>
                       ))}
                       <button onClick={() => { setImageUrl(''); saveContent() }}
@@ -2854,7 +2923,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 <div className="w-11 h-11 rounded-lg overflow-hidden bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0">
                   {avatarImageUrl
                     ? <img src={avatarImageUrl} className="w-full h-full object-cover" alt="" />
-                    : <User className="w-5 h-5 text-slate-400" />}
+                    : <User className="w-5 h-5 text-slate-500 dark:text-slate-400" />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
@@ -2899,7 +2968,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     }}
                     onMouseUp={saveContent}
                     className="w-full h-1 accent-indigo-500 cursor-pointer" />
-                  <p className="text-[10px] text-slate-500 mt-1">Drag directly on the slide to reposition.</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Drag directly on the slide to reposition.</p>
                 </div>
 
                 <div className="p-2.5 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/40">
@@ -2912,10 +2981,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     >
                       {MOTION_ENGINES.map(m => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
                     </select>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   </div>
                   {avatarSettingsSaving && (
-                    <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Saving…</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Saving…</p>
                   )}
                 </div>
               </div>
@@ -2963,7 +3032,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                       onChange={e => { const next = { ...avatarBg, type: 'color', value: e.target.value }; setAvatarBg(next); saveAvatarSettings(motionEngine, next) }}
                       className="opacity-0 w-0 h-0 absolute"
                     />
-                    <Pencil className={`w-3.5 h-3.5 ${avatarBg.type === 'color' ? 'text-white' : 'text-slate-400'}`} />
+                    <Pencil className={`w-3.5 h-3.5 ${avatarBg.type === 'color' ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`} />
                     {avatarBg.type === 'color' && <CheckCircle className="w-3 h-3 text-white absolute -top-1 -right-1" />}
                   </label>
 
@@ -2974,7 +3043,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                       avatarBg.type === 'transparent' ? 'border-indigo-500' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/30'
                     }`}
                   >
-                    <Ban className="w-3.5 h-3.5 text-slate-400" />
+                    <Ban className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                     {avatarBg.type === 'transparent' && <CheckCircle className="w-3 h-3 text-indigo-500 absolute -top-1 -right-1" />}
                   </button>
 
@@ -2996,7 +3065,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 {isCircleAvatarBg && (
                   <div className="mt-2.5 pt-2.5 border-t border-slate-100 dark:border-white/[0.06]">
                     <div className="flex justify-between mb-1">
-                      <span className="text-[10px] text-slate-500">Radius</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">Radius</span>
                       <span className="text-[10px] text-slate-500 dark:text-slate-400">{avatarBgRadiusPx}px</span>
                     </div>
                     <input type="range" min="20" max="100" step="1" value={avatarBg.radius ?? 100}
@@ -3190,7 +3259,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl max-w-2xl w-full overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
               <p className="text-sm font-semibold text-slate-900 dark:text-white">Generated Slide Image</p>
-              <button onClick={() => setGeneratePreviewUrl(null)} className="text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+              <button onClick={() => setGeneratePreviewUrl(null)} className="text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
             </div>
             <img src={generatePreviewUrl} alt="Generated slide preview" className="w-full h-auto" />
           </div>
@@ -3204,7 +3273,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl max-w-2xl w-full overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
               <p className="text-sm font-semibold text-slate-900 dark:text-white">Speaking Avatar Video</p>
-              <button onClick={() => setShowAvatarVideoModal(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+              <button onClick={() => setShowAvatarVideoModal(false)} className="text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
             </div>
             <video src={avatarVideoUrl} controls autoPlay className="w-full h-auto bg-black" />
           </div>

@@ -16,6 +16,7 @@ import AppBackground from '@/components/common/AppBackground'
 import Welcome from '@/pages/Welcome'
 import Login from '@/pages/Login'
 import Signup from '@/pages/Signup'
+import VerifyEmail from '@/pages/VerifyEmail'
 import Dashboard from '@/pages/Dashboard'
 import ProjectWorkspace from '@/pages/ProjectWorkspace'
 import Library from '@/pages/Library'
@@ -89,6 +90,11 @@ function AnimatedRoutes() {
         <Route path="/signup" element={
           <PageTransition variant="launch">
             <Signup />
+          </PageTransition>
+        } />
+        <Route path="/verify-email" element={
+          <PageTransition variant="launch">
+            <VerifyEmail />
           </PageTransition>
         } />
 

@@ -240,15 +240,51 @@ export default function ProjectWorkspace() {
     setShowCasting(false)
   }
 
+  // Which modules have every one of their own scenes/parts approved in
+  // Visual Design — the per-module unit VideoEditingPanel's ModuleRow uses
+  // for its own `designApproved` check. Kept here so the stage-level gate
+  // and the panel agree on what "this module is ready" means.
+  const modulesApprovedInDesign = () => {
+    const scenesByModule = {}
+    scenes.forEach(sc => {
+      if (!sc.moduleId) return
+      ;(scenesByModule[sc.moduleId] ||= []).push(sc)
+    })
+    return modules.filter(mod => {
+      const modScenes = scenesByModule[mod.id]
+      if (!modScenes || !modScenes.length) return false
+      return modScenes.every(sc => {
+        const segs = (sc.segments && sc.segments.length) ? sc.segments : null
+        if (segs) {
+          return segs.every(seg => {
+            try { return !!JSON.parse(seg.slideDesign || '{}').approvedAt } catch { return false }
+          })
+        }
+        return !!sc.approvedAt
+      })
+    })
+  }
+
   const isLocked = (stageId) => {
     // Stages unlock only when previous stage is complete
     const stageOrder = ['library', 'scripts', 'voices', 'visual-design', 'video-editing', 'final-video']
     const currentIndex = stageOrder.indexOf(stageId)
-    
+
     // Library is always unlocked
     if (currentIndex === 0) return false
-    
-    // Each stage requires previous stage to be complete
+
+    // Module Editing and Video Vault are module-scoped stages — each panel
+    // already locks/unlocks individual modules on its own (VideoEditingPanel's
+    // ModuleRow, FinalVideoPanel's module cards), so the door to the STAGE
+    // itself only needs ONE module ready in the previous stage, not every
+    // module in the whole project. This is what lets approving a single
+    // module in Visual Design unlock Module Editing for that module right
+    // away, instead of waiting on every other module too.
+    if (stageId === 'video-editing') return modulesApprovedInDesign().length === 0
+    if (stageId === 'final-video') return !modules.some(mod => !!moduleApprovals[mod.id])
+
+    // Every other stage stays strictly sequential (project-wide, not
+    // module-scoped): each requires the previous stage fully complete.
     const previousStageId = stageOrder[currentIndex - 1]
     return !isStageComplete(previousStageId)
   }
@@ -304,25 +340,16 @@ export default function ProjectWorkspace() {
         )
         
       case 'visual-design':
-        // Green (and unlocks Video Editing) once EVERY part of EVERY scene is
-        // APPROVED — same "all approved" gate the Scripts step uses. The
-        // per-module "Generate & approve all" button is what flips the whole
-        // stage green. Approval lives per-part in each segment's slideDesign
-        // JSON (multi-part scenes) or on scene.approvedAt (single-part).
+        // Green check on THIS stage still means EVERY module is fully
+        // approved — the door to the NEXT stage (Module Editing) opens much
+        // earlier, per-module, via isLocked() above; this only controls the
+        // checkmark/"all done" state for Visual Design itself.
         if (!modules.length || !scenes.length) return false
-        return scenes.every(sc => {
-          const segs = (sc.segments && sc.segments.length) ? sc.segments : null
-          if (segs) {
-            return segs.every(seg => {
-              try { return !!JSON.parse(seg.slideDesign || '{}').approvedAt } catch { return false }
-            })
-          }
-          return !!sc.approvedAt
-        })
+        return modules.length === modulesApprovedInDesign().length
 
       case 'video-editing':
-        // Green (and unlocks Final Video) once EVERY module is APPROVED in the
-        // Video Editing step — same "all approved" gate the Scripts step uses.
+        // Same idea: green check here means every module is approved in
+        // Module Editing. Final Video unlocks per-module via isLocked() above.
         if (!modules.length) return false
         return modules.every(mod => !!moduleApprovals[mod.id])
         
@@ -359,7 +386,11 @@ export default function ProjectWorkspace() {
           <p className="text-slate-500 dark:text-slate-400 text-sm">
             {activeStage === 'scripts'
               ? 'Upload at least one source file in the Library first.'
-              : ['voices', 'visual-design', 'video-editing', 'final-video'].includes(activeStage)
+              : activeStage === 'video-editing'
+              ? 'Approve at least one module in Visual Design first.'
+              : activeStage === 'final-video'
+              ? 'Approve at least one module in Module Editing first.'
+              : ['voices'].includes(activeStage)
               ? 'Generate and approve scripts first.'
               : 'Complete the previous stages first.'}
           </p>

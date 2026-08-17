@@ -46,6 +46,17 @@ const HEYGEN_API = 'https://api.heygen.com'
  *  through onto the slide underneath. */
 export const AVATAR_CHROMA_KEY_HEX = '#00FF00'
 
+/** Bumped whenever a change to createAvatarVideo's request body would make an
+ *  already-cached avatarcache_*.mp4 file the WRONG shape/content for what the
+ *  compositor now expects — the cache key otherwise only covers
+ *  avatarId/avatarStyle/avatarBackground, so it wouldn't notice on its own
+ *  that (e.g.) aspect_ratio changed. Folded into both cache hashes below.
+ *  'ar-9x16': 2026-08-15, aspect_ratio switched '16:9' -> '9:16' — an old
+ *  cached clip is a landscape render that would letterbox tiny inside the new
+ *  portrait strip box instead of filling it. Old cache files are left on disk
+ *  (harmless, just orphaned) rather than deleted. */
+const CACHE_VERSION = 'ar-9x16'
+
 /** Parses the project's saved avatar_background JSON and decides what to
  *  actually send HeyGen (only 'color'/'image' are valid) plus whether the
  *  result needs chroma-keying afterward. Shared by createAvatarVideo (the
@@ -59,11 +70,38 @@ function resolveAvatarBackground(raw?: string | null): { heygenBackground: { typ
     return { heygenBackground: { type: 'color', value: AVATAR_CHROMA_KEY_HEX }, chromaKey: true }
   }
   const ALLOWED_BG = ['color', 'image']
-  let bg = (requested && typeof requested === 'object' && ALLOWED_BG.includes(requested.type))
-    ? requested
-    : { type: 'color', value: '#0F172A' }
+  // No explicit choice saved on the project → TRANSPARENT (chroma-keyed),
+  // not the old solid '#0F172A'. That dark navy default is what put a hard
+  // rectangular box around the presenter on every slide, which is what
+  // "don't put the border on it keep it simple" (2026-08-15) was actually
+  // reacting to — and the box is also what made HeyGen's tight native
+  // framing read as "head not complete", since the hairline landed right on
+  // a visible box edge instead of dissolving into the slide. Keying it out
+  // instead means the presenter sits directly on the slide with no edge at
+  // all, and the headroom padding below becomes invisible rather than a
+  // visible margin. A project that HAS explicitly picked a solid color or
+  // image still gets exactly that.
+  if (!(requested && typeof requested === 'object' && ALLOWED_BG.includes(requested.type))) {
+    return { heygenBackground: { type: 'color', value: AVATAR_CHROMA_KEY_HEX }, chromaKey: true }
+  }
+  let bg = requested
   if (bg.type === 'color' && !bg.value) bg = { ...bg, value: '#0F172A' }
   return { heygenBackground: bg, chromaKey: false }
+}
+
+/** Resolve just the flat color a SOLID (non-transparent) Avatar Background
+ *  renders on, so overlayAvatarOnVideo can pad its headroom margin with a
+ *  color that actually matches the presenter's own background instead of
+ *  leaving black/nothing there. Returns null for the chromaKey (Transparent)
+ *  case — that path already pads with real per-pixel alpha — and for
+ *  `type: 'image'` backgrounds, which have no single flat color to match.
+ *  Exported (unlike resolveAvatarBackground itself) because this is called
+ *  from wherever overlayAvatarOnVideo is, not just from the HeyGen request
+ *  builders in this file. */
+export function resolveAvatarBackgroundColor(raw?: string | null): string | null {
+  const { heygenBackground, chromaKey } = resolveAvatarBackground(raw)
+  if (chromaKey) return null
+  return heygenBackground.type === 'color' ? (heygenBackground.value || '#0F172A') : null
 }
 
 function apiKey(): string {
@@ -188,7 +226,17 @@ export async function createAvatarVideo(opts: {
     avatar_id: opts.avatarId,
     audio_asset_id: opts.audioAssetId,
     background,
-    aspect_ratio: '16:9',
+    // 2026-08-15 ("i need to get avatar with all the frame full portrait
+    // (9:16)"): switched from '16:9' to a real portrait request. The box-shape
+    // fix earlier the same day (AVATAR_BOX_ASPECT -> 9/16 in ffmpegVideo.ts)
+    // stopped the avatar from being CROPPED, but it still only ever occupied a
+    // landscape-shaped corner box. A true tall/narrow strip needs HeyGen to
+    // actually render the presenter framed for portrait, not a landscape clip
+    // squeezed into a portrait box (that would just letterbox small in the
+    // middle — see fitAndPad in overlayAvatarOnVideo). AVATAR_BOX_ASPECT is
+    // flipped to 16/9 in lockstep with this so the compositor box matches
+    // HeyGen's new output shape exactly, same principle as before just mirrored.
+    aspect_ratio: '9:16',
     // CORRECTION (2026-08-07): briefly "fixed" this to `dimension: { width,
     // height }` based on a web search claiming v3 uses that shape instead of
     // a resolution string — that was wrong. HeyGen's actual v3 schema for
@@ -369,6 +417,7 @@ export async function startAvatarClipJob(opts: {
     .update(opts.avatarId)
     .update(opts.avatarStyle || 'normal')
     .update(opts.avatarBackground || '')
+    .update(CACHE_VERSION)
     .digest('hex')
   const cachePath = join(UPLOAD_DIR, `avatarcache_${hash}.mp4`)
 
@@ -416,6 +465,7 @@ export async function generateAvatarClip(opts: {
     .update(opts.avatarId)
     .update(opts.avatarStyle || 'normal')
     .update(opts.avatarBackground || '')
+    .update(CACHE_VERSION)
     .digest('hex')
   const cachePath = join(UPLOAD_DIR, `avatarcache_${hash}.mp4`)
 

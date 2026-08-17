@@ -5,8 +5,12 @@
  * (api/src/functions/auth/login.ts) from User.role in the DB.
  */
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from '@azure/functions'
+import bcrypt from 'bcryptjs'
 import { prisma } from '../../lib/db'
 import { requireAdmin } from '../../lib/auth'
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const userSelect = { id: true, email: true, name: true, role: true, createdAt: true, updatedAt: true } as const
 
 const forbidden = (msg = 'Admin access required') => ({ status: 403, jsonBody: { error: msg } } as HttpResponseInit)
 const unauth    = () => ({ status: 401, jsonBody: { error: 'Unauthenticated' } } as HttpResponseInit)
@@ -101,22 +105,48 @@ app.http('adminListUsers', {
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     const denied = guard(req); if (denied) return denied
     try {
-      const users = await prisma.user.findMany({
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, email: true, name: true, role: true, createdAt: true, updatedAt: true },
-      })
+      const users = await prisma.user.findMany({ orderBy: { createdAt: 'desc' }, select: userSelect })
       return { status: 200, jsonBody: users }
     } catch (e) { ctx.error(e); return err500(e) }
   },
 })
 
-// PATCH /api/admin/users/{id} — currently just role promotion/demotion.
+// ── POST /api/admin/users ─────────────────────────────────────────────────
+// Admin-created account — same shape as auth/signup.ts, but doesn't log the
+// creator in as the new user (no Set-Cookie) and lets the admin set the role
+// up front instead of always defaulting to "professor".
+app.http('adminCreateUser', {
+  methods: ['POST'], route: 'admin/users', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    const denied = guard(req); if (denied) return denied
+    try {
+      const body = (await req.json().catch(() => ({}))) as { email?: string; password?: string; name?: string; role?: string }
+      const email = (body.email || '').trim().toLowerCase()
+      const password = body.password || ''
+      const name = (body.name || '').trim() || null
+      const role = body.role === 'admin' ? 'admin' : 'professor'
+
+      if (!email || !EMAIL_RE.test(email)) return badReq('Enter a valid email address')
+      if (password.length < 8) return badReq('Password must be at least 8 characters')
+
+      const existing = await prisma.user.findUnique({ where: { email } })
+      if (existing) return badReq('An account with this email already exists')
+
+      const passwordHash = await bcrypt.hash(password, 10)
+      const user = await prisma.user.create({ data: { email, passwordHash, name, role }, select: userSelect })
+      return { status: 201, jsonBody: user }
+    } catch (e) { ctx.error(e); return err500(e) }
+  },
+})
+
+// PATCH /api/admin/users/{id} — role, name, email, and/or a password reset.
+// Any field omitted from the body is left untouched.
 app.http('adminUpdateUser', {
   methods: ['PATCH'], route: 'admin/users/{id}', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
     const denied = guard(req); if (denied) return denied
     try {
-      const body = (await req.json().catch(() => ({}))) as { role?: string }
+      const body = (await req.json().catch(() => ({}))) as { role?: string; name?: string; email?: string; password?: string }
       if (body.role !== undefined && body.role !== 'admin' && body.role !== 'professor') {
         return badReq('role must be "admin" or "professor"')
       }
@@ -128,16 +158,67 @@ app.http('adminUpdateUser', {
         const adminCount = await prisma.user.count({ where: { role: 'admin' } })
         if (adminCount <= 1) return badReq('Cannot demote the only remaining admin account')
       }
-      const user = await prisma.user.update({
-        where: { id: req.params.id },
-        data: { ...(body.role !== undefined && { role: body.role }) },
-        select: { id: true, email: true, name: true, role: true },
-      })
+
+      const data: Record<string, any> = {}
+      if (body.role !== undefined) data.role = body.role
+      if (body.name !== undefined) data.name = (body.name || '').trim() || null
+      if (body.email !== undefined) {
+        const email = (body.email || '').trim().toLowerCase()
+        if (!email || !EMAIL_RE.test(email)) return badReq('Enter a valid email address')
+        const existing = await prisma.user.findUnique({ where: { email } })
+        if (existing && existing.id !== req.params.id) return badReq('Another account already uses this email')
+        data.email = email
+      }
+      if (body.password !== undefined && body.password !== '') {
+        if (body.password.length < 8) return badReq('Password must be at least 8 characters')
+        data.passwordHash = await bcrypt.hash(body.password, 10)
+      }
+
+      const user = await prisma.user.update({ where: { id: req.params.id }, data, select: userSelect })
       return { status: 200, jsonBody: user }
     } catch (e: any) {
       if (e?.code === 'P2025') return notFound('User not found')
       ctx.error(e); return err500(e)
     }
+  },
+})
+
+// DELETE /api/admin/users/{id} — permanent. User has no FK-linked data
+// (projects aren't user-scoped yet, see schema.prisma's note on User), so
+// this is a plain row delete, no cascade to worry about.
+app.http('adminDeleteUser', {
+  methods: ['DELETE'], route: 'admin/users/{id}', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    const denied = guard(req); if (denied) return denied
+    try {
+      const admin = requireAdmin(req)
+      if (req.params.id === admin.userId) return badReq('Cannot delete your own account from here — sign in as another admin to remove this one')
+      const target = await prisma.user.findUnique({ where: { id: req.params.id }, select: { role: true } })
+      if (!target) return notFound('User not found')
+      if (target.role === 'admin') {
+        const adminCount = await prisma.user.count({ where: { role: 'admin' } })
+        if (adminCount <= 1) return badReq('Cannot delete the only remaining admin account')
+      }
+      await prisma.user.delete({ where: { id: req.params.id } })
+      return { status: 204 }
+    } catch (e: any) {
+      if (e?.code === 'P2025') return notFound('User not found')
+      ctx.error(e); return err500(e)
+    }
+  },
+})
+
+// POST /api/admin/users/purge-non-admin — bulk cleanup ("delete all users
+// except admin", requested 2026-08-13). Admin accounts are excluded by the
+// where clause itself, so there's no last-admin edge case to guard here.
+app.http('adminPurgeNonAdminUsers', {
+  methods: ['POST'], route: 'admin/users/purge-non-admin', authLevel: 'anonymous',
+  handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
+    const denied = guard(req); if (denied) return denied
+    try {
+      const result = await prisma.user.deleteMany({ where: { role: { not: 'admin' } } })
+      return { status: 200, jsonBody: { deletedCount: result.count } }
+    } catch (e) { ctx.error(e); return err500(e) }
   },
 })
 

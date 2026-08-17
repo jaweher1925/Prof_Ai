@@ -4,6 +4,11 @@
  */
 import apiClient from '@/api/apiClient'
 
+// TEMPORARY — see pollHeyGen's docstring below. Flip to false to restore
+// normal polling. Re-enabled: killing all stuck jobs and starting fresh
+// one-by-one requires polling to actually detect each new job completing.
+const POLLING_DISABLED = false 
+
 export const agentsService = {
 
   // Stage 1: Script
@@ -88,12 +93,26 @@ export const agentsService = {
       segment_id: segmentId || undefined,
     }),
 
-  /** Check Video AI video render status */
-  pollHeyGen: (videoId, sceneId) =>
-    apiClient.post('/pollHeyGenVideo', {
+  /** Check Video AI video render status.
+   *
+   *  TEMPORARILY DISABLED (per request, to test whether HeyGen generation
+   *  "feels" faster with polling off) — short-circuits to a fake
+   *  'processing' response instead of ever hitting the network, so every
+   *  poll loop (FinalVideoPanel, VideoPanel, VisualDesignerPanel,
+   *  ProjectWorkspace's page-wide poller) just keeps waiting silently
+   *  instead of calling out. NOTE: this does NOT make HeyGen render faster —
+   *  it only stops us from finding out when a job finishes, so any
+   *  in-flight scene will sit stuck showing "generating..." and never get
+   *  its finished clip downloaded/composited/saved until this is turned
+   *  back on. Re-enable by deleting the two lines below this comment.
+   */
+  pollHeyGen: (videoId, sceneId) => {
+    if (POLLING_DISABLED) return Promise.resolve({ status: 'processing' })
+    return apiClient.post('/pollHeyGenVideo', {
       video_id: videoId,
       scene_id: sceneId,
-    }),
+    })
+  },
 
   /** Batched avatar rendering (#46) — bundles every listed scene's narration
    *  into ONE HeyGen job instead of one job per scene, cutting total fixed

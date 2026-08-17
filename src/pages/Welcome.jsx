@@ -1,12 +1,14 @@
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   GraduationCap, ArrowRight, Mic, Video, FileText, Image as ImageIcon, Sparkles,
   User, Bot, BookOpen, BarChart3, Presentation, PlayCircle, Sun, Moon,
+  LayoutDashboard, ShieldCheck, LogOut,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/ThemeContext'
+import { useAuth } from '@/lib/AuthContext'
 import LogoBadge from '@/components/ui/LogoBadge'
 
 const FEATURES = [
@@ -23,6 +25,7 @@ export default function Welcome() {
   const [flashing, setFlashing] = useState(false)
   const { theme, toggleTheme } = useTheme()
   const isDark = theme === 'dark'
+  const { user, isAuthenticated, logout } = useAuth()
 
   // Auth is now enforced again (see App.jsx's RequireAuth) — route through
   // /login and /signup as the comment here used to anticipate, instead of
@@ -33,8 +36,27 @@ export default function Welcome() {
     localStorage.setItem('profai_visited', 'true')
     setTimeout(() => navigate(path), 400)
   }
-  const signIn = () => goTo('/login')
-  const signUp = () => goTo('/signup')
+  // Landing on this page already signed in (e.g. hitting "/" from a
+  // bookmark) used to still push these into /login and /signup — a signed-in
+  // visitor doesn't need to log in again, so both just go straight to their
+  // dashboard instead (2026-08-13: "this also if i log in with user" — the
+  // nav below also needed to actually reflect that logged-in state).
+  const signIn = () => goTo(isAuthenticated ? '/dashboard' : '/login')
+  const signUp = () => goTo(isAuthenticated ? '/dashboard' : '/signup')
+
+  // Account menu — same pattern as the in-app Sidebar's (see Sidebar.jsx),
+  // scoped locally here since this page renders outside AppLayout.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocClick = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false) }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [menuOpen])
+  const initials = (user?.name || user?.email || '?')[0].toUpperCase()
+  const isAdmin = user?.role === 'admin'
+  const handleLogout = async () => { setMenuOpen(false); await logout(); navigate('/') }
 
   return (
     <div className="min-h-screen text-slate-900 dark:text-white">
@@ -79,17 +101,62 @@ export default function Welcome() {
                 <Moon className={cn('w-4 h-4 absolute inset-0 transition-all', isDark ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 rotate-90 scale-50')} />
               </span>
             </button>
-            <button onClick={signIn} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors hidden sm:block">
-              Sign in
-            </button>
-            <motion.button
-              onClick={signUp}
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.97 }}
-              className="px-4 py-2 text-sm font-semibold text-white bg-indigo-700 hover:bg-indigo-600 rounded-xl transition-colors shadow-md shadow-indigo-500/20"
-            >
-              Free Trial
-            </motion.button>
+            {isAuthenticated ? (
+              <div ref={menuRef} className="relative">
+                <button
+                  onClick={() => setMenuOpen((v) => !v)}
+                  className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-indigo-300 dark:hover:border-indigo-400/40 transition-colors"
+                >
+                  <span className="relative w-7 h-7 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center text-[11px] font-bold text-white flex-shrink-0">
+                    {initials}
+                    {isAdmin && (
+                      <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-blue-500 border-2 border-white dark:border-slate-950 flex items-center justify-center">
+                        <ShieldCheck className="w-1.5 h-1.5 text-white" />
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-200 hidden sm:block max-w-[120px] truncate">
+                    {user?.name || user?.email || 'Account'}
+                  </span>
+                </button>
+                {menuOpen && (
+                  <div className="absolute right-0 mt-2 w-56 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 shadow-xl overflow-hidden z-50">
+                    <div className="px-3.5 py-3 border-b border-slate-100 dark:border-white/[0.06]">
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">{user?.name || 'Account'}</p>
+                      <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate">{user?.email}</p>
+                    </div>
+                    <button onClick={() => { setMenuOpen(false); navigate('/dashboard') }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-colors">
+                      <LayoutDashboard className="w-4 h-4 flex-shrink-0" /> Dashboard
+                    </button>
+                    {isAdmin && (
+                      <button onClick={() => { setMenuOpen(false); navigate('/admin') }}
+                        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-slate-900 dark:hover:text-white transition-colors">
+                        <ShieldCheck className="w-4 h-4 flex-shrink-0" /> Admin console
+                      </button>
+                    )}
+                    <button onClick={handleLogout}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-sm text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors">
+                      <LogOut className="w-4 h-4 flex-shrink-0" /> Sign out
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <button onClick={signIn} className="text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-400 transition-colors hidden sm:block">
+                  Sign in
+                </button>
+                <motion.button
+                  onClick={signUp}
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="px-4 py-2 text-sm font-semibold text-white bg-indigo-700 hover:bg-indigo-600 rounded-xl transition-colors shadow-md shadow-indigo-500/20"
+                >
+                  Free Trial
+                </motion.button>
+              </>
+            )}
           </div>
         </motion.nav>
 

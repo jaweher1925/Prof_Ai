@@ -423,6 +423,34 @@ async function plainConcat(videoPaths: string[]): Promise<string> {
   }
 }
 
+/** Re-encoding concat (ffmpeg's `concat` FILTER, not the `-f concat` stream-
+ *  copy demuxer `plainConcat` above uses) — tolerates clips coming out of
+ *  DIFFERENT render pipelines (voice-only scene vs. avatar-overlaid scene vs.
+ *  multi-segment stitched scene, each its own ffmpeg encode with its own
+ *  timestamps/params) that stream-copy concat requires to match exactly and
+ *  which these don't always. Slower (full re-encode) but far more tolerant —
+ *  used as a fallback specifically so a stream-copy mismatch doesn't force
+ *  callers to discard already-successful work (see concatVideos below,
+ *  2026-08-15: "between the scene they are on top on each other there is no
+ *  separate time between" — plainConcat(padded) was failing on some modules
+ *  and silently falling back to re-joining the ORIGINAL, unpadded clips,
+ *  which is indistinguishable from success except the pause is just gone). */
+async function filterConcatVideos(videoPaths: string[]): Promise<string> {
+  const outPath = join(UPLOAD_DIR, `${randomUUID()}_concat_reencode.mp4`)
+  const inputArgs = videoPaths.flatMap((p) => ['-i', p])
+  const streamRefs = videoPaths.map((_, i) => `[${i}:v:0][${i}:a:0]`).join('')
+  const filter = `${streamRefs}concat=n=${videoPaths.length}:v=1:a=1[v][a]`
+  await runFfmpeg([
+    '-y', ...inputArgs,
+    '-filter_complex', filter,
+    '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', ...ENCODE_SPEED, '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k',
+    outPath,
+  ])
+  return outPath
+}
+
 /** Join segment clips with a crossfade transition between slides (#41).
  *  Falls back to a plain cut if any clip is too short to fade or if the
  *  xfade render fails. */
@@ -440,53 +468,19 @@ export async function concatenateVideos(videoPaths: string[]): Promise<string> {
     return videoPaths[0]
   }
 
-  const T = 0.5  // crossfade duration in seconds
-
-  try {
-    const durations = await Promise.all(videoPaths.map(p => getAudioDurationSec(p)))
-    if (durations.some(d => d < T * 2.4)) {
-      console.log('[concatenateVideos] A clip is too short to crossfade — using plain concat')
-      return await plainConcat(videoPaths)
-    }
-
-    console.log(`[concatenateVideos] Crossfading ${videoPaths.length} clips (${T}s fade)`)
-
-    const inputs = videoPaths.flatMap(p => ['-i', p])
-    const parts: string[] = []
-    let vPrev = '[0:v]'
-    let aPrev = '[0:a]'
-    let cum = durations[0]
-    for (let i = 1; i < videoPaths.length; i++) {
-      const last = i === videoPaths.length - 1
-      const vOut = last ? '[vout]' : `[v${i}]`
-      const aOut = last ? '[aout]' : `[a${i}]`
-      parts.push(`${vPrev}[${i}:v]xfade=transition=fade:duration=${T}:offset=${(cum - T).toFixed(3)}${vOut}`)
-      parts.push(`${aPrev}[${i}:a]acrossfade=d=${T}${aOut}`)
-      vPrev = vOut
-      aPrev = aOut
-      cum += durations[i] - T
-    }
-
-    const outPath = join(UPLOAD_DIR, `${randomUUID()}_scene.mp4`)
-    await runFfmpeg([
-      '-y',
-      ...inputs,
-      '-filter_complex', parts.join(';'),
-      '-map', '[vout]',
-      '-map', '[aout]',
-      '-c:v', 'libx264',
-      ...ENCODE_SPEED,
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '192k',
-      outPath,
-    ])
-
-    console.log(`[concatenateVideos] Created crossfaded video: ${outPath}`)
-    return outPath
-  } catch (err: any) {
-    console.warn(`[concatenateVideos] Crossfade failed, falling back to plain concat: ${err?.message?.slice(-300)}`)
-    return await plainConcat(videoPaths)
-  }
+  // Used to audio-crossfade (acrossfade=d=0.5) alongside the video xfade at
+  // every segment boundary. That's fine for music but every caller here is
+  // stitching spoken narration segments of the SAME scene back together
+  // (heygenFinalize.ts's stitchSceneFromSegments, renderSegmentsToVideo) —
+  // crossfading two different sentences means they're both audible, blended,
+  // for half a second at every join, which reads as garbled/unclear audio.
+  // A hard cut between two talking-head clips is completely normal (that's
+  // what module-level merging already does by default when no transition is
+  // picked — see joinTwoClips' 'none' branch), so just do that here too.
+  // Also sidesteps the video/audio desync risk a mismatched fade duration
+  // would introduce, since plain concat re-times nothing.
+  console.log(`[concatenateVideos] Joining ${videoPaths.length} clips with a clean cut (no audio crossfade)`)
+  return await plainConcat(videoPaths)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -657,8 +651,23 @@ export async function concatVideos(localPaths: string[]): Promise<string> {
   try {
     return await plainConcat(padded)
   } catch (err: any) {
-    console.warn(`[concatVideos] Plain concat of padded clips failed, falling back to a crossfaded join (shorter/no pause at the failed boundaries): ${err?.message?.slice(-300)}`)
-    return await concatenateVideos(localPaths)
+    // This used to fall straight through to concatenateVideos(localPaths) —
+    // the ORIGINAL, UNPADDED clips. That "worked" (produced a valid video,
+    // no error surfaced) but silently threw away every pause just applied
+    // above, which is exactly what looked like "scenes glued directly
+    // together with no gap" with no error or warning visible to the user.
+    // plainConcat's stream-copy demuxer needs every clip's codec params to
+    // match EXACTLY, which clips from different render pipelines (voice-only
+    // vs avatar-overlaid vs multi-segment stitched scenes) don't always
+    // guarantee — so try the slower but far more tolerant re-encoding concat
+    // FIRST, on the PADDED clips, before giving up the pause entirely.
+    console.warn(`[concatVideos] Plain (stream-copy) concat of padded clips failed, retrying with a re-encoding concat so the pause survives: ${err?.message?.slice(-300)}`)
+    try {
+      return await filterConcatVideos(padded)
+    } catch (err2: any) {
+      console.warn(`[concatVideos] Re-encoding concat also failed, falling back to a crossfaded join of the ORIGINAL clips as a last resort (no pause at any boundary): ${err2?.message?.slice(-300)}`)
+      return await concatenateVideos(localPaths)
+    }
   }
 }
 
@@ -789,31 +798,59 @@ export async function mergeScenesWithTransitions(
 /**
  * Overlay the HeyGen talking-avatar video on the slide video (#40), sized and
  * positioned by the Visual Designer's avatar placeholder (#3, #4) — falls
- * back to the old default box (22% wide × 38% tall, bottom-right, 1.5%/2%
- * margins) when no placeholder position is available (e.g. scenes that
- * predate the WYSIWYG canvas).
+ * back to a full-height right-edge strip (30% wide, vertically centered) when
+ * no placeholder position is available (e.g. scenes that predate the WYSIWYG
+ * canvas).
  *
  * `position` uses the same % coordinates as SlideComposition/SlideContent:
  * avatarX/avatarY are the CENTER of the box (0-100, % of slide), avatarWidth
- * is the box width as % of slide width; height is derived to keep a 9:16
- * portrait crop of HeyGen's 16:9 output.
+ * is the box width as % of slide width; height is derived to fit HeyGen's
+ * 9:16 portrait output with no crop (see AVATAR_BOX_ASPECT below).
  *
  * The final audio track is the slide video's own TTS narration — the avatar
  * is muted (it lip-syncs the same audio anyway).
  */
-// Portrait aspect (height/width, in pixels) the avatar box is cropped to.
+// Aspect (height/width, in pixels) the avatar box is cropped to.
 // Was 16/9 (a true 9:16 portrait sliver) — HeyGen's v3 API has no framing
 // control (closeUp/normal was dropped going from v2, see createAvatarVideo's
 // comment), so its default medium-shot framing already fills a good chunk of
 // its native 16:9 frame; cropping THAT down to another 9:16-shaped box on
 // top discarded ~70% of the frame width and compounded into an extreme
 // face-only close-up ("avatar is zoomed too big", reported 2026-08-11).
-// 4/3 keeps the box portrait (taller than wide, still reads as a presenter
-// insert) while keeping meaningfully more of the original frame width.
+// Lowered to 4/3, which helped but still discarded ~58% of the scaled
+// frame's width (29% off each side) — enough to still clip into the
+// shoulders on a normal medium shot ("sides crop, box small", reported
+// 2026-08-13). 1/1 (square) keeps the box read as a presenter insert
+// (still taller, relatively, than the very wide 16:9 slide behind it)
+// while only discarding ~44% of width (22% each side), which is what
+// actually stopped the edge-clipping. If a future HeyGen framing option
+// changes how tight the native medium shot is, re-check this fraction
+// (kept width fraction = (1/AVATAR_BOX_ASPECT) / (16/9)) rather than
+// re-guessing from scratch.
 // VisualDesignerPanel.jsx's AVATAR_HEIGHT_RATIO must stay in sync with this
 // (it's the same ratio, folded together with the 16:9 slide's own aspect) so
 // the editor placeholder shows the same crop the render actually produces.
-const AVATAR_BOX_ASPECT = 4 / 3
+// 2026-08-15 ("i need to find a complet avatar all his body and face
+// appear"): moved to 9/16 — i.e. the box had the SAME 16:9 shape as HeyGen's
+// own output, so the whole frame fit with NO crop at all. Every value before
+// that (16/9, then 4/3, then 1) was a box shaped differently from the
+// source, which forced a horizontal crop and cost 44-70% of the frame's
+// width — that's what kept lopping off shoulders/arms and made the shot
+// read as a tight face close-up no matter how the position math was
+// adjusted. The filter below pairs this with force_original_aspect_ratio=
+// decrease + pad instead of crop, so even if this constant is changed again
+// the presenter can only ever be letterboxed, never cut.
+//
+// 2026-08-15, same day ("i need to get avatar with all the frame full
+// portrait (9:16)"): flipped again, this time to 16/9 — a TALL box, mirroring
+// the exact same "box shape must match HeyGen's output shape" principle, just
+// for the opposite orientation. createAvatarVideo (heygenAvatar.ts) now
+// requests aspect_ratio: '9:16' from HeyGen instead of '16:9', so the SOURCE
+// clip itself is portrait-framed (not a landscape clip squeezed into a
+// portrait box, which would just letterbox tiny in the middle). This is a
+// full-height edge strip, not a corner box — see DEFAULT_AVATAR's move to
+// {x:82, y:50, width:30} in VisualDesignerPanel.jsx.
+const AVATAR_BOX_ASPECT = 16 / 9
 
 export async function overlayAvatarOnVideo(
   baseVideoPath: string,
@@ -826,7 +863,14 @@ export async function overlayAvatarOnVideo(
   // here instead, so the slide shows through around the presenter instead of
   // a solid box (previously this flag didn't exist at all: "Transparent" was
   // silently ignored and always rendered as a plain rectangular overlay).
-  chromaKey?: boolean
+  chromaKey?: boolean,
+  // Solid Avatar Background color, from heygenAvatar.ts's
+  // resolveAvatarBackgroundColor() — currently UNUSED (see the "Edge-to-edge
+  // fill" comment below, 2026-08-15: the padded-margin look this was for got
+  // explicitly turned back off). Left in the signature rather than ripped
+  // out of all six call sites, in case the margin treatment comes back for
+  // one background type but not another.
+  bgColorHex?: string | null
 ): Promise<string> {
   const outPath = join(UPLOAD_DIR, `${randomUUID()}_with_avatar.mp4`)
 
@@ -836,20 +880,59 @@ export async function overlayAvatarOnVideo(
   let boxWPx: number, boxHPx: number, overlayX: string, overlayY: string
 
   if (position && Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.width)) {
-    const wPct = Math.max(10, Math.min(60, position.width))
+    // Floor raised 16 -> 20 (2026-08-15, "keep the avatar more big") so even
+    // a segment saved at the editor's own DEFAULT_AVATAR.width (22%, already
+    // above this floor) reads as a deliberately-sized presenter. The ceiling
+    // was dropped hard, 60 -> 30, in the SAME message's very next round —
+    // several scenes had their avatarWidth dragged up to 32-33% back when
+    // the box still had the AVATAR_CONTENT_SCALE padding above (removed
+    // just before this), so the VISIBLE presenter inside that oversized box
+    // was actually a normal size despite the box itself being huge. Once
+    // that padding came out, those same 32-33% boxes filled edge-to-edge and
+    // the presenter suddenly covered most of the frame ("avatar too big,
+    // covering everything" — a screenshot, no caption, immediately after the
+    // border/padding removal). The old 60% ceiling was never a real limit in
+    // practice; 30% keeps the "bigger, no border" request without letting a
+    // stale large box compound with the padding removal into this.
+    // 2026-08-15: range narrowed 26-45 -> 18-31 for the portrait-strip switch.
+    // AVATAR_BOX_ASPECT is now 16/9 (tall), so WIDTH maps to a much bigger
+    // HEIGHT than before (heightPx = widthPx * 16/9) — the old 45% ceiling
+    // would produce a box ~1536px tall, well past the 1080px canvas. 31%
+    // ceiling caps height at ~1024px (~95% of slide height, matches
+    // VisualDesignerPanel.jsx's MAX_AVATAR_WIDTH = floor(98/AVATAR_HEIGHT_RATIO)
+    // so the editor can never save a width the render would have to clip).
+    const wPct = Math.max(18, Math.min(31, position.width))
     boxWPx = Math.round((OUT_W * wPct) / 100)
     boxHPx = Math.round(boxWPx * AVATAR_BOX_ASPECT) // portrait crop, even dims required by libx264
     if (boxWPx % 2 !== 0) boxWPx += 1
     if (boxHPx % 2 !== 0) boxHPx += 1
     const centerXPx = (OUT_W * position.x) / 100
     const centerYPx = (OUT_H * position.y) / 100
-    overlayX = String(Math.round(centerXPx - boxWPx / 2))
-    overlayY = String(Math.round(centerYPx - boxHPx / 2))
+    // Clamp so the box is always FULLY on-canvas. VisualDesignerPanel.jsx's
+    // clampAvatarBox() keeps whatever the user currently drags/resizes
+    // on-slide, but that only protects data saved by the CURRENT editor
+    // build — a segment saved before clampAvatarBox existed, or before
+    // AVATAR_BOX_ASPECT changed (16/9 -> 4/3, see that constant's comment),
+    // can carry stale coordinates that place part of the box above y=0 or
+    // past the right/bottom edge. ffmpeg's overlay filter doesn't clip that
+    // gracefully — it just doesn't draw the off-canvas part, which reads as
+    // the presenter's head being cut off ("top of the head is cut off",
+    // reported 2026-08-13). Re-deriving x/y here from the ACTUAL box size
+    // instead of trusting old stored coordinates makes this correct
+    // regardless of what produced the stale data.
+    const rawX = Math.round(centerXPx - boxWPx / 2)
+    const rawY = Math.round(centerYPx - boxHPx / 2)
+    overlayX = String(Math.max(0, Math.min(OUT_W - boxWPx, rawX)))
+    overlayY = String(Math.max(0, Math.min(OUT_H - boxHPx, rawY)))
   } else {
-    boxWPx = 422
-    boxHPx = 410
-    overlayX = `W-w-29`
-    overlayY = `H-h-22`
+    // Matches DEFAULT_AVATAR (VisualDesignerPanel.jsx: {x:82, y:50, width:30})
+    // at the 16/9 AVATAR_BOX_ASPECT — a full-height strip flush to the right
+    // edge, vertically centered — for the rare case there's no saved position
+    // at all (e.g. a scene that predates the WYSIWYG canvas).
+    boxWPx = 576
+    boxHPx = 1024
+    overlayX = `W-w-20`
+    overlayY = `(H-h)/2`
   }
 
   // Chroma-key the avatar clip's green background out to real alpha before
@@ -859,9 +942,47 @@ export async function overlayAvatarOnVideo(
   // cleanly while a soft blend band avoids a hard fringe at the presenter's
   // edge. format=yuva420p makes the alpha channel explicit going into
   // overlay, which otherwise ignores per-pixel alpha on some codecs/builds.
+  // despill after chromakey (2026-08-13, "the avatar... green" fringe
+  // reported around hair edges) — chromakey alone only makes near-pure-green
+  // pixels transparent; the ANTI-ALIASED edge pixels around hair/shoulders
+  // are a genuine blend of green + subject color, so they survive keying as
+  // partially-transparent pixels that are still tinted green. despill
+  // specifically desaturates that residual green cast on the remaining
+  // semi-transparent edge without touching fully-opaque interior pixels.
+  //
+  // Headroom padding, chroma-key path only (2026-08-15). The crop above
+  // already keeps 100% of HeyGen's frame HEIGHT — nothing is ever cropped
+  // vertically here — so "head not complete" is HeyGen's own medium-shot
+  // framing placing the hairline near its frame's top edge, which no crop
+  // offset can undo. What makes that read as CUT rather than merely tight
+  // is a hard box edge landing right at the hairline. Scaling the presenter
+  // to AVATAR_CONTENT_SCALE of the box and padding the remainder with real
+  // alpha moves that edge away from the head AND is completely invisible —
+  // the slide shows straight through the padding, so there's no margin or
+  // border to see, unlike the earlier solid-color version of this that got
+  // (correctly) called out as a border. resolveAvatarBackground() now
+  // defaults to this transparent path, so it's what most renders take.
+  //
+  // A project that explicitly picked a solid color/image background keeps
+  // filling its box edge-to-edge: padding there would be a genuinely
+  // visible band, which is the thing that was objected to.
+  // FIT the whole avatar frame into the box — never crop it. force_original_
+  // aspect_ratio=decrease scales until BOTH dimensions fit (so nothing can
+  // fall outside), then pad centers it in the exact box size ffmpeg's
+  // overlay expects. Because AVATAR_BOX_ASPECT above already matches
+  // HeyGen's 16:9, that padding is normally zero — it only kicks in as a
+  // safety net if the source or the box aspect ever differs, and even then
+  // it letterboxes rather than cutting.
+  //
+  // This replaces a crop=WxH that always discarded a large slice of the
+  // frame's width, and the AVATAR_CONTENT_SCALE shrink-and-pad that tried to
+  // compensate for the resulting tightness. Both are unnecessary once the
+  // box simply matches the source shape: the presenter arrives complete —
+  // full face and body, exactly as HeyGen framed it.
+  const fitAndPad = `scale=${boxWPx}:${boxHPx}:force_original_aspect_ratio=decrease,pad=${boxWPx}:${boxHPx}:(ow-iw)/2:(oh-ih)/2`
   const avatarFilter = chromaKey
-    ? `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx},chromakey=${AVATAR_CHROMA_KEY_HEX}:0.15:0.08,format=yuva420p[av]`
-    : `[1:v]scale=-2:${boxHPx},crop=${boxWPx}:${boxHPx}[av]`
+    ? `[1:v]chromakey=${AVATAR_CHROMA_KEY_HEX}:0.15:0.1,despill=type=green:mix=0.5:expand=0,format=yuva420p,${fitAndPad}:color=0x00000000[av]`
+    : `[1:v]${fitAndPad}:color=black[av]`
 
   await runFfmpeg([
     '-y',

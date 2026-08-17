@@ -7,13 +7,25 @@ const badReq = (msg: string) => ({ status: 400, jsonBody: { error: msg } } as Ht
 const notFound = (msg: string) => ({ status: 404, jsonBody: { error: msg } } as HttpResponseInit)
 const err500 = (e: any) => ({ status: 500, jsonBody: { error: e?.message || 'Internal error' } } as HttpResponseInit)
 
+// Every project route below scopes to the CALLER's own projects (2026-08-13
+// — "user history should be different": every signed-in user was seeing
+// every project, not just their own, since Project had no owner column at
+// all). This applies uniformly regardless of role — an admin browsing their
+// own workspace at /dashboard sees only projects THEY created, same as any
+// professor; the admin console's separate, deliberately unfiltered
+// /api/admin/projects is still the place for a global view across everyone.
+// Legacy projects created before this column existed have userId=null and
+// so won't appear for anyone here — see schema.prisma's note on
+// Project.userId.
+
 // GET /api/projects
 app.http('listProjects', {
   methods: ['GET'], route: 'projects', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
-      const projects = await prisma.project.findMany({ orderBy: { updatedAt: 'desc' } })
+      const projects = await prisma.project.findMany({ where: { userId: user.userId }, orderBy: { updatedAt: 'desc' } })
       return { status: 200, jsonBody: projects }
     } catch (e) { ctx.error(e); return err500(e) }
   },
@@ -23,11 +35,12 @@ app.http('listProjects', {
 app.http('createProject', {
   methods: ['POST'], route: 'projects', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
       const { title } = (await req.json()) as { title?: string }
       if (!title?.trim()) return badReq('title is required')
-      const project = await prisma.project.create({ data: { title: title.trim() } })
+      const project = await prisma.project.create({ data: { title: title.trim(), userId: user.userId } })
       return { status: 201, jsonBody: project }
     } catch (e) { ctx.error(e); return err500(e) }
   },
@@ -37,10 +50,13 @@ app.http('createProject', {
 app.http('getProject', {
   methods: ['GET'], route: 'projects/{id}', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
       const project = await prisma.project.findUnique({ where: { id: req.params.id } })
-      if (!project) return notFound('Project not found')
+      // 404 rather than 403 on a wrong-owner match — doesn't reveal whether
+      // the project id exists at all to someone who isn't its owner.
+      if (!project || project.userId !== user.userId) return notFound('Project not found')
       return { status: 200, jsonBody: project }
     } catch (e) { ctx.error(e); return err500(e) }
   },
@@ -50,8 +66,11 @@ app.http('getProject', {
 app.http('updateProject', {
   methods: ['PATCH'], route: 'projects/{id}', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
+      const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } })
+      if (!existing || existing.userId !== user.userId) return notFound('Project not found')
       const body = (await req.json()) as any
       const project = await prisma.project.update({
         where: { id: req.params.id },
@@ -86,8 +105,11 @@ app.http('updateProject', {
 app.http('deleteProject', {
   methods: ['DELETE'], route: 'projects/{id}', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
+      const existing = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } })
+      if (!existing || existing.userId !== user.userId) return notFound('Project not found')
       await prisma.project.delete({ where: { id: req.params.id } })
       return { status: 204 }
     } catch (e) { ctx.error(e); return err500(e) }
@@ -98,8 +120,11 @@ app.http('deleteProject', {
 app.http('getProjectSourceFiles', {
   methods: ['GET'], route: 'projects/{id}/source-files', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
+      const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } })
+      if (!project || project.userId !== user.userId) return notFound('Project not found')
       const files = await prisma.sourceFile.findMany({ where: { projectId: req.params.id }, orderBy: { createdAt: 'desc' } })
       return { status: 200, jsonBody: files }
     } catch (e) { ctx.error(e); return err500(e) }
@@ -110,8 +135,11 @@ app.http('getProjectSourceFiles', {
 app.http('getProjectScripts', {
   methods: ['GET'], route: 'projects/{id}/scripts', authLevel: 'anonymous',
   handler: async (req: HttpRequest, ctx: InvocationContext): Promise<HttpResponseInit> => {
-    if (!getUser(req)) return unauth()
+    const user = getUser(req)
+    if (!user) return unauth()
     try {
+      const project = await prisma.project.findUnique({ where: { id: req.params.id }, select: { userId: true } })
+      if (!project || project.userId !== user.userId) return notFound('Project not found')
       // Order by the module's own orderIndex, not Script.createdAt — a
       // re-analyzed/regenerated module gets a fresh Script row with a much
       // later createdAt, which used to shuffle it to the bottom of this list

@@ -22,7 +22,7 @@ import {
   compositeAvatarOverlay, overlayAvatarOnVideo, localPathFromUploadUrl, concatenateVideos,
   renderSegmentsToVideo, extractAvatarPosition, extractAudioTrack, trimVideo, type RenderableSegment,
 } from './ffmpegVideo'
-import { downloadToUploads, getVideoStatusV3, startAvatarClipJob } from './heygenAvatar'
+import { downloadToUploads, getVideoStatusV3, startAvatarClipJob, resolveAvatarBackgroundColor } from './heygenAvatar'
 import { deleteOldUpload } from './uploadCleanup'
 
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
@@ -41,6 +41,55 @@ type FinalizeResult = {
   thumbnailUrl?: string | null
   singlePart?: boolean
   avatarWarning?: string
+}
+
+/** Once every segment of a multi-part scene has its own persisted avatar
+ *  clip (see the `segmentId` branch in finalizeHeyGenJob below), stitch them
+ *  together in orderIndex order into the scene's real Scene.avatarVideoUrl —
+ *  same concat used everywhere else in this file. No-ops (returns null) if
+ *  any sibling segment hasn't rendered yet — safe to call after every single
+ *  segment completion, it just does nothing until the last one lands. This
+ *  is what replaces the old parallel "render every segment as one big
+ *  all-at-once job" behavior: segments are now rendered one at a time, by
+ *  hand, and stitching only happens once ALL of them are individually done. */
+export async function stitchSceneFromSegments(
+  sceneId: string,
+  context: InvocationContext
+): Promise<{ videoUrl: string; avatarWarning?: string } | null> {
+  const scene = await prisma.scene.findUnique({ where: { id: sceneId } })
+  if (!scene) return null
+  const segments = await prisma.sceneSegment.findMany({
+    where: { sceneId },
+    orderBy: { orderIndex: 'asc' },
+  })
+  if (!segments.length || segments.some((s) => !s.avatarVideoUrl)) return null // not every part has rendered yet
+
+  const clipPaths = segments
+    .map((s) => localPathFromUploadUrl(s.avatarVideoUrl as string))
+    .filter((p): p is string => !!p)
+  if (!clipPaths.length) return null
+
+  let finalUrl: string
+  try {
+    if (clipPaths.length === 1) {
+      finalUrl = `/api/uploads/${parse(clipPaths[0]).base}`
+    } else {
+      const finalPath = await concatenateVideos(clipPaths)
+      finalUrl = `/api/uploads/${parse(finalPath).base}`
+    }
+  } catch (e: any) {
+    context.warn(`[heygenFinalize] scene ${sceneId}: failed to stitch ${clipPaths.length} rendered segments together — ${e?.message}`)
+    return null // leave the scene as still-rendering rather than half-stitched
+  }
+
+  const oldUrl = scene.avatarVideoUrl && !scene.avatarVideoUrl.startsWith('heygen:') ? scene.avatarVideoUrl : null
+  await prisma.scene.update({
+    where: { id: sceneId },
+    data: { avatarVideoUrl: finalUrl, status: 'completed' },
+  })
+  deleteOldUpload(oldUrl, finalUrl)
+  context.log(`[heygenFinalize] scene ${sceneId}: all ${segments.length} segment(s) individually rendered — stitched into ${finalUrl}`)
+  return { videoUrl: finalUrl }
 }
 
 export async function finalizeHeyGenJob(opts: {
@@ -106,10 +155,24 @@ export async function finalizeHeyGenJob(opts: {
         // See generateHeyGenAvatar.ts's sidecar write — whether this clip was
         // rendered on the chroma-key green and needs keying out here.
         chromaKey?: boolean
+        // See generateHeyGenAvatar.ts's sidecar write — the project's raw
+        // Avatar Background JSON, resolved back into a padding color below
+        // for overlayAvatarOnVideo's headroom-margin fix.
+        avatarBackground?: string | null
         // See generateHeyGenAvatar.ts's sidecar write — which HeyGen engine
         // actually rendered this clip (cost-relevant: avatar_iv is ~2-4x
         // pricier than avatar_iii per HeyGen's pricing docs).
         engineUsed?: 'avatar_iii' | 'avatar_iv'
+        // Present when this job rendered ONE segment of a multi-part scene
+        // (per-segment click in FinalVideoPanel/VisualDesignerPanel) rather
+        // than the whole scene. When set, the composited clip is persisted
+        // to THIS segment's own SceneSegment.avatarVideoUrl instead of
+        // Scene.avatarVideoUrl — then every sibling segment is checked, and
+        // once ALL of them have their own clip, they're stitched together
+        // into the scene's real avatarVideoUrl (see stitchSceneFromSegments
+        // below). This replaces the old "preview never persists" behavior —
+        // a per-segment render is now a real, saved render, not throwaway.
+        segmentId?: string
       }
 
       // Already finalized by the other path (poll vs webhook race) — don't
@@ -133,7 +196,7 @@ export async function finalizeHeyGenJob(opts: {
       const basePath = localPathFromUploadUrl(meta.slideVideoUrl)
       if (basePath) {
         try {
-          const finalPath = await overlayAvatarOnVideo(basePath, avatarPath, meta.avatarPosition, meta.chromaKey)
+          const finalPath = await overlayAvatarOnVideo(basePath, avatarPath, meta.avatarPosition, meta.chromaKey, resolveAvatarBackgroundColor(meta.avatarBackground))
           finalUrl = `/api/uploads/${parse(finalPath).base}`
           context.log(`[heygenFinalize] scene ${meta.sceneId}: async avatar composited onto slide video after ${elapsedMin}min`)
         } catch (e: any) {
@@ -152,8 +215,27 @@ export async function finalizeHeyGenJob(opts: {
         avatarWarning = avatarWarning ? `${avatarWarning} ${bump}` : bump
       }
 
-      // A single-part Visual Design PREVIEW must NOT be written to Scene.avatarVideoUrl
-      // — that field is the full-scene video Video Editing assembles from.
+      // A single SEGMENT's render — persist onto that segment's own row, then
+      // check whether the whole scene is now fully rendered.
+      if (meta.segmentId) {
+        await prisma.sceneSegment.update({
+          where: { id: meta.segmentId },
+          data: { avatarVideoUrl: finalUrl },
+        })
+        try { unlinkSync(sidecarPath) } catch { /* best-effort cleanup */ }
+
+        const stitched = meta.sceneId ? await stitchSceneFromSegments(meta.sceneId, context) : null
+        return {
+          outcome: 'completed',
+          sceneId: meta.sceneId,
+          videoUrl: finalUrl, // this segment's own clip — what the caller (e.g. VisualDesignerPanel) is polling for
+          thumbnailUrl: opts.thumbnailUrl ?? null,
+          singlePart: true,
+          avatarWarning: stitched?.avatarWarning || avatarWarning,
+        }
+      }
+
+      // Normal whole-scene render.
       if (!meta.preview && meta.sceneId) {
         await prisma.scene.update({
           where: { id: meta.sceneId },
@@ -316,7 +398,7 @@ export async function renderAndSubmitSegment(
   })
 
   if (job.cached) {
-    const composited = await overlayAvatarOnVideo(segmentClipPath, job.avatarPath, avatarPosition, job.chromaKey)
+    const composited = await overlayAvatarOnVideo(segmentClipPath, job.avatarPath, avatarPosition, job.chromaKey, resolveAvatarBackgroundColor(avatarCasting.avatarBackground))
     return { done: true, clipPath: composited }
   }
   return { done: false, videoId: job.videoId, cachePath: job.cachePath, segmentClipPath, avatarPosition, chromaKey: job.chromaKey }
@@ -399,7 +481,7 @@ export async function pollSegmentGroup(
         try {
           const avatarPath = await downloadToUploads(videoUrl)
           try { copyFileSync(avatarPath, seg.cachePath) } catch { /* cache is best-effort */ }
-          const composited = await overlayAvatarOnVideo(seg.segmentClipPath, avatarPath, seg.avatarPosition, seg.chromaKey)
+          const composited = await overlayAvatarOnVideo(seg.segmentClipPath, avatarPath, seg.avatarPosition, seg.chromaKey, resolveAvatarBackgroundColor(group.avatarCasting.avatarBackground))
           const finished: GroupSegmentEntry = { index: seg.index, done: true, clipPath: composited }
           Object.assign(seg, finished)
         } catch (e: any) {
@@ -493,6 +575,8 @@ type ModuleBatchFile = {
   videoId: string
   cachePath?: string | null
   chromaKey: boolean
+  // The project's raw Avatar Background JSON — see resolveAvatarBackgroundColor.
+  avatarBackground?: string | null
   createdAt: number
   scenes: ModuleBatchSceneEntry[]
 }
@@ -546,7 +630,7 @@ export async function pollModuleBatch(
         const clipPath = await trimVideo(avatarPath, entry.start, entry.end)
         const basePath = localPathFromUploadUrl(entry.slideVideoUrl)
         if (!basePath) throw new Error('rendered slide video not found locally')
-        const composited = await overlayAvatarOnVideo(basePath, clipPath, entry.avatarPosition, batch.chromaKey)
+        const composited = await overlayAvatarOnVideo(basePath, clipPath, entry.avatarPosition, batch.chromaKey, resolveAvatarBackgroundColor(batch.avatarBackground))
         const finalUrl = `/api/uploads/${parse(composited).base}`
         await prisma.scene.update({ where: { id: entry.sceneId }, data: { avatarVideoUrl: finalUrl, status: 'completed' } })
         deleteOldUpload(entry.oldAvatarVideoUrl, finalUrl)

@@ -28,6 +28,27 @@ model User {
   // schema (Project.status, Scene.status, etc.) — SQLite has no native enum
   // type anyway, Prisma would just emulate one.
   role         String   @default("professor")
+  // Email verification (2026-08-15) — signup no longer logs a user in
+  // immediately; a 6-digit code is emailed and the account stays gated
+  // (login blocked) until it's entered — see auth/signup.ts, auth/verify.ts,
+  // auth/resendCode.ts. The code itself is bcrypt-hashed, same as
+  // passwordHash, so a raw DB read alone can't be replayed to verify as
+  // someone else. verificationAttempts caps guesses per code (see
+  // MAX_VERIFY_ATTEMPTS in auth/verify.ts); verificationSentAt rate-limits
+  // resends (see RESEND_COOLDOWN_SEC in auth/resendCode.ts).
+  //
+  // Schema default is TRUE, not false — this column is being added to a
+  // table that already has real accounts (including whoever is running this
+  // app right now) with no verification code ever sent to them. A `false`
+  // default would retroactively lock every existing account out the moment
+  // login starts checking this flag. New signups explicitly override this to
+  // `false` at creation time instead (see auth/signup.ts) — only brand-new
+  // accounts go through the gate.
+  emailVerified           Boolean   @default(true) @map("email_verified")
+  verificationCodeHash    String?   @map("verification_code_hash")
+  verificationCodeExpires DateTime? @map("verification_code_expires")
+  verificationAttempts    Int       @default(0) @map("verification_attempts")
+  verificationSentAt      DateTime? @map("verification_sent_at")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -36,6 +57,16 @@ model User {
 
 model Project {
   id              String       @id @default(uuid())
+  // Owning professor (2026-08-13 — "user history should be different": every
+  // signed-in user was seeing every project, not just their own). Nullable
+  // and NOT a hard Prisma @relation on purpose: (1) existing rows predate
+  // this column and have no owner to backfill to — they stay userId=null,
+  // meaning they're only visible via the unfiltered /api/admin/projects
+  // console, not any professor's personal dashboard, until reassigned; (2) a
+  // real FK would reject writes from the LOCAL_DEV mock user (api/src/lib/
+  // auth.ts's DEV_USER.userId is a fixed placeholder string with no actual
+  // User row behind it) — keeping this a plain column avoids that entirely.
+  userId          String?      @map("user_id")
   title           String
   status          String       @default("draft")
   hiltGates       String?      @map("hilt_gates")   // JSON string in SQLite
@@ -159,6 +190,16 @@ model SceneSegment {
   // pipeline (generateHyperFramesSlide.ts, pollHeyGenVideo.ts), which reads
   // only the scene-level field.
   visualAssetUrl  String?   @map("visual_asset_url")
+  // This segment's OWN individually-rendered avatar clip (slide + talking
+  // avatar composited together for just this one part) — set once this
+  // segment has been generated on its own via Final Video's per-segment
+  // tiles or Visual Designer's per-row render. Once every sibling segment
+  // of the parent scene also has this set, heygenFinalize.ts's
+  // stitchSceneFromSegments() concatenates them in orderIndex order into
+  // the scene's real Scene.avatarVideoUrl automatically. Replaces the old
+  // behavior where a per-segment render was a throwaway preview that never
+  // persisted anywhere.
+  avatarVideoUrl  String?   @map("avatar_video_url")
   composition     SlideComposition?
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")

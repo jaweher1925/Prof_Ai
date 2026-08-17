@@ -42,6 +42,13 @@ export default function Login() {
       const fallback = loggedInUser?.role === 'admin' ? '/admin' : '/dashboard'
       navigate(redirectTo || fallback, { replace: true })
     } catch (err) {
+      // login.ts returns 403 + needsVerification for a correct password on
+      // an unverified account — route to the code screen instead of just
+      // printing "please verify your email" with no way to act on it.
+      if (err?.data?.needsVerification) {
+        navigate('/verify-email', { state: { email: err.data.email } })
+        return
+      }
       setError(err?.message || 'Something went wrong. Try again.')
     } finally {
       setSubmitting(false)

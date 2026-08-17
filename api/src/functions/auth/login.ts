@@ -26,6 +26,19 @@ async function loginHandler(request: HttpRequest, context: InvocationContext): P
     const valid = await bcrypt.compare(password, user.passwordHash)
     if (!valid) return unauth()
 
+    // Password is correct at this point, so it's safe to disclose
+    // verification status (unlike the "incorrect email or password" case
+    // above, this doesn't leak whether the account exists to someone who
+    // doesn't already know the password). A distinct needsVerification flag
+    // lets the frontend route straight to the code-entry screen instead of
+    // showing a generic auth error the user can't act on.
+    if (!user.emailVerified) {
+      return {
+        status: 403,
+        jsonBody: { error: 'Please verify your email before signing in', needsVerification: true, email: user.email },
+      }
+    }
+
     const token = signSession({ sub: user.id, email: user.email, name: user.name, role: user.role })
     return {
       status: 200,

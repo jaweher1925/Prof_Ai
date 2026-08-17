@@ -16,6 +16,49 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6 hours
 let avatarsCache: { at: number; data: any[] } | null = null
 let voicesCache:  { at: number; data: any[] } | null = null
 
+/**
+ * How much of the presenter a given avatar actually shows.
+ *
+ * This is NOT something the render pipeline can change: HeyGen's v3 API has
+ * no framing parameter at all (v2's `avatar_style: 'closeUp' | 'normal'` was
+ * dropped and never replaced — see heygenAvatar.ts's createAvatarVideo), so
+ * an avatar's shot is fixed by the footage it was built from. Confirmed by
+ * HeyGen support: "For custom avatars or talking photos, the framing matches
+ * the top/sides of your original uploaded image or training video." That's
+ * why a chest-up avatar like `Aditya_public_2` renders chest-up no matter
+ * what the overlay box does — the body simply isn't in the source frames.
+ *
+ * HeyGen exposes no framing FIELD either, but their stock catalog encodes
+ * posture in the avatar name (`Judy_Teacher_Sitting_public`,
+ * `..._Fullbody_...`, `Daisy-inskirt-...`). This reads those keywords so the
+ * picker can group by shot instead of making the user open each preview.
+ *
+ * Deliberately returns 'unknown' rather than guessing when no keyword
+ * matches — most of the catalog is unlabelled, and a confidently WRONG
+ * "full body" badge is worse than none, since the user would pick it, spend
+ * a real HeyGen render, and get the same crop back.
+ */
+export type AvatarFraming = 'full-body' | 'half-body' | 'close-up' | 'unknown'
+
+export function classifyAvatarFraming(a: any): AvatarFraming {
+  // Normalize separators so "full_body", "full-body", "FullBody" and
+  // "Fullbody" all reduce to the same searchable form.
+  const hay = [a?.avatar_name, a?.name, a?.avatar_id, ...(Array.isArray(a?.tags) ? a.tags : [])]
+    .filter(Boolean).join(' ').toLowerCase().replace(/[_\-.]+/g, ' ')
+  const has = (...words: string[]) => words.some(w => hay.includes(w))
+
+  // A talking photo is generated from ONE still headshot — always a
+  // head/shoulders shot regardless of naming.
+  if (a?.is_talking_photo) return 'close-up'
+
+  // Check most-specific first: "full body" must win over a bare "body", and
+  // an explicit close-up keyword must not be shadowed by a posture word.
+  if (has('fullbody', 'full body', 'wholebody', 'whole body', 'standing', 'walking')) return 'full-body'
+  if (has('closeup', 'close up', 'headshot', 'head shot', 'portrait', 'face only')) return 'close-up'
+  if (has('halfbody', 'half body', 'waist', 'sitting', 'seated', 'desk', 'office', 'lounge', 'podium', 'chair', 'couch', 'sofa')) return 'half-body'
+  return 'unknown'
+}
+
 // GET /api/listHeyGenAvatars
 app.http('listHeyGenAvatars', {
   methods: ['GET'], route: 'listHeyGenAvatars', authLevel: 'anonymous',
@@ -55,7 +98,12 @@ app.http('listHeyGenAvatars', {
       const avatars = rawList.map((a: any) => ({
         ...a,
         // HeyGen returns 'preview_image_url' in their response, but ensure it's available
-        preview_image_url: a.preview_image_url || a.preview_picture_url || a.thumbnail_url || a.image_url || ''
+        preview_image_url: a.preview_image_url || a.preview_picture_url || a.thumbnail_url || a.image_url || '',
+        // Motion preview, when HeyGen provides one — the only fully reliable
+        // way to see an avatar's real framing before spending a render on it
+        // (see classifyAvatarFraming: the name-based label is best-effort).
+        preview_video_url: a.preview_video_url || '',
+        framing: classifyAvatarFraming(a),
       }))
       avatarsCache = { at: Date.now(), data: avatars }
       return { status: 200, jsonBody: { avatars } }
