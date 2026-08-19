@@ -141,6 +141,16 @@ export default function ProjectWorkspace() {
 
   const [activeStage, setActiveStage] = useState('library')
   const [showCasting, setShowCasting] = useState(false)
+  // Whether Visual Design has a save in flight right now — mirrored by
+  // VisualDesignerPanel/SceneEditor (2026-08-18, "if i want to re-generate a
+  // sceen already generated it wil not change even i change or i edit
+  // something"). Text edits there save onBlur, which fires at almost the
+  // same instant as clicking a different stage tab; without waiting for it
+  // here, switching to Final Video and clicking Regenerate right after an
+  // edit could beat that save's PATCH to the backend, so the render used the
+  // pre-edit design. A plain ref (not state) — it needs to be read inside an
+  // event handler without forcing a re-render on every save start/stop.
+  const visualDesignSavingRef = useRef(false)
 
   // Casting popup gate: the first time a project moves from Script → Voice,
   // show the Casting Settings popup so the user confirms avatar/voice before
@@ -223,11 +233,29 @@ export default function ProjectWorkspace() {
 
   // Navigate to a stage, inserting the Casting Settings popup gate the first
   // time a project heads into Voice (from Scripts, or from the sidebar/jump).
-  const goToStage = (stageId) => {
+  //
+  // Now async (2026-08-18, "if i want to re-generate a sceen already
+  // generated it wil not change even i change or i edit something") — if
+  // Visual Design is leaving with a save still in flight (typing then
+  // immediately clicking a different stage tab fires onBlur→saveContent()
+  // at nearly the same instant as this click), wait for it to actually land
+  // before switching stages. Otherwise Final Video could be opened and
+  // Regenerate clicked before that save's PATCH reached the backend, so the
+  // render used the design as it was BEFORE the edit — indistinguishable
+  // from "regenerate doesn't pick up my changes" even though it's really a
+  // save that hadn't landed yet. Capped at 5s so a stuck/failed save (e.g.
+  // dropped network) can't lock the UI out of navigating entirely.
+  const goToStage = async (stageId) => {
     if (isLocked(stageId)) return
     if (stageId === 'voices' && !castingGateDone()) {
       setShowCastingGate(true)
       return
+    }
+    if (activeStage === 'visual-design' && stageId !== 'visual-design' && visualDesignSavingRef.current) {
+      const deadline = Date.now() + 5000
+      while (visualDesignSavingRef.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
     }
     setActiveStage(stageId)
     setShowCasting(false)
@@ -402,7 +430,7 @@ export default function ProjectWorkspace() {
       case 'library':         return <SourcesPanel project={project} onStageChange={setActiveStage} />
       case 'scripts':         return <ScriptsPanel project={project} onUpdate={invalidate} onContinue={goToStage} />
       case 'voices':          return <VoicePanel project={project} onUpdate={invalidate} onContinue={goToStage} regenStatus={voiceRegenStatus} />
-      case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} />
+      case 'visual-design':   return <VisualDesignerPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} savingRef={visualDesignSavingRef} />
       case 'video-editing':   return <VideoEditingPanel project={project} onUpdate={invalidate} onContinue={setActiveStage} onApprovalsChange={setModuleApprovals} />
       case 'final-video':     return <FinalVideoPanel project={project} onUpdate={invalidate} />
       default:                return null

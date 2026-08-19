@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
  * The icon badge and value pop forward via translateZ so they visibly lift
  * off the glass when the card tilts, matching the Login card's logo badge.
  */
-export default function AdminStatCard({ icon: Icon, label, value, sublabel, accent = 'indigo', delay = 0 }) {
+export default function AdminStatCard({ icon: Icon, label, value, sublabel, accent = 'indigo', delay = 0, onClick }) {
   const accents = {
     indigo: 'from-indigo-500 to-indigo-700 shadow-indigo-900/50',
     blue:   'from-blue-500 to-blue-700 shadow-blue-900/50',
@@ -23,9 +23,20 @@ export default function AdminStatCard({ icon: Icon, label, value, sublabel, acce
     <TiltCard
       className={cn(
         'relative rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-gradient-to-br from-white/90 to-slate-50/90 dark:from-slate-800/80 dark:to-slate-900/80 backdrop-blur-xl p-5 shadow-xl shadow-slate-200/50 dark:shadow-black/30',
+        onClick && 'transition-colors hover:border-indigo-400/40 dark:hover:border-indigo-400/30',
       )}
     >
-      <div className="relative flex items-start justify-between" style={{ transform: 'translateZ(30px)' }}>
+      {/* onClick lives on this inner div, not TiltCard — TiltCard only
+          forwards className/children, not arbitrary props (2026-08-17,
+          "when i click on one of those card i wanna see details"). */}
+      <div
+        className={cn('relative flex items-start justify-between', onClick && 'cursor-pointer')}
+        style={{ transform: 'translateZ(30px)' }}
+        onClick={onClick}
+        role={onClick ? 'button' : undefined}
+        tabIndex={onClick ? 0 : undefined}
+        onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') onClick(e) } : undefined}
+      >
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-400 dark:text-slate-400">{label}</p>
           <p className="text-3xl font-bold text-slate-900 dark:text-white mt-2 leading-none">{value}</p>

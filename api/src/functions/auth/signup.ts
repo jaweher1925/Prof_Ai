@@ -34,23 +34,44 @@ async function signupHandler(request: HttpRequest, context: InvocationContext): 
     if (password.length < 8) return badReq('Password must be at least 8 characters')
 
     const existing = await prisma.user.findUnique({ where: { email } })
-    if (existing) return badReq('An account with this email already exists')
+    // An unverified row isn't a real account yet from the user's point of
+    // view (2026-08-17: "before create the account should verify first") —
+    // it only exists so the code has something to attach to. Blocking a
+    // retry here is exactly what left people stuck when the first attempt's
+    // email failed to send (SMTP misconfigured, bad credentials, etc.): the
+    // email was permanently "taken" by a signup that never actually
+    // finished. Only a VERIFIED existing account is a real conflict — an
+    // unverified one just gets its password/name/code overwritten and a
+    // fresh code sent, as if starting over.
+    if (existing && existing.emailVerified) return badReq('An account with this email already exists')
 
     const passwordHash = await bcrypt.hash(password, 10)
     const code = generateCode()
     const verificationCodeHash = await hashCode(code)
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        passwordHash,
-        name,
-        emailVerified: false,
-        verificationCodeHash,
-        verificationCodeExpires: codeExpiresAt(),
-        verificationSentAt: new Date(),
-      },
-    })
+    const user = existing
+      ? await prisma.user.update({
+          where: { email },
+          data: {
+            passwordHash,
+            name,
+            verificationCodeHash,
+            verificationCodeExpires: codeExpiresAt(),
+            verificationSentAt: new Date(),
+            verificationAttempts: 0,
+          },
+        })
+      : await prisma.user.create({
+          data: {
+            email,
+            passwordHash,
+            name,
+            emailVerified: false,
+            verificationCodeHash,
+            verificationCodeExpires: codeExpiresAt(),
+            verificationSentAt: new Date(),
+          },
+        })
 
     try {
       await sendVerificationEmail(email, code)

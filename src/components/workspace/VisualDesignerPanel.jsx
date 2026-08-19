@@ -5,6 +5,7 @@
 import React, { useState, useRef, useEffect, useCallback, Component } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import { scriptsService } from '@/services/scripts'
 import { agentsService } from '@/services/agents'
 import { mediaService } from '@/services/media'
@@ -16,7 +17,7 @@ import {
   BookOpen, Code, BarChart2, Cpu, Zap, Target, Globe,
   Database, Award, Star, Shield, Eye, EyeOff, Settings, AlertCircle,
   Square, Volume2, Type, LayoutGrid, Sliders, Check, User, Pencil,
-  Ban, Circle as CircleIcon, ChevronDown, Minus, Highlighter, MessageSquare, Lock
+  Ban, Circle as CircleIcon, ChevronDown, Minus, Highlighter, MessageSquare, Lock, Crop, Pipette
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Spinner from '@/components/ui/Spinner'
@@ -24,6 +25,12 @@ import SceneTimelineEditor from '@/components/workspace/SceneTimelineEditor'
 import StageHeader from '@/components/workspace/StageHeader'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+// Content points (bullets) can't default/fall back to earlier than this in
+// the reveal-timing capture (2026-08-18, "keep all the point after sec 4 in
+// the visual design default") — mirrors SceneTimelineEditor.jsx's own copy
+// of this same constant/reasoning; kept in sync deliberately.
+const MIN_CONTENT_START_SEC = 4
 
 // Text Motion — replaces the old "Background Motion" (zoom/pan) picker.
 // The background is now always static; instead this controls how the
@@ -254,7 +261,7 @@ function bulletsFromDesign(design) {
 // looks IDENTICAL to the real design (not a separate reconstruction). Content
 // points are revealed one at a time as playback advances (revealCount = how
 // many points should be visible at the current playback time).
-export function SlidePlaybackPreview({ design, revealCount = null, avatarImageUrl = null, useAvatar = true }) {
+export function SlidePlaybackPreview({ design, revealCount = null, visibleImageIds = null, titleVisible = true, avatarImageUrl = null, useAvatar = true }) {
   const parsed = design || {}
   const layout = parsed.layout || 'bullets'
   const themeObj = THEMES.find(t => t.id === (parsed.theme || 'light')) || THEMES[0]
@@ -283,6 +290,11 @@ export function SlidePlaybackPreview({ design, revealCount = null, avatarImageUr
       imageUrl={parsed.imageUrl || ''}
       imageWidth={parsed.imageWidth || 36}
       imageShape={parsed.imageShape || 'rounded'}
+      imageBgColor={parsed.imageBgColor || ''}
+      imageOpacity={parsed.imageOpacity ?? 1}
+      extraImages={Array.isArray(parsed.extraImages) ? parsed.extraImages : []}
+      visibleImageIds={visibleImageIds}
+      titleVisible={titleVisible}
       moduleTitle={''}
       sceneIndex={0}
       totalScenes={1}
@@ -299,6 +311,9 @@ export function SlidePlaybackPreview({ design, revealCount = null, avatarImageUr
       onAnnotationChange={noop}
       onAnnotationDragEnd={noop}
       onAnnotationDelete={noop}
+      onExtraImageChange={noop}
+      onExtraImageDragEnd={noop}
+      onExtraImageDelete={noop}
     />
   )
 }
@@ -438,7 +453,7 @@ class SlideEditorBoundary extends Component {
   }
 }
 
-export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
+export default function VisualDesignerPanel({ project, onUpdate, onContinue, savingRef }) {
   const queryClient   = useQueryClient()
   const [selected,    setSelected]   = useState(null)
   const [generating,  setGenerating] = useState({})
@@ -535,6 +550,29 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [themePromptedKey, scripts.length])
 
+  // Re-syncs `selected.scene` after a theme apply touches its module
+  // (2026-08-17: "first time i choose color theme but not applicable
+  // directly and automatically for first scene but it is applicable for the
+  // other"). Root cause: `selected.scene` is a one-time snapshot object
+  // handed straight to <SceneEditor scene={selected.scene}> as a prop — every
+  // theme-apply function below already re-POSTs the new theme to the backend
+  // and calls queryClient.invalidateQueries({queryKey:['scenes']}), which
+  // correctly refreshes LIST queries (so any OTHER scene picks up the new
+  // theme the instant it's clicked, fetched fresh). But `selected` itself is
+  // plain useState, not derived from a query, so invalidating query caches
+  // never touches it — the scene that was already open when you picked the
+  // theme just kept rendering its pre-theme snapshot until you clicked away
+  // and back. This explicitly re-fetches and patches it too.
+  const syncSelectedSceneFromModule = async (moduleId) => {
+    if (!selected || selected.script?.moduleId !== moduleId) return
+    try {
+      const res = await fetch(`/api/modules/${moduleId}/scenes`)
+      const freshScenes = res.ok ? await res.json() : []
+      const fresh = freshScenes.find(s => s.id === selected.scene.id)
+      if (fresh) setSelected(prev => (prev && prev.scene.id === fresh.id) ? { ...prev, scene: fresh } : prev)
+    } catch { /* best-effort — worst case, same stale-until-reselect behavior as before */ }
+  }
+
   const handleChooseProjectTheme = async (themeId) => {
     setAutoProjectThemeGate(false)
     try {
@@ -554,6 +592,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
         // Mark this module's theme as resolved so the per-module gate
         // (needsThemeGate/ModuleThemeGate) doesn't also prompt for it right after.
         setModuleThemes(p => ({ ...p, [script.moduleId]: themeId }))
+        await syncSelectedSceneFromModule(script.moduleId)
       }))
       queryClient.invalidateQueries({ queryKey: ['scenes'] })
     } catch (e) { console.error('Failed to apply project-wide theme:', e) }
@@ -613,6 +652,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
       ))
       // Refresh scene data to show updated designs
       queryClient.invalidateQueries({ queryKey: ['scenes'] })
+      await syncSelectedSceneFromModule(selectedModuleId)
     } catch (e) { console.error('Failed to apply theme:', e) }
   }
 
@@ -649,6 +689,7 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
       )
       setModuleThemes(p => ({ ...p, [selectedModuleId]: themeId }))
       queryClient.invalidateQueries({ queryKey: ['scenes'] })
+      await syncSelectedSceneFromModule(selectedModuleId)
     } catch (e) { console.error('Failed to apply theme to the rest of the module:', e) }
   }
 
@@ -744,7 +785,8 @@ export default function VisualDesignerPanel({ project, onUpdate, onContinue }) {
                 onEditAvatar={() => setManualAvatarPicker(true)}
                 onApplyThemeToModule={(themeId) => applyThemeToRestOfModule(themeId)}
                 initialSegmentId={selected.segmentId}
-                isGenerating={!!generating[selected.scene.id]} onGenerate={handleGenerate} />
+                isGenerating={!!generating[selected.scene.id]} onGenerate={handleGenerate}
+                savingRef={savingRef} />
             </SlideEditorBoundary>
           ) : (
             <div className="flex flex-col items-center justify-center h-full p-12 text-center">
@@ -1337,7 +1379,7 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
 
 // ─── Right: scene editor ──────────────────────────────────────────────────────
 
-function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, avatarStyle, avatarBackground, onSaveAvatarSettings, onEditAvatar, onApplyThemeToModule, initialSegmentId, isGenerating, onGenerate }) {
+function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme = 'light', voiceId, avatarId, avatarStyle, avatarBackground, onSaveAvatarSettings, onEditAvatar, onApplyThemeToModule, initialSegmentId, isGenerating, onGenerate, savingRef }) {
   // Fetch the avatar list once (cached project-wide via react-query, so this
   // is instant after the first load — see also CastingSettings
   // which share the same query key) purely to find the selected avatar's
@@ -1465,6 +1507,80 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const [imageUrl,    setImageUrl]    = useState(parsed.imageUrl    || '')
   const [imageWidth,  setImageWidth]  = useState(parsed.imageWidth  || 36)
   const [imageShape,  setImageShape]  = useState(parsed.imageShape  || 'rounded')
+  // Background color + opacity (2026-08-17, "i can change and edit the
+  // trasparency and colorr of bg of the img") — imageBgColor is a solid
+  // fill rendered BEHIND the image (empty string = none/transparent, so the
+  // slide's own background shows through, same as before this existed);
+  // imageOpacity fades the whole image+backdrop together. Neither of these
+  // touches the image's actual pixels — for that (removing/keying out an
+  // existing background color IN the image) see the separate "Remove
+  // background" tool (handleRemoveImageBackground / ImageBgRemoveModal
+  // below), which bakes a new transparent PNG and swaps the url.
+  const [imageBgColor, setImageBgColor] = useState(parsed.imageBgColor || '')
+  const [imageOpacity, setImageOpacity] = useState(parsed.imageOpacity ?? 1)
+  // Timed reveal frames (2026-08-17, "if i generate or add img should appear
+  // also in the remotion and edit timeline" / "in the final vd ... it is
+  // static and everything appear in first time") — a sequence of WYSIWYG
+  // snapshots, one per Edit Timeline reveal breakpoint, that lets
+  // api/src/lib/ffmpegVideo.ts composite TIMED background layers into the
+  // actual exported video instead of one flat always-fully-revealed image.
+  // NOT recaptured on every save (each entry costs its own snapshot +
+  // upload) — only via captureRevealFrames() below, triggered from the
+  // Edit Timeline (dragging a timing block) or the Generate action, since
+  // those are the moments the reveal state can actually have changed.
+  const [revealFrames, setRevealFrames] = useState(Array.isArray(parsed.revealFrames) ? parsed.revealFrames : [])
+  // Manual resync (2026-08-18, "if i want to reregenerate the sceen again it
+  // give me the same result") — Regenerate in Video/Final Video re-renders
+  // the video from whatever revealFrames are ALREADY saved on this segment;
+  // it never recaptures them. Frames captured before a capture-pipeline fix
+  // (e.g. the entrance-animation race) stay broken forever unless something
+  // here actually re-runs captureRevealFrames — previously that only
+  // happened as a side effect of dragging a timing block again, which isn't
+  // discoverable when nothing actually needs to move. This button calls the
+  // exact same syncRevealFrames() path explicitly, on demand.
+  const [syncingReveal, setSyncingReveal] = useState(false)
+  // Reveal-frame capture rebuild (2026-08-18, "delete was u add for this
+  // step and start from the begining" — rebuild the capture mechanism from
+  // scratch, keep the timing UI). The old approach mounted a DETACHED,
+  // off-screen copy of the slide per breakpoint — several rounds of fixes
+  // (image-load waits, entrance-animation waits, sequential mounting) still
+  // didn't fully stop logo/background/position glitches. This replaces that
+  // with driving the SAME live, on-screen canvas node
+  // (captureSlideSnapshot's proven [data-slide-canvas] target) through each
+  // breakpoint's state in turn — no new rendering context, no duplicate DOM
+  // tree, just temporarily hiding/showing what's already there. captureOverride
+  // is null during normal editing (canvas shows everything, unchanged
+  // behavior); while capturing, it's set to the current breakpoint's
+  // {revealCount, titleVisible, visibleImageIds} and the canvas below reads
+  // it. capturingReveal locks the canvas (overlay + no pointer events) for
+  // the brief moment this runs so the visible flicker through states reads
+  // as "capturing", not "broken".
+  const [captureOverride, setCaptureOverride] = useState(null)
+  const [capturingReveal, setCapturingReveal] = useState(false)
+  // Extra images (2026-08-17, "i want to upload a lot of pic and generate
+  // more then one" / "in one sccenn sometime i need more then one pic") —
+  // a slide can now carry any number of ADDITIONAL images beyond the single
+  // primary `imageUrl` above. Deliberately modeled as a self-contained array
+  // with its OWN x/y/width per entry (exactly like `annotations` above),
+  // instead of routing through the shared `positions`/DEFAULT_POSITIONS
+  // system: that system's load/merge (see the Object.keys(defaults).reduce
+  // calls below and in loadDesignIntoState) only preserves keys already
+  // present in a hardcoded per-layout template, so any dynamically-keyed
+  // extra-image position would be silently dropped on reload. Each entry:
+  // { id, url, shape, x, y, width }.
+  const [extraImages, setExtraImages] = useState(Array.isArray(parsed.extraImages) ? parsed.extraImages : [])
+  const addExtraImage = (url, shape = 'rounded') => {
+    const id = `img_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+    // Stagger new images so they don't all land exactly on top of each
+    // other (or the primary image) when several are added in a row.
+    const n = extraImages.length
+    const x = 55 + (n % 3) * 6
+    const y = 20 + (n % 3) * 14
+    setExtraImages(imgs => [...imgs, { id, url, shape, x, y, width: 30 }])
+    setTimeout(saveContent, 0)
+  }
+  const updateExtraImage = (id, patch) => setExtraImages(imgs => imgs.map(x => x.id === id ? { ...x, ...patch } : x))
+  const removeExtraImage = (id) => { setExtraImages(imgs => imgs.filter(x => x.id !== id)); setTimeout(saveContent, 0) }
   // Presenter avatar — was a fixed, non-interactive placeholder before; now a
   // real draggable+resizable layer like the others. avatarX/avatarY/avatarWidth
   // are saved straight into the slide design JSON under those exact field
@@ -1478,6 +1594,19 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const [avatarY,     setAvatarY]     = useState(() => clampAvatarBox(parsed.avatarX ?? DEFAULT_AVATAR.x, parsed.avatarY ?? DEFAULT_AVATAR.y, Math.min(parsed.avatarWidth ?? DEFAULT_AVATAR.width, MAX_AVATAR_WIDTH)).y)
   const [previewKey,  setPreviewKey]  = useState(0)
   const [saving,      setSaving]      = useState(false)
+  // Mirror `saving` into the ref passed down from ProjectWorkspace.jsx
+  // (2026-08-18, "if i want to re-generate a sceen already generated it wil
+  // not change even i change or i edit something") — text fields save
+  // onBlur, which fires roughly the same instant as clicking a different
+  // stage tab (blur-before-click is standard DOM ordering), so switching
+  // stages right after an edit kicks off saveContent() at almost the exact
+  // moment the page navigates away. saveContent's own fetch calls aren't
+  // cancelled by the unmount, but there was nothing stopping the user from
+  // reaching Final Video and clicking Regenerate BEFORE that save's PATCH
+  // actually landed — so the backend read the design as it was before the
+  // edit. ProjectWorkspace.jsx's goToStage() now waits for this ref to
+  // clear before actually switching away from Visual Design.
+  useEffect(() => { if (savingRef) savingRef.current = saving }, [saving, savingRef])
   const [aiLoading,   setAiLoading]   = useState(false)
   const [aiAction,    setAiAction]    = useState(null)
   // Which control tab is showing — replaces the old single long scrolling
@@ -1633,7 +1762,9 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     p: f.positions,
     a: [Math.round(f.avatarX ?? 0), Math.round(f.avatarY ?? 0), Math.round(f.avatarWidth ?? 0)],
     l: f.layout, th: f.theme, img: f.imageUrl || '',
+    ibg: f.imageBgColor || '', iop: Math.round((f.imageOpacity ?? 1) * 100),
     an: (f.annotations || []).map(x => `${x.type}:${Math.round(x.x)}:${Math.round(x.y)}`),
+    ei: (f.extraImages || []).map(x => `${x.url}:${x.shape}:${Math.round(x.x)}:${Math.round(x.y)}:${Math.round(x.width)}:${x.bgColor || ''}:${Math.round((x.opacity ?? 1) * 100)}`),
   })
   const [avatarGenerating, setAvatarGenerating] = useState(false)
   const [avatarGenError,  setAvatarGenError]  = useState(null)
@@ -1689,7 +1820,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   // Always-fresh ref so async callbacks see latest state
   const stateRef = useRef({})
   useEffect(() => {
-    stateRef.current = { title, subtitle, layout, theme, bullets, positions, showLogo, motionId: motion.id, imageUrl, imageWidth, imageShape, avatarX, avatarY, avatarWidth, annotations }
+    stateRef.current = { title, subtitle, layout, theme, bullets, positions, showLogo, motionId: motion.id, imageUrl, imageWidth, imageShape, imageBgColor, imageOpacity, extraImages, revealFrames, avatarX, avatarY, avatarWidth, annotations }
   })
 
   const themeObj = THEMES.find(t => t.id === theme) || THEMES[0]
@@ -1740,13 +1871,292 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     }
   }
 
+  // Same html-to-image → upload sequence captureSlideSnapshot uses, factored
+  // out so captureRevealFrames (below) can run it against N off-screen nodes
+  // without duplicating the excluded-classes filter or the upload call.
+  const captureNodeToUploadedPng = async (node, filename) => {
+    const { toPng } = await import('html-to-image')
+    const dataUrl = await toPng(node, {
+      canvasWidth: 1920,
+      canvasHeight: 1080,
+      pixelRatio: 1,
+      skipFonts: true,
+      style: { borderRadius: '0', border: 'none' },
+      filter: (el) => {
+        const cls = el.classList
+        if (!cls) return true
+        return !(
+          cls.contains('pa-avatar-zone') ||
+          cls.contains('pa-cue-layer')   ||
+          cls.contains('pa-drag-label')  ||
+          cls.contains('pa-drag-ring')
+        )
+      },
+    })
+    const blob = await (await fetch(dataUrl)).blob()
+    const formData = new FormData()
+    formData.append('file', new File([blob], filename, { type: 'image/png' }))
+    const res = await fetch('/api/upload', { method: 'POST', body: formData })
+    if (!res.ok) return null
+    const data = await res.json()
+    return data.file_url || data.url || null
+  }
+
+  // ── Timed reveal frames (2026-08-17, "if i generate or add img should
+  // appear also in the remotion and edit timeline" / "in the final vd ...
+  // it is static and everything appear in first time") ────────────────────
+  // Captures one WYSIWYG snapshot PER Edit Timeline reveal breakpoint
+  // (instead of the single, always-fully-revealed snapshot
+  // captureSlideSnapshot takes) so api/src/lib/ffmpegVideo.ts can composite
+  // them as timed background layers in the actual exported video. Renders
+  // each breakpoint's state into a DETACHED, off-screen React root — never
+  // touching the live editing canvas the user is looking at — reusing
+  // SlidePlaybackPreview/EditableSlide, the same renderer everything else
+  // already trusts to look identical to the real canvas. Fetches its own
+  // fresh copy of the Edit Timeline's timing (rather than relying on
+  // `veData`, which is only populated once the Video Editing tab has been
+  // opened this session) so this works correctly regardless of which tab
+  // the user is on when they trigger it.
+  const captureRevealFrames = async (force = false) => {
+    if (!scene?.id) return null
+    try {
+      const res = await fetch(`/api/scenes/${scene.id}/composition`)
+      if (!res.ok) return null
+      const comp = await res.json()
+
+      let contentBlockTimings = []
+      try { contentBlockTimings = JSON.parse(comp.contentBlockTimings || '[]') } catch { /* default [] */ }
+      const imageTimings = Array.isArray(comp.imageTimings) ? comp.imageTimings : []
+      const contentBlocksArr = Array.isArray(comp.contentBlocks) ? comp.contentBlocks : []
+
+      // Bail out unless the user has ACTUALLY dragged something in the Edit
+      // Timeline (2026-08-17 bugfix — caught via "why did a scene with an
+      // image take 5 min instead of 2"). contentBlockTimings/imageTimings
+      // only ever gain entries through a real PATCH from a timeline drag
+      // (see api/src/functions/scenes.ts's updateElementTiming) — they
+      // start empty otherwise. Without this gate, EVERY scene with a title
+      // + even one bullet point produced 2+ "breakpoints" purely from the
+      // *editor preview's* cosmetic default stagger (title@0, point@3s,
+      // point@6s, ...) — timing nobody set, on nearly every scene — which
+      // was silently multiplying every "Generate" click into N extra
+      // snapshot captures/uploads plus an extra ffmpeg overlay pass. Real,
+      // deliberate timing edits still get the multi-frame treatment; a
+      // scene nobody touched the timeline on now costs exactly what it did
+      // before this feature existed.
+      //
+      // force=true (2026-08-18, "i have point START FROM SEC 2 OR 3 AFTER
+      // THE TITLE SO IT WILL NOT APPEAR... WITH THE TITLE STATIC") skips this
+      // gate entirely — the Refresh timing preview button passes it. A point
+      // sitting at "3s" in the Edit Timeline LOOKS identical whether the user
+      // actually dragged it there or it's just the untouched cosmetic
+      // default stagger — there's no visual difference, so a user has no way
+      // to tell those apart, and reasonably expects what's shown to be what
+      // exports. The gate above only protects the AUTOMATIC trigger
+      // (onUpdate after a real drag) from firing on every untouched scene;
+      // an explicit button click is already clear, deliberate intent, so it
+      // should capture the timeline exactly as displayed, defaults included.
+      if (!force && !contentBlockTimings.length && !imageTimings.length) return []
+
+      // Same default-timing formulas as SceneTimelineEditor.jsx's own
+      // elements synthesis — kept in sync deliberately so a breakpoint list
+      // built here always matches what the Edit Timeline itself shows.
+      // Floored at MIN_CONTENT_START_SEC (2026-08-18, "keep all the point
+      // after sec 4") — same reasoning as SceneTimelineEditor.jsx's copy of
+      // this constant: points dragged/saved earlier than that consistently
+      // broke the exported reveal, including previously-saved sub-4s values.
+      const titleStart = comp.titleStartTime || 0
+      const contentStarts = contentBlocksArr.map((_, idx) =>
+        Math.max(MIN_CONTENT_START_SEC, contentBlockTimings.find(t => t.elementId === `content-${idx}`)?.startTime ?? (3 + idx * 3)))
+      const imageStart = comp.imageUrl
+        ? (imageTimings.find(t => t.elementId === 'image')?.startTime ?? 0)
+        : null
+      const extraImgs = Array.isArray(comp.extraImages) ? comp.extraImages : []
+      const extraImageStarts = extraImgs.map(img => ({
+        id: img.id,
+        start: imageTimings.find(t => t.elementId === `extraImage:${img.id}`)?.startTime ?? 0,
+      }))
+
+      const breakpoints = Array.from(new Set([
+        0, titleStart, ...contentStarts,
+        ...(imageStart != null ? [imageStart] : []),
+        ...extraImageStarts.map(x => x.start),
+      ])).sort((a, b) => a - b)
+
+      // Nothing to distinguish between breakpoints — one flat frame is
+      // exactly what captureSlideSnapshot already produces; skip the extra
+      // captures/uploads entirely rather than doing pointless work.
+      if (breakpoints.length < 2) return []
+
+      const states = breakpoints.map(t => ({
+        time: t,
+        revealCount: contentStarts.filter(s => s <= t).length,
+        titleVisible: titleStart <= t,
+        visibleImageIds: [
+          ...(imageStart != null && imageStart <= t ? ['image'] : []),
+          ...extraImageStarts.filter(x => x.start <= t).map(x => `extraImage:${x.id}`),
+        ],
+      }))
+
+      // Rebuilt from scratch (2026-08-18, "delete was u add for this step
+      // and start from the begining") — this used to mount a DETACHED,
+      // off-screen copy of the slide per breakpoint, manually reconstructing
+      // a `design` object by hand and rendering it through
+      // SlidePlaybackPreview/EditableSlide in a brand new React root. Even
+      // after fixing the image-load race, the entrance-animation race, and
+      // the simultaneous-multi-mount issue one at a time, logo/background/
+      // position problems kept recurring — one more thing that off-screen,
+      // hand-reconstructed tree could diverge from the real canvas in.
+      // Instead of chasing another difference, this now drives the SAME
+      // live, on-screen canvas node captureSlideSnapshot already trusts
+      // (document.querySelector('[data-slide-canvas]')) through each
+      // breakpoint's state via captureOverride (read by the live
+      // <EditableSlide>/<SlidePlaybackPreview> render below), capturing it
+      // in place, then moving to the next state. No manually-rebuilt design
+      // object, no second rendering context — just the real component tree
+      // temporarily showing less than it normally would.
+      const waitForImages = (node) => new Promise((resolve) => {
+        const deadline = Date.now() + 5000
+        const poll = () => {
+          const imgs = Array.from(node.querySelectorAll('img'))
+          const pending = imgs.filter(img => !img.complete)
+          if (!pending.length || Date.now() > deadline) { resolve(); return }
+          let remaining = pending.length
+          const settle = () => { remaining -= 1; if (remaining <= 0) resolve() }
+          pending.forEach(img => {
+            img.addEventListener('load', settle, { once: true })
+            img.addEventListener('error', settle, { once: true })
+          })
+          setTimeout(resolve, Math.max(0, deadline - Date.now()))
+        }
+        poll()
+      })
+
+      // Switching captureOverride hides/re-shows bullets, title, images —
+      // React unmounts/remounts those DOM nodes (bullets are a sliced
+      // array), which retriggers their SLIDE_CSS entrance animation
+      // (.pa-title, .pa-logo, .pa-b0..b4, .pa-card0..3) from opacity:0 each
+      // time. Wait for those to finish before capturing, same as
+      // captureSlideSnapshot never needed to (it only ever captures the
+      // fully-settled, unchanging live state) but this temporarily-altered
+      // state does. Skips continuous/looping motion classes (never finish
+      // by design).
+      const waitForEntranceAnimations = (node) => {
+        if (typeof node.getAnimations !== 'function') return Promise.resolve()
+        let anims = []
+        try {
+          anims = node.getAnimations({ subtree: true }).filter((a) => {
+            const timing = a.effect?.getTiming?.()
+            return !timing || timing.iterations !== Infinity
+          })
+        } catch { /* getAnimations unsupported/failed — fall through to the cap below */ }
+        if (!anims.length) return Promise.resolve()
+        return Promise.race([
+          Promise.all(anims.map((a) => a.finished.catch(() => {}))),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ])
+      }
+
+      setCapturingReveal(true)
+      try {
+        const frames = []
+        for (let i = 0; i < states.length; i++) {
+          const st = states[i]
+          await new Promise((resolve) => {
+            setCaptureOverride(st)
+            // Two rAFs so React has actually committed + painted the new
+            // override before we go looking at the canvas below.
+            requestAnimationFrame(() => requestAnimationFrame(resolve))
+          })
+          const node = document.querySelector('[data-slide-canvas]')
+          if (!node) continue
+          await waitForImages(node)
+          await waitForEntranceAnimations(node)
+          const url = await captureNodeToUploadedPng(node, `reveal-${i}.png`)
+          if (url) frames.push({ time: st.time, url })
+        }
+        return frames.length > 1 ? frames : []
+      } finally {
+        // Always restore the live canvas to its normal, fully-shown state —
+        // this MUST run even on error/throw, or the user would be left
+        // staring at a partially-hidden slide.
+        setCaptureOverride(null)
+        setCapturingReveal(false)
+      }
+    } catch (err) {
+      console.warn('[VisualDesigner] captureRevealFrames failed, exported video will stay static:', err)
+      setCaptureOverride(null)
+      setCapturingReveal(false)
+      return null
+    }
+  }
+
+  // Recomputes revealFrames and saves them — call after a timing edit or
+  // before generating so the exported video's reveal actually reflects the
+  // Edit Timeline's current state. null return (fetch/capture failure)
+  // deliberately leaves the previously-saved revealFrames alone rather than
+  // clearing them, since a transient failure here shouldn't silently
+  // regress a scene back to static.
+  const syncRevealFrames = async (force = false) => {
+    const frames = await captureRevealFrames(force)
+    if (frames === null) return null
+    setRevealFrames(frames)
+    // Pass the just-computed frames straight into saveContent via
+    // opts.revealFramesOverride instead of relying on setRevealFrames's
+    // state update having already propagated into stateRef.current by the
+    // time saveContent reads it (2026-08-17 bugfix — "the remotion did not
+    // work all content appear in the begiining together"). That was a real
+    // race: stateRef.current only refreshes via a useEffect that runs AFTER
+    // this render commits, so a save that fires before it does would
+    // persist the OLD (empty) revealFrames — silently falling back to the
+    // single fully-revealed snapshot despite having just paid for N frame
+    // captures/uploads that then went unused.
+    saveContent({ revealFramesOverride: frames })
+    return frames
+  }
+
+  // Explicit, on-demand resync for the button below — same syncRevealFrames()
+  // path a timeline drag triggers, but callable with nothing to drag (e.g.
+  // frames were captured before a capture-pipeline fix and are just stale).
+  const handleResyncReveal = async () => {
+    if (syncingReveal) return
+    setSyncingReveal(true)
+    try {
+      const frames = await syncRevealFrames(true)
+      if (frames === null) {
+        toast.error('Could not refresh the timeline preview — try again in a moment.')
+      } else if (!frames.length) {
+        toast.info('No Edit Timeline changes to refresh — this scene has no timed reveal yet.')
+      } else {
+        // Show the ACTUAL computed reveal times (2026-08-18, "DID NOT WORK
+        // IF THERE IS POINT BEFORE 4S") — every static-analysis pass through
+        // the capture/render pipeline has come up empty for any real ~4s
+        // threshold, so the fastest way to find out what's actually
+        // happening is to surface the real breakpoint times that got
+        // captured right here, instead of guessing further. If an early
+        // point's time IS in this list, the capture/frame side is working
+        // and the bug is downstream in ffmpeg's consumption of revealFrames;
+        // if it's MISSING, the bug is in how that specific time got dropped
+        // before this point.
+        const times = frames.map(f => `${Math.round(f.time * 10) / 10}s`).join(', ')
+        toast.success(`Timeline preview refreshed — reveals at ${times}`, {
+          description: 'Regenerate the video to pick it up.',
+          duration: 8000,
+        })
+      }
+    } finally {
+      setSyncingReveal(false)
+    }
+  }
+
   const saveContent = async (opts = {}) => {
-    const s = stateRef.current
+    const s = opts.revealFramesOverride !== undefined
+      ? { ...stateRef.current, revealFrames: opts.revealFramesOverride }
+      : stateRef.current
     setSaving(true)
     // Approval is PER PART, saved on this part's own design. It survives benign
     // saves (switching parts, snapshot refreshes, reopening) and only clears
     // when the CONTENT actually changed since it was approved.
-    const sig = contentSig({ title: s.title, bullets: s.bullets, positions: s.positions, avatarX: s.avatarX, avatarY: s.avatarY, avatarWidth: s.avatarWidth, layout: s.layout, theme: s.theme, imageUrl: s.imageUrl, annotations: s.annotations })
+    const sig = contentSig({ title: s.title, bullets: s.bullets, positions: s.positions, avatarX: s.avatarX, avatarY: s.avatarY, avatarWidth: s.avatarWidth, layout: s.layout, theme: s.theme, imageUrl: s.imageUrl, imageBgColor: s.imageBgColor, imageOpacity: s.imageOpacity, annotations: s.annotations, extraImages: s.extraImages })
     let nextApprovedAt
     if (opts.approve === true) {
       nextApprovedAt = new Date().toISOString(); approvedSigRef.current = sig
@@ -1778,6 +2188,9 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       blocks: [{ type: 'bullets', items: s.bullets }],
       positions: s.positions, showLogo: s.showLogo,
       imageUrl: s.imageUrl, imageWidth: s.imageWidth, imageShape: s.imageShape,
+      imageBgColor: s.imageBgColor || '', imageOpacity: s.imageOpacity ?? 1,
+      extraImages: s.extraImages || [],
+      revealFrames: s.revealFrames || [],
       motionId: s.motionId,
       // Presenter avatar box — CENTER x/y + width, % of slide. These exact
       // field names are what api/src/lib/ffmpegVideo.ts's extractAvatarPosition
@@ -1941,8 +2354,22 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const [genImageType, setGenImageType] = useState('illustration')
   const [genLoading,   setGenLoading]   = useState(false)
   const [genError,     setGenError]     = useState(null)
+  // Crop tool target (2026-08-17, "add i can crop the img") — applies to
+  // ANY image on the slide (primary or extra); { url, onApply(newUrl) }.
+  // Set to open the ImageCropModal, null to close it.
+  const [cropTarget,   setCropTarget]   = useState(null)
+  // Remove-background tool target (2026-08-17, "i can change and edit the
+  // trasparency and colorr of bg of the img") — same { url, onApply } shape
+  // as cropTarget above; opens ImageBgRemoveModal when set.
+  const [bgRemoveTarget, setBgRemoveTarget] = useState(null)
 
-  const handleGenerateImage = async () => {
+  // asExtra (2026-08-17, "i want to ... generate more then one") — false
+  // (default) replaces the single primary image, exactly as before; true
+  // APPENDS the result to extraImages instead, for the "+ Add another
+  // image" button, so generating more images no longer clobbers the one
+  // already on the slide.
+  const handleGenerateImage = async (opts = {}) => {
+    const asExtra = opts.asExtra === true
     const prompt = genPrompt.trim()
     if (!prompt || genLoading) return
     setGenLoading(true); setGenError(null)
@@ -1956,11 +2383,25 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       if (!res.ok) throw new Error(data.error || 'Image generation failed')
       const url = data.file_url || data.url
       if (!url) throw new Error('No image was returned')
-      setImageUrl(url)
       // Wait for the fresh URL to actually load before snapshotting, or the
       // WYSIWYG capture embeds a still-loading image.
       await waitForImageLoad(url)
-      saveContent()
+      if (asExtra) {
+        addExtraImage(url)
+      } else {
+        setImageUrl(url)
+        saveContent()
+      }
+      // transparencyApplied === false (2026-08-17, "i generate img in media
+      // and click transparent but it is not") — the backend used to swallow
+      // a chroma-key failure silently and hand back the raw magenta image
+      // as if it succeeded. Still use the image (it's the real content,
+      // just with a visible magenta backdrop instead of true transparency)
+      // but actually tell the user instead of letting them find out by
+      // seeing a pink box on their slide with no explanation.
+      if (data.transparencyApplied === false) {
+        setGenError('Image generated, but the magenta background couldn\'t be removed automatically — it will show as solid pink/magenta instead of transparent. Try regenerating, or upload your own image instead.')
+      }
     } catch (err) {
       setGenError(err?.message || 'Image generation failed')
     } finally {
@@ -1968,27 +2409,38 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     }
   }
 
+  // Multiple files at once (2026-08-17, "i want to upload a lot of pic") —
+  // the FIRST file fills the primary image slot if it's empty (unchanged
+  // behavior from before); every other file, and every file once a primary
+  // already exists, becomes an additional image instead of replacing it.
   const handleFileUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setImageUrl('')  // Clear while uploading
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await fetch('/api/upload', { method: 'POST', body: formData })
-      if (res.ok) {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    const hadPrimaryAtStart = !!imageUrl
+    if (!hadPrimaryAtStart) setImageUrl('')  // Clear while uploading
+    for (let i = 0; i < files.length; i++) {
+      try {
+        const formData = new FormData()
+        formData.append('file', files[i])
+        const res = await fetch('/api/upload', { method: 'POST', body: formData })
+        if (!res.ok) continue
         const data = await res.json()
         // BUGFIX: /api/upload returns { file_url }, not { url } — this was why
         // uploaded images never stuck to the design
         const uploadedUrl = data.file_url || data.url || ''
-        setImageUrl(uploadedUrl)
-        await waitForImageLoad(uploadedUrl)
-        saveContent()
+        if (!uploadedUrl) continue
+        if (!hadPrimaryAtStart && i === 0) {
+          setImageUrl(uploadedUrl)
+          await waitForImageLoad(uploadedUrl)
+        } else {
+          addExtraImage(uploadedUrl)
+        }
+      } catch (err) {
+        console.error('Image upload failed:', err)
       }
-    } catch (err) {
-      console.error('Image upload failed:', err)
     }
-    e.target.value = ''  // allow re-upload of same file
+    saveContent()
+    e.target.value = ''  // allow re-upload of same file(s)
   }
 
   const handlePositionChange = (key, newPos) => {
@@ -2020,6 +2472,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
   const handleGenerate = async () => {
     await saveContent()
+    // Keep revealFrames fresh before generating (2026-08-17) — covers users
+    // who added/edited content without ever opening the Video Editing tab
+    // this session, so the Edit Timeline's timing still makes it into the
+    // exported video's reveal instead of silently staying static.
+    syncRevealFrames()
     setGenerateFailedMsg(null)
     try {
       const result = await onGenerate(scene.id, activeSegmentId)
@@ -2114,6 +2571,10 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     setImageUrl(design.imageUrl || '')
     setImageWidth(design.imageWidth || 36)
     setImageShape(design.imageShape || 'rounded')
+    setImageBgColor(design.imageBgColor || '')
+    setImageOpacity(design.imageOpacity ?? 1)
+    setExtraImages(Array.isArray(design.extraImages) ? design.extraImages : [])
+    setRevealFrames(Array.isArray(design.revealFrames) ? design.revealFrames : [])
     setAnnotations(Array.isArray(design.annotations) ? design.annotations : [])
     const loadedW = Math.min(design.avatarWidth ?? DEFAULT_AVATAR.width, MAX_AVATAR_WIDTH)
     const loadedAv = clampAvatarBox(design.avatarX ?? DEFAULT_AVATAR.x, design.avatarY ?? DEFAULT_AVATAR.y, loadedW)
@@ -2121,7 +2582,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     // Seed the approval signature to THIS loaded design so a later edit is
     // detected (and clears approval), while reopening/switching keeps it.
     approvedSigRef.current = design.approvedAt
-      ? contentSig({ title: design.title || '', bullets: loadedBullets, positions: mergedPositions, avatarX: loadedAv.x, avatarY: loadedAv.y, avatarWidth: loadedW, layout: layoutKey, theme: themeVal, imageUrl: design.imageUrl || '', annotations: Array.isArray(design.annotations) ? design.annotations : [] })
+      ? contentSig({ title: design.title || '', bullets: loadedBullets, positions: mergedPositions, avatarX: loadedAv.x, avatarY: loadedAv.y, avatarWidth: loadedW, layout: layoutKey, theme: themeVal, imageUrl: design.imageUrl || '', imageBgColor: design.imageBgColor || '', imageOpacity: design.imageOpacity ?? 1, annotations: Array.isArray(design.annotations) ? design.annotations : [], extraImages: Array.isArray(design.extraImages) ? design.extraImages : [] })
       : null
     // Restore motion type from saved design
     if (design.motionId) {
@@ -2192,8 +2653,23 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       if (activeSegmentId) await saveContent()
       const target = segments.find(s => s.id === wanted)
       setActiveSegmentId(wanted)
-      loadDesignIntoState(getSegmentDesign(target))
+      const targetDesign = getSegmentDesign(target)
+      loadDesignIntoState(targetDesign)
       setSegmentDrafts(prev => prev[wanted] !== undefined ? prev : { ...prev, [wanted]: target?.text || '' })
+      // Auto-capture-on-first-view (2026-08-18, "see the difference between
+      // what i generate in visual design and what i get in generate sceen
+      // vd") — a scene the user only ever LOOKS at here (never drags or
+      // edits anything) never calls saveContent, so renderedSlideUrl stays
+      // null forever and video generation silently falls back to the flat,
+      // chrome-less server-side renderer (no background pattern, no logo,
+      // different bullet icons) — exactly the mismatch shown: the rich
+      // canvas right here vs. a plain slide in the exported video. If this
+      // design has never had a snapshot, capture one now automatically, a
+      // beat after the canvas paints — so just opening a scene here is
+      // enough to guarantee the export matches it.
+      if (!targetDesign.renderedSlideUrl) {
+        setTimeout(() => { saveContent() }, 600)
+      }
     }
     switchTo()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2214,7 +2690,14 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       return
     } else {
       setActiveSegmentId(id)
-      loadDesignIntoState(getSegmentDesign(segments.find(s => s.id === id)))
+      const targetDesign = getSegmentDesign(segments.find(s => s.id === id))
+      loadDesignIntoState(targetDesign)
+      // Same auto-capture-on-first-view as the segment-switch effect above —
+      // this is the alternate switch path (segment chips), kept in sync so
+      // it doesn't reopen the same gap through a different click target.
+      if (!targetDesign.renderedSlideUrl) {
+        setTimeout(() => { saveContent() }, 600)
+      }
     }
     setSegmentDrafts(prev => prev[id] !== undefined ? prev : {
       ...prev,
@@ -2504,7 +2987,12 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
               surface — while playing, or when you click a point on the timeline
               (it jumps to that moment and shows that point). So there's only ONE
               preview (no duplicate below). */}
-          {vePreviewActive ? (
+          {/* captureOverride (2026-08-18) forces the LIVE EditableSlide branch
+              even when vePreviewActive would otherwise show SlidePlaybackPreview
+              — captureRevealFrames drives THIS instance directly via
+              bullets/titleVisible/visibleImageIds below, so during a capture
+              there must only be one real render target, not two competing ones. */}
+          {vePreviewActive && !captureOverride ? (
             <div className="w-full aspect-video rounded-xl overflow-hidden border-2 border-slate-300 dark:border-slate-600 shadow-lg">
               <SlidePlaybackPreview
                 design={liveDesign}
@@ -2516,10 +3004,15 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           ) : (
           <EditableSlide
             key={previewKey}
-            title={title} subtitle={subtitle} bullets={bullets}
+            title={title} subtitle={subtitle}
+            bullets={captureOverride ? bullets.slice(0, Math.max(0, captureOverride.revealCount)) : bullets}
+            titleVisible={captureOverride ? captureOverride.titleVisible : true}
+            visibleImageIds={captureOverride ? captureOverride.visibleImageIds : null}
             layout={layout} theme={themeObj} motionCls={motion.cls}
             positions={positions} showLogo={showLogo}
             imageUrl={imageUrl} imageWidth={imageWidth} imageShape={imageShape}
+            imageBgColor={imageBgColor} imageOpacity={imageOpacity}
+            extraImages={extraImages}
             moduleTitle={moduleTitle} sceneIndex={scene.orderIndex ?? 0} totalScenes={totalScenes}
             onPositionChange={handlePositionChange}
             onDragEnd={saveContent}
@@ -2532,7 +3025,26 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
             onAnnotationChange={updateAnnotation}
             onAnnotationDragEnd={saveContent}
             onAnnotationDelete={removeAnnotation}
+            onExtraImageChange={updateExtraImage}
+            onExtraImageDragEnd={saveContent}
+            onExtraImageDelete={removeExtraImage}
+            onCropImage={() => setCropTarget({ url: imageUrl, onApply: (newUrl) => { setImageUrl(newUrl); saveContent() } })}
+            onExtraImageCrop={(id, url) => setCropTarget({ url, onApply: (newUrl) => { updateExtraImage(id, { url: newUrl }); saveContent() } })}
+            onRemoveBgImage={() => setBgRemoveTarget({ url: imageUrl, onApply: (newUrl) => { setImageUrl(newUrl); saveContent() } })}
+            onExtraImageRemoveBg={(id, url) => setBgRemoveTarget({ url, onApply: (newUrl) => { updateExtraImage(id, { url: newUrl }); saveContent() } })}
           />
+          )}
+          {/* Lock overlay while captureRevealFrames drives the canvas through
+              each reveal breakpoint (2026-08-18) — the canvas briefly shows
+              partial/hidden content during this, which would otherwise look
+              broken rather than deliberate. Blocks pointer events so a drag
+              mid-capture can't collide with the temporary override. */}
+          {capturingReveal && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center rounded-xl bg-black/40 backdrop-blur-[1px]">
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-black/70 text-white text-xs font-medium">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Capturing timeline preview…
+              </div>
+            </div>
           )}
           {saving && (
             <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1 px-2 py-1 rounded-md bg-black/60 text-[10px] text-slate-300">
@@ -2815,7 +3327,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                   >
                     Upload
                   </button>
-                  <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
+                  {/* multiple (2026-08-17, "i want to upload a lot of pic") —
+                      the first file fills this primary slot if empty; any
+                      further files become additional images (extraImages)
+                      instead of being dropped. */}
+                  <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleFileUpload} />
                 </div>
 
                 {/* Or generate one instead of uploading */}
@@ -2845,7 +3361,7 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                       <option value="flowchart">Flowchart (transparent)</option>
                     </select>
                     <button
-                      onClick={handleGenerateImage}
+                      onClick={() => handleGenerateImage()}
                       disabled={genLoading || !genPrompt.trim()}
                       className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
                     >
@@ -2854,6 +3370,20 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                         : <><Sparkles className="w-3.5 h-3.5" />{imageUrl ? 'Regenerate' : 'Generate'}</>}
                     </button>
                   </div>
+                  {/* Add another (2026-08-17) — generates a NEW image and
+                      appends it to extraImages instead of replacing the
+                      primary one above. Only shown once there's already
+                      something on the slide, so a blank slide still shows
+                      just one obvious "Generate" action. */}
+                  {(imageUrl || extraImages.length > 0) && (
+                    <button
+                      onClick={() => handleGenerateImage({ asExtra: true })}
+                      disabled={genLoading || !genPrompt.trim()}
+                      className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border border-dashed border-slate-300 dark:border-white/15 text-slate-500 dark:text-slate-400 hover:border-violet-400 hover:text-violet-500 dark:hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Plus className="w-3 h-3" />Add another image to this slide
+                    </button>
+                  )}
                   {genError && (
                     <p className="text-[11px] text-red-500 dark:text-red-400">{genError}</p>
                   )}
@@ -2883,6 +3413,37 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                         onMouseUp={saveContent}
                         className="w-full h-1 accent-violet-500 cursor-pointer" />
                     </div>
+                    {/* Opacity + backdrop color (2026-08-17, "i can change and
+                        edit the trasparency and colorr of bg of the img") —
+                        opacity fades the whole image; backdrop is a solid fill
+                        shown behind it (useful once the image itself has a
+                        transparent background, from Remove bg below or an AI
+                        diagram). Neither touches the image's pixels. */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">Opacity</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400">{Math.round(imageOpacity * 100)}%</span>
+                        </div>
+                        <input type="range" min="10" max="100" value={Math.round(imageOpacity * 100)}
+                          onChange={e => setImageOpacity(Number(e.target.value) / 100)}
+                          onMouseUp={saveContent}
+                          className="w-full h-1 accent-violet-500 cursor-pointer" />
+                      </div>
+                      <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">Backdrop</span>
+                        <div className="flex items-center gap-1">
+                          <input type="color" value={imageBgColor || '#ffffff'}
+                            onChange={e => { setImageBgColor(e.target.value); saveContent() }}
+                            title="Fill color behind this image"
+                            className="w-6 h-6 rounded cursor-pointer border border-slate-200 dark:border-white/10 bg-transparent p-0" />
+                          {imageBgColor && (
+                            <button onClick={() => { setImageBgColor(''); saveContent() }}
+                              title="Clear backdrop color" className="text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400">×</button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                     <div className="flex gap-1.5">
                       {[['rectangle','Sharp'],['rounded','Rounded'],['circle','Circle']].map(([v,l]) => (
                         <button key={v} onClick={() => { setImageShape(v); saveContent() }}
@@ -2892,8 +3453,21 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                               : 'bg-white dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400 hover:border-slate-300 dark:hover:border-white/20'
                           }`}>{l}</button>
                       ))}
+                      {/* Crop (2026-08-17, "add i can crop the img") — opens a
+                          canvas-based crop tool that re-uploads the cropped
+                          result and swaps it in for this same layer. */}
+                      <button onClick={() => setCropTarget({ url: imageUrl, onApply: (newUrl) => { setImageUrl(newUrl); saveContent() } })}
+                        className="ml-auto px-2 py-1 rounded-md text-[10px] font-medium text-slate-500 dark:text-slate-400 hover:text-violet-500 dark:hover:text-violet-300 border border-transparent hover:border-violet-500/20 transition-all flex items-center gap-1">
+                        <Crop className="w-3 h-3" />Crop
+                      </button>
+                      {/* Remove background (2026-08-17) — pick a color on the
+                          image and key it out, same tool as the canvas button. */}
+                      <button onClick={() => setBgRemoveTarget({ url: imageUrl, onApply: (newUrl) => { setImageUrl(newUrl); saveContent() } })}
+                        className="px-2 py-1 rounded-md text-[10px] font-medium text-slate-500 dark:text-slate-400 hover:text-emerald-500 dark:hover:text-emerald-300 border border-transparent hover:border-emerald-500/20 transition-all flex items-center gap-1">
+                        <Pipette className="w-3 h-3" />Remove bg
+                      </button>
                       <button onClick={() => { setImageUrl(''); saveContent() }}
-                        className="ml-auto px-2 py-1 rounded-md text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400 border border-transparent hover:border-red-500/20 transition-all">
+                        className="px-2 py-1 rounded-md text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400 border border-transparent hover:border-red-500/20 transition-all">
                         Remove
                       </button>
                     </div>
@@ -2903,6 +3477,63 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                     <Image className="w-8 h-8 text-slate-400 dark:text-slate-600 mb-2" />
                     <p className="text-xs text-slate-500 dark:text-slate-400">No image added yet</p>
                     <p className="text-[10px] text-slate-400 dark:text-slate-600 max-w-xs mt-1">Add a figure or diagram to make this slide more visual.</p>
+                  </div>
+                )}
+
+                {/* Extra images (2026-08-17, "i want to upload a lot of pic
+                    and generate more then one") — any images beyond the
+                    single primary one above, each independently draggable
+                    on the canvas; controls here mirror the primary image's. */}
+                {extraImages.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-slate-200 dark:border-white/[0.06] space-y-2">
+                    <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                      {extraImages.length} more image{extraImages.length === 1 ? '' : 's'} on this slide
+                    </p>
+                    {extraImages.map((img, idx) => (
+                      <div key={img.id} className="flex items-center gap-2 p-2 rounded-lg bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-white/[0.06]">
+                        <div className="w-10 h-8 rounded overflow-hidden flex-shrink-0 border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800">
+                          <img src={img.url} alt="" className="w-full h-full object-cover"
+                            onError={e => { e.target.style.opacity = '0.3' }} />
+                        </div>
+                        <div className="flex-1 min-w-0 flex items-center gap-1">
+                          {[['rectangle','Sharp'],['rounded','Round'],['circle','Circle']].map(([v,l]) => (
+                            <button key={v} onClick={() => { updateExtraImage(img.id, { shape: v }); saveContent() }}
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-medium border transition-all ${
+                                (img.shape || 'rounded')===v
+                                  ? 'bg-violet-600/20 border-violet-500/40 text-violet-700 dark:text-violet-300'
+                                  : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-white/[0.06] text-slate-500 dark:text-slate-400'
+                              }`}>{l}</button>
+                          ))}
+                        </div>
+                        {/* Backdrop color (2026-08-17) — same as the primary
+                            image's swatch, compact for the list row. */}
+                        <input type="color" value={img.bgColor || '#ffffff'}
+                          onChange={e => { updateExtraImage(img.id, { bgColor: e.target.value }); saveContent() }}
+                          title="Fill color behind this image"
+                          className="w-5 h-5 rounded cursor-pointer border border-slate-200 dark:border-white/10 bg-transparent p-0 flex-shrink-0" />
+                        {img.bgColor && (
+                          <button onClick={() => { updateExtraImage(img.id, { bgColor: '' }); saveContent() }}
+                            title="Clear backdrop color"
+                            className="text-[10px] text-slate-400 dark:text-slate-600 hover:text-red-400 flex-shrink-0">×</button>
+                        )}
+                        <button onClick={() => setBgRemoveTarget({ url: img.url, onApply: (newUrl) => { updateExtraImage(img.id, { url: newUrl }); saveContent() } })}
+                          title="Remove background color"
+                          className="p-1 rounded text-slate-400 dark:text-slate-500 hover:text-emerald-500 dark:hover:text-emerald-300 transition-colors">
+                          <Pipette className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => setCropTarget({ url: img.url, onApply: (newUrl) => { updateExtraImage(img.id, { url: newUrl }); saveContent() } })}
+                          title="Crop this image"
+                          className="p-1 rounded text-slate-400 dark:text-slate-500 hover:text-violet-500 dark:hover:text-violet-300 transition-colors">
+                          <Crop className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => removeExtraImage(img.id)}
+                          title="Remove this image"
+                          className="p-1 rounded text-slate-400 dark:text-slate-500 hover:text-red-400 transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-slate-400 dark:text-slate-600">Drag any of them on the slide preview to reposition or resize.</p>
                   </div>
                 )}
               </div>
@@ -3199,6 +3830,23 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
 
           {activeTab === 'videoedit' && (
             <div className="space-y-4">
+              {/* Manual resync (2026-08-18) — Regenerate in Video/Final Video
+                  reuses whatever reveal frames are already saved; it never
+                  recaptures them. This is the only way to force a fresh
+                  capture without needing to actually drag a timing block
+                  (e.g. after a capture-pipeline fix, or if a capture came out
+                  wrong for some other reason). */}
+              <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/[0.06]">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Captures the reveal exactly as shown below — including untouched default timing — so the exported video matches this timeline.
+                </p>
+                <button onClick={handleResyncReveal} disabled={syncingReveal}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-white/5 disabled:opacity-50 flex-shrink-0">
+                  {syncingReveal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCw className="w-3.5 h-3.5" />}
+                  Refresh timing preview
+                </button>
+              </div>
+
               {/* Remotion timeline — voice bar + per-point element timing. The
                   preview lives at the TOP of the page (one preview only).
                   Scoped to the ACTIVE segment only (mirrors the Narration &
@@ -3219,7 +3867,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
                 onTick={setVePlaybackTime}
                 onTimelineReady={setVeData}
                 onElementSelect={setVeSelected}
-                onUpdate={() => {}}
+                // Recompute revealFrames whenever a timing block actually
+                // gets dragged (2026-08-17) — this is the moment the Edit
+                // Timeline's timing can have changed, so it's the moment the
+                // exported video's reveal needs to be re-baked too.
+                onUpdate={() => syncRevealFrames()}
                 playToken={vePlayToken}
               />
 
@@ -3280,13 +3932,43 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         </div>,
         document.body
       )}
+
+      {/* Crop tool (2026-08-17, "add i can crop the img") — applies to any
+          image on the slide, uploaded or generated (cropTarget.url), and
+          hands the cropped result back through cropTarget.onApply, which
+          each caller wires to whichever layer it came from (primary image
+          or a specific extraImages entry). */}
+      {cropTarget && (
+        <ImageCropModal
+          url={cropTarget.url}
+          onCancel={() => setCropTarget(null)}
+          onApply={async (newUrl) => {
+            cropTarget.onApply(newUrl)
+            setCropTarget(null)
+          }}
+        />
+      )}
+
+      {/* Remove-background tool (2026-08-17, "i can change and edit the
+          trasparency and colorr of bg of the img") — same target shape and
+          apply pattern as the crop tool above. */}
+      {bgRemoveTarget && (
+        <ImageBgRemoveModal
+          url={bgRemoveTarget.url}
+          onCancel={() => setBgRemoveTarget(null)}
+          onApply={async (newUrl) => {
+            bgRemoveTarget.onApply(newUrl)
+            setBgRemoveTarget(null)
+          }}
+        />
+      )}
     </div>
   )
 }
 
 // ─── Editable slide canvas (drag-to-reposition) ───────────────────────────────
 
-function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, avatarX = DEFAULT_AVATAR.x, avatarY = DEFAULT_AVATAR.y, avatarWidth = DEFAULT_AVATAR.width, onDeleteLayer, segments = [], annotations = [], onAnnotationChange, onAnnotationDragEnd, onAnnotationDelete }) {
+function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, positions, showLogo, imageUrl, imageWidth, imageShape, imageBgColor = '', imageOpacity = 1, extraImages = [], visibleImageIds = null, titleVisible = true, moduleTitle, sceneIndex = 0, totalScenes = 1, onPositionChange, onDragEnd, textCues = [], avatarImageUrl = null, avatarX = DEFAULT_AVATAR.x, avatarY = DEFAULT_AVATAR.y, avatarWidth = DEFAULT_AVATAR.width, onDeleteLayer, segments = [], annotations = [], onAnnotationChange, onAnnotationDragEnd, onAnnotationDelete, onExtraImageChange, onExtraImageDragEnd, onExtraImageDelete, onCropImage, onExtraImageCrop, onRemoveBgImage, onExtraImageRemoveBg }) {
   const containerRef  = useRef(null)
   const [activeDrag, setActiveDrag] = useState(null)
   const [activeResize, setActiveResize] = useState(null)
@@ -3415,6 +4097,63 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
     document.addEventListener('mouseup', onUp)
   }
 
+  // Drag/resize an extra image (2026-08-17) — parallels startDrag/startResize
+  // above, but reads/writes the image's OWN x/y/width fields (passed in via
+  // the `img` closure argument) instead of `positions[key]`, since extra
+  // images are a self-contained array, not part of `positions` — see the
+  // `extraImages` state comment in the parent component for why.
+  const startExtraImageDrag = (e, img) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!containerRef.current) return
+    const rect = containerRef.current.getBoundingClientRect()
+    const startMX = e.clientX, startMY = e.clientY
+    const startX = img.x ?? 50, startY = img.y ?? 50
+    const dragKey = `extraImage:${img.id}`
+    setActiveDrag(dragKey)
+
+    const onMove = (ev) => {
+      const dx = ((ev.clientX - startMX) / (rect.width || 1)) * 100
+      const dy = ((ev.clientY - startMY) / (rect.height || 1)) * 100
+      onExtraImageChange?.(img.id, {
+        x: Math.max(0, Math.min(88, startX + dx)),
+        y: Math.max(0, Math.min(85, startY + dy)),
+      })
+    }
+    const onUp = () => {
+      setActiveDrag(null)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      onExtraImageDragEnd?.()
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const startExtraImageResize = (e, img) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!containerRef.current) return
+    const rect = containerRef.current.getBoundingClientRect()
+    const startMX = e.clientX
+    const startWidth = img.width ?? 30
+    const resizeKey = `extraImage:${img.id}`
+    setActiveResize(resizeKey)
+
+    const onMove = (ev) => {
+      const dx = ((ev.clientX - startMX) / (rect.width || 1)) * 100
+      onExtraImageChange?.(img.id, { width: Math.max(8, Math.min(80, startWidth + dx)) })
+    }
+    const onUp = () => {
+      setActiveResize(null)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      onExtraImageDragEnd?.()
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
   // Drag the presenter avatar box — separate from startDrag above because
   // the avatar isn't stored in `positions` (it's CENTER-based avatarX/avatarY,
   // not the top-left x/y the other layers use — see DEFAULT_AVATAR's comment).
@@ -3531,20 +4270,49 @@ function EditableSlide({ title, subtitle, bullets, layout, theme, motionCls, pos
       )}
 
       {/* ── Draggable + Resizable: IMAGE / FIGURE ────────────────── */}
-      {imageUrl && positions.image && (
+      {imageUrl && positions.image && (visibleImageIds == null || visibleImageIds.includes('image')) && (
         <DraggableLayer layerKey="image" pos={positions.image} width={imageWidth}
           isActive={activeDrag==='image'} isResizing={activeResize==='image'} label="Image"
-          onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-          <SlideImage url={imageUrl} shape={imageShape} />
+          onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}
+          onCrop={onCropImage ? () => onCropImage() : undefined}
+          onRemoveBg={onRemoveBgImage ? () => onRemoveBgImage() : undefined}>
+          <SlideImage url={imageUrl} shape={imageShape} bgColor={imageBgColor} opacity={imageOpacity} />
         </DraggableLayer>
       )}
 
+      {/* ── Draggable + Resizable: EXTRA IMAGES (2026-08-17) ───────
+          Any number of additional images on top of the single primary one
+          above — "in one sccenn sometime i need more then one pic". Reuses
+          the same generic DraggableLayer/SlideImage components as the
+          primary image; each entry carries its own x/y/width instead of a
+          shared `positions` key (see the extraImages state comment). */}
+      {extraImages
+        .filter((img) => visibleImageIds == null || visibleImageIds.includes(`extraImage:${img.id}`))
+        .map((img) => (
+        <DraggableLayer key={img.id} layerKey={`extraImage:${img.id}`}
+          pos={{ x: img.x ?? 50, y: img.y ?? 50, scale: 1 }} width={img.width ?? 30}
+          isActive={activeDrag === `extraImage:${img.id}`} isResizing={activeResize === `extraImage:${img.id}`}
+          label="Image" onMouseDown={(e) => startExtraImageDrag(e, img)}
+          onResizeMouseDown={(e) => startExtraImageResize(e, img)}
+          onDelete={() => onExtraImageDelete?.(img.id)}
+          onCrop={onExtraImageCrop ? () => onExtraImageCrop(img.id, img.url) : undefined}
+          onRemoveBg={onExtraImageRemoveBg ? () => onExtraImageRemoveBg(img.id, img.url) : undefined}>
+          <SlideImage url={img.url} shape={img.shape || 'rounded'} bgColor={img.bgColor || ''} opacity={img.opacity ?? 1} />
+        </DraggableLayer>
+      ))}
+
       {/* ── Draggable + Resizable: TITLE ────────────────────────── */}
-      <DraggableLayer layerKey="title" pos={positions.title} width={LAYER_WIDTHS.title}
-        isActive={activeDrag==='title'} isResizing={activeResize==='title'} label="Title"
-        onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
-        <TitleLayer title={title} layout={layout} theme={theme} wrapStyle={titleWrapStyle} />
-      </DraggableLayer>
+      {/* titleVisible (2026-08-17) — gates the title for timed reveal during
+          playback/capture, mirroring how `bullets` is already pre-sliced by
+          revealCount and images by visibleImageIds. Defaults to true so the
+          live canvas (which never passes this prop) is unaffected. */}
+      {titleVisible && (
+        <DraggableLayer layerKey="title" pos={positions.title} width={LAYER_WIDTHS.title}
+          isActive={activeDrag==='title'} isResizing={activeResize==='title'} label="Title"
+          onMouseDown={startDrag} onResizeMouseDown={startResize} onDelete={onDeleteLayer}>
+          <TitleLayer title={title} layout={layout} theme={theme} wrapStyle={titleWrapStyle} />
+        </DraggableLayer>
+      )}
 
       {/* Subtitle (Key Insight) no longer shown on the slide — removed per
           request. Layout data still has a subtitle slot (positions.subtitle)
@@ -3748,11 +4516,339 @@ function SlideHeaderChrome({ moduleTitle, layout, theme, sceneIndex, totalScenes
   )
 }
 
+// ─── Image crop tool ────────────────────────────────────────────────────────
+// Canvas-based crop, applies to ANY image on the slide (2026-08-17, "add i
+// can crop the img") — the caller passes the source `url` and gets back a
+// NEW url via `onApply` (a fresh /api/upload of just the cropped region),
+// so this never touches the backend renderer; it's purely a client-side
+// crop + re-upload, same approach as the existing WYSIWYG snapshot capture.
+function ImageCropModal({ url, onCancel, onApply }) {
+  const imgRef = useRef(null)
+  const frameRef = useRef(null)
+  const [naturalSize, setNaturalSize] = useState({ w: 0, h: 0 })
+  // Crop box, as % of the DISPLAYED (object-contain) image area.
+  const [box, setBox] = useState({ x: 10, y: 10, w: 80, h: 80 })
+  const [applying, setApplying] = useState(false)
+  const [error, setError] = useState(null)
+
+  const onImgLoad = (e) => setNaturalSize({ w: e.target.naturalWidth, h: e.target.naturalHeight })
+
+  const startMove = (e) => {
+    e.preventDefault(); e.stopPropagation()
+    if (!frameRef.current) return
+    const rect = frameRef.current.getBoundingClientRect()
+    const startMX = e.clientX, startMY = e.clientY
+    const startX = box.x, startY = box.y
+    const onMove = (ev) => {
+      const dx = ((ev.clientX - startMX) / (rect.width || 1)) * 100
+      const dy = ((ev.clientY - startMY) / (rect.height || 1)) * 100
+      setBox(b => ({
+        ...b,
+        x: Math.max(0, Math.min(100 - b.w, startX + dx)),
+        y: Math.max(0, Math.min(100 - b.h, startY + dy)),
+      }))
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const startResize = (e) => {
+    e.preventDefault(); e.stopPropagation()
+    if (!frameRef.current) return
+    const rect = frameRef.current.getBoundingClientRect()
+    const startMX = e.clientX, startMY = e.clientY
+    const startW = box.w, startH = box.h
+    const onMove = (ev) => {
+      const dw = ((ev.clientX - startMX) / (rect.width || 1)) * 100
+      const dh = ((ev.clientY - startMY) / (rect.height || 1)) * 100
+      setBox(b => ({
+        ...b,
+        w: Math.max(5, Math.min(100 - b.x, startW + dw)),
+        h: Math.max(5, Math.min(100 - b.y, startH + dh)),
+      }))
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  const handleApply = async () => {
+    if (!imgRef.current || !naturalSize.w || !naturalSize.h) return
+    setApplying(true); setError(null)
+    try {
+      const sx = (box.x / 100) * naturalSize.w
+      const sy = (box.y / 100) * naturalSize.h
+      const sw = (box.w / 100) * naturalSize.w
+      const sh = (box.h / 100) * naturalSize.h
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(sw))
+      canvas.height = Math.max(1, Math.round(sh))
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(imgRef.current, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('Crop failed — could not read the image')
+      const formData = new FormData()
+      formData.append('file', new File([blob], 'cropped.png', { type: 'image/png' }))
+      const res = await fetch('/api/upload', { method: 'POST', body: formData })
+      if (!res.ok) throw new Error('Upload failed')
+      const data = await res.json()
+      const newUrl = data.file_url || data.url
+      if (!newUrl) throw new Error('No URL returned from upload')
+      await onApply(newUrl)
+    } catch (err) {
+      setError(err?.message || 'Crop failed — try a smaller selection or re-upload the image')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 bg-black/70 z-[60] flex items-start justify-center overflow-y-auto p-6 pt-16" onClick={onCancel}>
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+            <Crop className="w-4 h-4" />Crop image
+          </p>
+          <button onClick={onCancel} className="text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+        </div>
+        <div className="p-4">
+          <div ref={frameRef} className="relative w-full bg-slate-100 dark:bg-slate-950 rounded-lg overflow-hidden select-none"
+            style={{ aspectRatio: naturalSize.w && naturalSize.h ? `${naturalSize.w}/${naturalSize.h}` : '16/9' }}>
+            <img ref={imgRef} src={url} alt="" crossOrigin="anonymous" draggable={false} onLoad={onImgLoad}
+              className="absolute inset-0 w-full h-full object-contain pointer-events-none" />
+            {/* Dim everything outside the crop box */}
+            <div className="absolute pointer-events-none" style={{
+              boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)',
+              left: `${box.x}%`, top: `${box.y}%`, width: `${box.w}%`, height: `${box.h}%`,
+            }} />
+            <div onMouseDown={startMove} className="absolute border-2 border-white cursor-move"
+              style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.w}%`, height: `${box.h}%` }}>
+              <div onMouseDown={startResize} title="Drag to resize"
+                className="absolute w-3.5 h-3.5 rounded-full bg-violet-500 border-2 border-white shadow"
+                style={{ right: -8, bottom: -8, cursor: 'nwse-resize' }} />
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">Drag the box to move it, drag the corner handle to resize it.</p>
+          {error && <p className="text-[11px] text-red-500 dark:text-red-400 mt-2">{error}</p>}
+        </div>
+        <div className="px-4 py-3 border-t border-slate-200 dark:border-white/10 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleApply} disabled={applying}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors">
+            {applying ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Applying…</> : 'Apply crop'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+const rgbToHex = ({ r, g, b }) =>
+  '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+
+// ─── Background removal tool ──────────────────────────────────────────────────
+// Client-side eyedropper + color-distance keying (2026-08-17, "i can change
+// and edit the trasparency and colorr of bg of the img") — generalizes the
+// same technique api/src/lib/chromaKey.ts uses server-side for AI-generated
+// diagrams (pick a color, remove pixels close to it, feather the edge), but
+// the color comes from wherever the USER clicks on the image, so it works
+// on any photo or upload, not just images the model rendered on a known
+// magenta backdrop. Runs entirely in the browser (two canvases: one holds
+// the untouched source pixels so re-picking always starts fresh, the other
+// is the live preview), then bakes the result into a new PNG and re-uploads
+// it — same apply pattern as ImageCropModal above.
+function ImageBgRemoveModal({ url, onCancel, onApply }) {
+  const srcCanvasRef  = useRef(null)
+  const viewCanvasRef = useRef(null)
+  const frameRef      = useRef(null)
+  const [naturalSize, setNaturalSize]   = useState({ w: 0, h: 0 })
+  const [pickedColor, setPickedColor]   = useState(null) // { r, g, b } | null
+  const [tolerance,   setTolerance]     = useState(30)   // 0-100
+  const [applying,    setApplying]      = useState(false)
+  const [error,       setError]         = useState(null)
+
+  const renderPreview = (color, tol, w, h) => {
+    const src = srcCanvasRef.current, view = viewCanvasRef.current
+    if (!src || !view || !w || !h) return
+    view.width = w; view.height = h
+    const sctx = src.getContext('2d')
+    const vctx = view.getContext('2d')
+    const imgData = sctx.getImageData(0, 0, w, h)
+    if (color) {
+      const data = imgData.data
+      // tolerance 0-100 → a color-distance threshold, plus a soft feather
+      // band on top so the cut edge isn't a hard, jagged line.
+      const threshold = (tol / 100) * 140
+      const feather = Math.max(12, threshold * 0.4)
+      for (let i = 0; i < data.length; i += 4) {
+        const dr = data[i] - color.r, dg = data[i + 1] - color.g, db = data[i + 2] - color.b
+        const dist = Math.sqrt(dr * dr + dg * dg + db * db)
+        if (dist <= threshold) data[i + 3] = 0
+        else if (dist <= threshold + feather) {
+          const fade = ((dist - threshold) / feather) * 255
+          data[i + 3] = Math.min(data[i + 3], Math.round(fade))
+        }
+      }
+    }
+    vctx.clearRect(0, 0, w, h)
+    vctx.putImageData(imgData, 0, 0)
+  }
+
+  // Load the source image once, at full resolution, into the hidden canvas.
+  useEffect(() => {
+    let cancelled = false
+    const img = new window.Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      if (cancelled) return
+      setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight })
+      const c = srcCanvasRef.current
+      if (!c) return
+      c.width = img.naturalWidth
+      c.height = img.naturalHeight
+      c.getContext('2d').drawImage(img, 0, 0)
+      renderPreview(null, tolerance, img.naturalWidth, img.naturalHeight)
+    }
+    img.onerror = () => setError('Could not load this image for editing')
+    img.src = url
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url])
+
+  // Re-render whenever the picked color or tolerance changes — debounced so
+  // dragging the slider doesn't run a full-resolution pixel loop on every
+  // single mousemove tick.
+  useEffect(() => {
+    if (!naturalSize.w) return
+    const t = setTimeout(() => renderPreview(pickedColor, tolerance, naturalSize.w, naturalSize.h), 40)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedColor, tolerance, naturalSize.w, naturalSize.h])
+
+  const pickAt = (e) => {
+    const src = srcCanvasRef.current, frame = frameRef.current
+    if (!src || !frame || !naturalSize.w) return
+    const rect = frame.getBoundingClientRect()
+    // The frame's aspect-ratio is set to match the image exactly (below), so
+    // this maps 1:1 without needing object-contain letterbox math.
+    const px = ((e.clientX - rect.left) / (rect.width || 1)) * naturalSize.w
+    const py = ((e.clientY - rect.top) / (rect.height || 1)) * naturalSize.h
+    if (px < 0 || py < 0 || px >= naturalSize.w || py >= naturalSize.h) return
+    const d = src.getContext('2d').getImageData(Math.floor(px), Math.floor(py), 1, 1).data
+    setPickedColor({ r: d[0], g: d[1], b: d[2] })
+  }
+
+  const handleApply = async () => {
+    if (!pickedColor) { setError("Click a spot on the image's background first"); return }
+    setApplying(true); setError(null)
+    try {
+      const blob = await new Promise(resolve => viewCanvasRef.current.toBlob(resolve, 'image/png'))
+      if (!blob) throw new Error('Could not export the edited image')
+      const formData = new FormData()
+      formData.append('file', new File([blob], 'bg-removed.png', { type: 'image/png' }))
+      const res = await fetch('/api/upload', { method: 'POST', body: formData })
+      if (!res.ok) throw new Error('Upload failed')
+      const data = await res.json()
+      const newUrl = data.file_url || data.url
+      if (!newUrl) throw new Error('No URL returned from upload')
+      await onApply(newUrl)
+    } catch (err) {
+      setError(err?.message || 'Background removal failed')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 bg-black/70 z-[60] flex items-start justify-center overflow-y-auto p-6 pt-16" onClick={onCancel}>
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
+          <p className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+            <Pipette className="w-4 h-4" />Remove background
+          </p>
+          <button onClick={onCancel} className="text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-white text-lg leading-none">×</button>
+        </div>
+        <div className="p-4">
+          <div
+            ref={frameRef}
+            onClick={pickAt}
+            className="relative w-full rounded-lg overflow-hidden cursor-crosshair"
+            style={{
+              aspectRatio: naturalSize.w && naturalSize.h ? `${naturalSize.w}/${naturalSize.h}` : '16/9',
+              backgroundImage:
+                'linear-gradient(45deg, #cbd5e1 25%, transparent 25%), linear-gradient(-45deg, #cbd5e1 25%, transparent 25%), ' +
+                'linear-gradient(45deg, transparent 75%, #cbd5e1 75%), linear-gradient(-45deg, transparent 75%, #cbd5e1 75%)',
+              backgroundSize: '16px 16px',
+              backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
+            }}
+          >
+            <canvas ref={viewCanvasRef} className="absolute inset-0 w-full h-full" />
+            <canvas ref={srcCanvasRef} className="hidden" />
+          </div>
+          <div className="flex items-center gap-2 mt-2">
+            {pickedColor && (
+              <span className="w-4 h-4 rounded-full border border-slate-300 dark:border-white/20 flex-shrink-0" style={{ background: rgbToHex(pickedColor) }} />
+            )}
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              {pickedColor ? 'Click a different spot to change the picked color.' : "Click the background color you want to remove."}
+            </p>
+          </div>
+          <div className="mt-3">
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-slate-500 dark:text-slate-400">Tolerance</span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400">{tolerance}%</span>
+            </div>
+            <input type="range" min="5" max="90" value={tolerance}
+              onChange={e => setTolerance(Number(e.target.value))}
+              className="w-full h-1 accent-violet-500 cursor-pointer" />
+            <p className="text-[10px] text-slate-400 dark:text-slate-600 mt-1">
+              Higher removes a wider range of similar shades — raise it if fringes of the background are left behind, lower it if it starts eating into your subject.
+            </p>
+          </div>
+          {error && <p className="text-[11px] text-red-500 dark:text-red-400 mt-2">{error}</p>}
+        </div>
+        <div className="px-4 py-3 border-t border-slate-200 dark:border-white/10 flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors">
+            Cancel
+          </button>
+          <button onClick={handleApply} disabled={applying || !pickedColor}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors">
+            {applying ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Applying…</> : 'Apply'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 // ─── Draggable layer wrapper ──────────────────────────────────────────────────
 
-function DraggableLayer({ layerKey, pos, width, isActive, isResizing, label, onMouseDown, onResizeMouseDown, onDelete, children }) {
+function DraggableLayer({ layerKey, pos, width, isActive, isResizing, label, onMouseDown, onResizeMouseDown, onDelete, onCrop, onRemoveBg, children }) {
   const scale = pos.scale ?? 1
   const showHandle = !!onResizeMouseDown
+  // Title paints ABOVE content at rest (2026-08-18, "title is not completed
+  // ... first time i play the vd generated" — confirmed the full text IS in
+  // the editor, only the rendered slide cuts it off). A long/wrapped title
+  // (a full quiz question, e.g.) can grow past the vertical gap before the
+  // content/answers box starts; since every layer previously shared the same
+  // resting z-index (10), stacking fell back to DOM order — content renders
+  // AFTER title in EditableSlide's JSX, so it painted on top and visually
+  // erased the title's later lines behind its own box, looking exactly like
+  // truncated text. Doesn't fix tight spacing on its own (still worth
+  // dragging the content block down for a very long title), but the title
+  // can no longer be invisible/hidden behind it.
+  const restZIndex = layerKey === 'title' ? 15 : 10
   return (
     <div
       className="pa-drag-layer absolute"
@@ -3763,7 +4859,7 @@ function DraggableLayer({ layerKey, pos, width, isActive, isResizing, label, onM
         width: `${width}%`,
         cursor: isActive ? 'grabbing' : 'grab',
         userSelect: 'none',
-        zIndex: (isActive || isResizing) ? 200 : 10,
+        zIndex: (isActive || isResizing) ? 200 : restZIndex,
       }}
     >
       {/* Tooltip label */}
@@ -3778,6 +4874,49 @@ function DraggableLayer({ layerKey, pos, width, isActive, isResizing, label, onM
       <div style={{ transform: `scale(${scale})`, transformOrigin: 'top left' }}>
         {children}
       </div>
+      {/* Crop button — top-left corner (2026-08-17, "need to crop img not
+          just drag and drop or resize it") — the resize handle only scales
+          the whole image box, it never trims pixels out of the image
+          itself; this is the actual crop entry point, sitting right on the
+          layer you're already dragging instead of only in the side panel. */}
+      {onCrop && (
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onCrop(layerKey) }}
+          title="Crop this image"
+          className="pa-drag-label absolute hidden items-center justify-center rounded-full bg-violet-600 hover:bg-violet-500 shadow-lg"
+          style={{
+            width: 16, height: 16,
+            left: -7, top: -7,
+            cursor: 'pointer',
+            display: isActive ? 'flex' : undefined,
+          }}
+        >
+          <svg viewBox="0 0 24 24" style={{ width: 9, height: 9 }} fill="none" stroke="white" strokeWidth="2.5">
+            <path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" />
+          </svg>
+        </button>
+      )}
+      {/* Remove-background button — bottom-left corner (2026-08-17, "i can
+          change and edit the trasparency and colorr of bg of the img") —
+          opens the eyedropper tool to key out a background color, right on
+          the layer itself like Crop above. */}
+      {onRemoveBg && (
+        <button
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => { e.stopPropagation(); onRemoveBg(layerKey) }}
+          title="Remove background color"
+          className="pa-drag-label absolute hidden items-center justify-center rounded-full bg-emerald-600 hover:bg-emerald-500 shadow-lg"
+          style={{
+            width: 16, height: 16,
+            left: -7, bottom: -7,
+            cursor: 'pointer',
+            display: isActive ? 'flex' : undefined,
+          }}
+        >
+          <Pipette style={{ width: 9, height: 9 }} color="white" strokeWidth={2.5} />
+        </button>
+      )}
       {/* Delete button — top-right corner, removes this layer from the slide */}
       {onDelete && (
         <button
@@ -3894,24 +5033,34 @@ function GVSULogoSVG({ isDark = true }) {
 
 // ─── Slide image / figure ─────────────────────────────────────────────────────
 
-function SlideImage({ url, shape }) {
+// bgColor/opacity (2026-08-17, "i can change and edit the trasparency and
+// colorr of bg of the img") — bgColor is a solid fill shown behind the
+// image (useful once its own background has been made transparent, either
+// by the AI diagram chroma-key or the manual "Remove background" tool);
+// opacity fades the whole image+backdrop together. The wrapper div (not the
+// <img>) carries border-radius/shadow/opacity/background so a colored
+// backdrop respects the same shape mask as the image on top of it.
+function SlideImage({ url, shape, bgColor = '', opacity = 1 }) {
   const radius = shape === 'circle' ? '50%' : shape === 'rounded' ? '10%' : '4px'
   return (
-    <img
-      src={url}
-      alt=""
-      draggable={false}
+    <div
       className="pa-icon"
       style={{
-        width: '100%',
-        height: 'auto',
-        display: 'block',
         borderRadius: radius,
-        objectFit: 'cover',
+        overflow: 'hidden',
         boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+        opacity,
+        background: bgColor || 'transparent',
       }}
-      onError={e => { e.currentTarget.style.opacity = '0.25' }}
-    />
+    >
+      <img
+        src={url}
+        alt=""
+        draggable={false}
+        style={{ width: '100%', height: 'auto', display: 'block', objectFit: 'cover' }}
+        onError={e => { e.currentTarget.style.opacity = '0.25' }}
+      />
+    </div>
   )
 }
 

@@ -33,6 +33,20 @@ apiClient.interceptors.response.use(
     // a signed-out user to /login, based on AuthContext's isAuthenticated
     // state — not a blanket rule here.
     //
+    // What WAS missing (2026-08-17, "if ... server stop should go back and
+    // re-loging"): that route-guard redirect only ran on the next full page
+    // load, because AuthContext's isAuthenticated only got set once on
+    // mount. If the session cookie expired or the API host restarted mid-
+    // session, the admin console just sat there showing failed queries
+    // instead of bouncing back to /login. Broadcasting this event lets
+    // AuthContext react to ANY 401 from ANY call, not just its own mount-time
+    // check, so the route guard picks it up immediately and redirects with
+    // the current path in `state.from` — landing back on the SAME admin page
+    // after re-login (see Login.jsx's redirectTo).
+    if (status === 401) {
+      window.dispatchEvent(new Event('auth:session-expired'))
+    }
+    //
     // `data` (the full error response body, not just `.error`) is included
     // so callers can read extra structured fields beyond the message — e.g.
     // login.ts's 403 for an unverified account also sends { needsVerification,

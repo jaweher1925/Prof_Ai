@@ -54,12 +54,21 @@ function parseContentBlocks(json: string): ContentBlockEntry[] {
   }
 }
 
-function serializeComposition(composition: any) {
+function serializeComposition(composition: any, extra: Record<string, any> = {}) {
+  // imageTimings (2026-08-17, "should appear also in the remotion and edit
+  // timeline for it") — mirrors contentBlockTimings's own JSON-string-column
+  // parsing below. `composition.imageTimings` reads as `undefined` (not an
+  // error) on any row/client from before this field existed, so this is
+  // safe even before the migration + `prisma generate` that add it have run.
+  let imageTimings: any[] = []
+  try { imageTimings = JSON.parse(composition.imageTimings || '[]') } catch { imageTimings = [] }
   return {
     ...composition,
     contentBlocks: typeof composition.contentBlocks === 'string'
       ? parseContentBlocks(composition.contentBlocks)
       : composition.contentBlocks,
+    imageTimings,
+    ...extra,
   }
 }
 
@@ -427,9 +436,48 @@ function compositionPatchFromDesign(design: any): Record<string, any> | null {
   if (design.subtitle !== undefined) patch.subtitle = design.subtitle || ''
   if (design.layout) patch.layout = design.layout
   if (design.theme) patch.templateId = design.theme
+  // Primary image (2026-08-17) — these previously were NEVER patched here,
+  // so SlideComposition.imageUrl/imageX/imageY/imageWidth silently diverged
+  // from the real slideDesign.imageUrl the moment a user added/changed an
+  // image in Visual Designer (that save path writes slideDesign directly,
+  // bypassing the SlideComposition PATCH endpoint entirely — see
+  // syncCompositionToSegment's docstring for the mirror-image gap this
+  // closes). imageHeight is left alone: the new imageUrl system only tracks
+  // a single width% (height follows the image's own aspect ratio), it has
+  // no separate height value to patch in.
+  if (design.imageUrl !== undefined) patch.imageUrl = design.imageUrl || null
+  if (p.image) { patch.imageX = p.image.x ?? 10; patch.imageY = p.image.y ?? 70 }
+  if (typeof design.imageWidth === 'number') patch.imageWidth = design.imageWidth
   // Per-point positions so the timeline preview places each point where the
   // user dragged it (not the evenly-spread seed cascade).
-  if (Array.isArray(design.positionedBlocks) && design.positionedBlocks.length) {
+  const blockItems = design.blocks?.[0]?.items
+  if (Array.isArray(blockItems) && blockItems.length) {
+    // Plain bullets editor (2026-08-18) — Visual Designer's normal Content tab
+    // saves points as design.blocks[0].items (see bulletsFromDesign in
+    // VisualDesignerPanel.jsx, which prefers this shape too), NOT
+    // positionedBlocks — nothing on the frontend ever writes positionedBlocks,
+    // it's a backend-seed-only shape. Without this branch,
+    // SlideComposition.contentBlocks froze at whatever the AI seed produced
+    // the first time the row was created (isUserDesigned flips true on first
+    // save via renderedSlideUrl, permanently blocking the !contentEdited
+    // refresh branch below) and never reflected real edits again — silently
+    // desyncing the Edit Timeline's "Point N" rows/count from the actual
+    // bullets, and making captureRevealFrames() build reveal breakpoints
+    // that didn't line up 1:1 with SlidePlaybackPreview's revealCount slicing
+    // of the REAL bullets array (allBullets.slice(0, revealCount)) — the
+    // root cause of the exported video showing all content at once instead
+    // of the timed reveal the user configured. Order/count MUST mirror
+    // design.blocks[0].items exactly (index-for-index) since that's the same
+    // array SlidePlaybackPreview slices by revealCount.
+    patch.contentBlocks = JSON.stringify(blockItems.map((b: any, i: number) => ({
+      text: b?.text || '',
+      keyPoints: [],
+      x: 0,
+      y: 0,
+      zIndex: i,
+      visible: true,
+    })))
+  } else if (Array.isArray(design.positionedBlocks) && design.positionedBlocks.length) {
     patch.contentBlocks = JSON.stringify(design.positionedBlocks.map((b: any, i: number) => ({
       text: b.text || '',
       keyPoints: b.keyPoints || [],
@@ -656,7 +704,18 @@ async function doGetComposition(segmentId: string): Promise<any> {
     await syncCompositionToSegment(segmentId, composition as any)
   }
 
-  return serializeComposition(composition)
+  // extraImages (2026-08-17) — additional images beyond the primary one,
+  // added via VisualDesignerPanel.jsx's extraImages array. There's no
+  // SlideComposition column for these (they're purely a slideDesign-level
+  // concept, like annotations), so unlike title/contentBlocks/imageUrl
+  // above this is never patched INTO the composition row — just read
+  // straight off slideDesign on every response so the timeline always sees
+  // the current list without needing its own sync/staleness handling.
+  const extraImages = Array.isArray(design?.extraImages)
+    ? design.extraImages.map((img: any) => ({ id: img.id, url: img.url, shape: img.shape || 'rounded' }))
+    : []
+
+  return serializeComposition(composition, { extraImages })
 }
 
 async function doPatchComposition(segmentId: string, updates: any): Promise<any> {

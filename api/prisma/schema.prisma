@@ -328,6 +328,15 @@ model SlideComposition {
   subtitleDuration  Float   @default(2.5) @map("subtitle_duration")
   // JSON array of { elementId, startTime, duration } for content blocks
   contentBlockTimings String  @default("[]") @map("content_block_timings")
+  // JSON array of { elementId, startTime, duration } for image elements
+  // (2026-08-17, "if i generate or add img should appear also in the
+  // remotion and edit timeline for it") — elementId is 'image' for the
+  // slide's primary image or 'extraImage:<id>' for additional images added
+  // via VisualDesignerPanel.jsx's extraImages array. Mirrors
+  // contentBlockTimings exactly; same reveal-threshold semantics (an
+  // element becomes visible once playback reaches its startTime — duration
+  // only sizes the timeline bar, it doesn't auto-hide the element again).
+  imageTimings String  @default("[]") @map("image_timings")
   
   // Image Asset — freely resizable/repositionable independent of aspect
   // ratio (#5); imageWidth/imageHeight are both user-controlled so images

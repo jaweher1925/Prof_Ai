@@ -24,7 +24,10 @@ import Director from '@/pages/Director'
 import NotFound from '@/pages/NotFound'
 import AdminOverview from '@/pages/admin/AdminOverview'
 import AdminUsers from '@/pages/admin/AdminUsers'
+import AdminUserDetail from '@/pages/admin/AdminUserDetail'
 import AdminProjects from '@/pages/admin/AdminProjects'
+import AdminProjectDetail from '@/pages/admin/AdminProjectDetail'
+import AdminSpendByUser from '@/pages/admin/AdminSpendByUser'
 import AdminSettings from '@/pages/admin/AdminSettings'
 
 // Gates the app pages behind a real session — anyone not signed in gets
@@ -58,7 +61,7 @@ function RequireAdmin({ children }) {
 
 function AnimatedRoutes() {
   const location = useLocation()
-  const { isLoading } = useAuth()
+  const { isLoading, isAuthenticated, user } = useAuth()
 
   if (isLoading) {
     return (
@@ -74,11 +77,21 @@ function AnimatedRoutes() {
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
 
-        {/* Welcome page — full screen, no sidebar, launch variant */}
+        {/* Welcome page — full screen, no sidebar, launch variant. An
+            already-authenticated admin skips straight to /admin instead of
+            landing on the marketing page (2026-08-17: "when open admin
+            account should be open default console admin /admin") — a
+            professor session still sees Welcome normally, since Welcome's
+            own nav already lets them jump to /dashboard when they want to,
+            and there's no equivalent reason to force them off it. */}
         <Route path="/" element={
-          <PageTransition variant="launch">
-            <Welcome />
-          </PageTransition>
+          isAuthenticated && user?.role === 'admin'
+            ? <Navigate to="/admin" replace />
+            : (
+              <PageTransition variant="launch">
+                <Welcome />
+              </PageTransition>
+            )
         } />
 
         {/* Auth pages — full screen, no sidebar, not gated */}
@@ -156,11 +169,38 @@ function AnimatedRoutes() {
             </AdminLayout>
           </RequireAdmin>
         } />
+        <Route path="/admin/users/:id" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminUserDetail />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
         <Route path="/admin/projects" element={
           <RequireAdmin>
             <AdminLayout>
               <PageTransition>
                 <AdminProjects />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
+        <Route path="/admin/projects/:id" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminProjectDetail />
+              </PageTransition>
+            </AdminLayout>
+          </RequireAdmin>
+        } />
+        <Route path="/admin/spend" element={
+          <RequireAdmin>
+            <AdminLayout>
+              <PageTransition>
+                <AdminSpendByUser />
               </PageTransition>
             </AdminLayout>
           </RequireAdmin>

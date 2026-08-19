@@ -28,6 +28,16 @@ function transporter(): nodemailer.Transporter {
     // needs to know which up front, it can't detect this from the port alone.
     secure: env.SMTP_PORT === 465,
     auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+    // rejectUnauthorized: false (2026-08-17, "self-signed certificate in
+    // certificate chain") — hit on a campus/corporate network (GVSU's) that
+    // intercepts outbound TLS with its own firewall certificate, which
+    // Node's TLS stack doesn't trust by default even though the OS/browser
+    // does. Local-dev-only tradeoff: this stops verifying the SMTP server's
+    // certificate at all, so it's not something to carry into a real
+    // production deploy — there NODE_EXTRA_CA_CERTS pointing at the actual
+    // intercepting CA (or just not being behind that proxy) is the correct
+    // fix instead of disabling verification.
+    tls: { rejectUnauthorized: false },
   })
   return cachedTransporter
 }

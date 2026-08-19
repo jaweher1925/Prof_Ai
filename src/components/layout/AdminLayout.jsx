@@ -124,7 +124,13 @@ export default function AdminLayout({ children }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 overflow-y-auto bg-slate-50 dark:bg-slate-900">
+      {/* overflow-x-hidden (added alongside the AdminOverview grid breakpoint
+          fix, 2026-08-17): min-w-0 lets this shrink below its content's
+          natural width in the flex row, but on its own that doesn't stop a
+          too-wide grid row from bleeding past the visible edge with no
+          scrollbar to reach it — this clips that gracefully instead, as a
+          safety net for whatever a future admin page adds here. */}
+      <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-slate-50 dark:bg-slate-900">
         {children}
       </main>
     </div>

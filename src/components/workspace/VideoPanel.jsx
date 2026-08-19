@@ -397,6 +397,20 @@ export default function VideoPanel({ project, onUpdate }) {
   const revealCount = timelinePlaying
     ? (timelineData.elements || []).filter(e => e.type === 'content' && (e.startTime ?? 0) <= playbackTime).length
     : null
+  // Which images should be showing at the current playback time (2026-08-17,
+  // "should appear also in the remotion and edit timeline for it") — same
+  // threshold-reveal idea as revealCount above, just keyed by each image's
+  // own elementId ('image' or 'extraImage:<id>') instead of a plain count,
+  // since images aren't a flat ordered list like content points. null (not
+  // playing) means "show every image", matching revealCount's null case.
+  const visibleImageIds = timelinePlaying
+    ? (timelineData.elements || []).filter(e => e.type === 'image' && (e.startTime ?? 0) <= playbackTime).map(e => e.id)
+    : null
+  // Title reveal (2026-08-17) — same threshold check as revealCount/
+  // visibleImageIds above, now that EditableSlide actually supports hiding
+  // the title pre-reveal.
+  const titleEl = (timelineData.elements || []).find(e => e.type === 'title')
+  const titleVisible = !timelinePlaying || !titleEl || (titleEl.startTime ?? 0) <= playbackTime
 
   return (
     <div className="h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
@@ -494,6 +508,8 @@ export default function VideoPanel({ project, onUpdate }) {
                   <SlidePlaybackPreview
                     design={selDesign}
                     revealCount={revealCount}
+                    visibleImageIds={visibleImageIds}
+                    titleVisible={titleVisible}
                     avatarImageUrl={avatarImageUrl}
                     useAvatar={useAvatar}
                   />

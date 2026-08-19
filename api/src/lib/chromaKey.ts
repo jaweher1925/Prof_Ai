@@ -52,6 +52,42 @@ export async function chromaKeyToTransparent(
     return sharp(pngBuffer).png().toBuffer()
   }
 
+  // Verify the model actually drew the requested flat magenta backdrop
+  // before trusting the removal pass below (2026-08-17: "i get it like
+  // this" — screenshot showed a literal checkerboard, not magenta). Gemini
+  // doesn't reliably follow the "solid magenta, no exceptions" instruction —
+  // sometimes it falls back to drawing its OWN checkerboard convention for
+  // "transparent background" as actual opaque pixels, which is the exact
+  // failure this whole magenta-then-remove approach exists to avoid (see
+  // this file's header comment). When that happens, there's no magenta to
+  // key out, so the loop below would find nothing, do nothing, and this
+  // function would return a technically-valid PNG that's still 100% opaque
+  // checkerboard — a false "success". Sample border pixels (the backdrop
+  // should dominate a diagram's edges) and fail loudly instead, so the
+  // caller's catch block treats this the same as any other chroma-key
+  // failure rather than silently shipping the checkerboard as if it worked.
+  const target2 = CHROMA_KEY_COLOR
+  const borderPoints: Array<[number, number]> = [
+    [0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1],
+    [Math.floor(width / 2), 0], [Math.floor(width / 2), height - 1],
+    [0, Math.floor(height / 2)], [width - 1, Math.floor(height / 2)],
+  ]
+  let magentaMatches = 0
+  for (const [x, y] of borderPoints) {
+    const idx = (y * width + x) * channels
+    const dist = Math.sqrt(
+      (data[idx] - target2.r) ** 2 + (data[idx + 1] - target2.g) ** 2 + (data[idx + 2] - target2.b) ** 2,
+    )
+    if (dist <= threshold + feather) magentaMatches++
+  }
+  if (magentaMatches < borderPoints.length / 2) {
+    throw new Error(
+      `Model did not render the expected flat magenta backdrop (only ${magentaMatches}/${borderPoints.length} ` +
+      `border samples matched — likely drew its own checkerboard or other pattern instead of following the ` +
+      `chroma-key instruction). Skipping removal rather than shipping a useless PNG.`,
+    )
+  }
+
   for (let i = 0; i < data.length; i += channels) {
     const r = data[i]
     const g = data[i + 1]

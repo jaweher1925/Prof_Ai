@@ -20,6 +20,12 @@ import { Volume2, RotateCcw, GripHorizontal, Play, Pause, Sparkles, Star } from 
 import Spinner from '@/components/ui/Spinner'
 import Button from '@/components/ui/Button'
 
+// Content points (bullets) can't be dragged/defaulted earlier than this
+// (2026-08-18, "keep all the point after sec 4 in the visual design
+// default") — points set earlier consistently broke the exported video's
+// timed reveal. Title/subtitle are unaffected, only content-type elements.
+const MIN_CONTENT_START_SEC = 4
+
 // ═══════════════════════════════════════════════════════════════════════════
 // VISUAL DESIGN PREVIEW — Shows the exact slide that will be rendered
 // ═══════════════════════════════════════════════════════════════════════════
@@ -305,7 +311,7 @@ export function VisualSlidePreview({ composition, template = 'modern', elements 
 // VOICE-OVER TIMELINE BAR — Shows audio segments
 // ═══════════════════════════════════════════════════════════════════════════
 
-function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlayStateChange, playToken = 0 }) {
+function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlayStateChange, playToken = 0, onDurationChange }) {
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   // Which PART's audio is currently playing. A scene is several parts (hook,
@@ -313,6 +319,17 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
   // back-to-back so the total time matches the full scene, not just part 1.
   const [partIndex, setPartIndex] = useState(0)
   const audioRef = useRef(null)
+  // Real, browser-measured duration per part index, filled in as each
+  // part's audio actually loads (2026-08-17: "it's more then 6s but i can
+  // see just 6s and when line complete still can hear voice"). The DB's
+  // durationSeconds per segment can drift from the real generated audio
+  // file (re-generated voice, rounding, etc.) — trusting it made the
+  // progress bar and "Xs / Ys" readout both finish at the STORED length
+  // while the real <audio> element kept playing past it. Once a part's
+  // real duration is known it overrides the DB value for every calculation
+  // below, so the displayed total self-corrects instead of staying wrong
+  // for the rest of the session.
+  const [realDurations, setRealDurations] = useState({})
 
   useEffect(() => { onPlayStateChange?.(playing) }, [playing, onPlayStateChange])
   useEffect(() => { onTick?.(currentTime) }, [currentTime, onTick])
@@ -329,14 +346,28 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playToken])
 
-  // Ordered list of each part's audio + its duration.
+  // Ordered list of each part's audio + its duration — real measured
+  // duration (once loaded) wins over the DB's durationSeconds, see
+  // realDurations above. Index here is the same index used for `partIndex`
+  // and audioRef's `key`, so realDurations[i] lines up correctly even
+  // though segments without a URL get filtered out first.
   const parts = segments
     .map(seg => ({ url: seg.audioUrl || seg.ttsAudioUrl, dur: seg.durationSeconds || seg.duration || 0 }))
     .filter(p => p.url)
+    .map((p, i) => ({ ...p, dur: realDurations[i] ?? p.dur }))
 
   const totalTime = segments.length > 0
-    ? segments.reduce((sum, seg) => sum + (seg.durationSeconds || seg.duration || 0), 0)
+    ? parts.reduce((sum, p) => sum + p.dur, 0)
     : totalDuration
+
+  // Report the corrected total upward — SceneTimelineEditor's own header
+  // total and ElementTimelineTrack's ruler/playhead each used to compute
+  // this SAME number independently from the DB's durationSeconds (see the
+  // #18 comment further down: "Voice timeline show 37 sec / line show 35
+  // sec / bar show 30 sec" — three places, three different answers). This
+  // bar is the one place that actually measures real audio, so it's the
+  // one source of truth the other two should defer to once available.
+  useEffect(() => { onDurationChange?.(totalTime) }, [totalTime, onDurationChange])
 
   // Global time elapsed BEFORE the given part starts.
   const durBefore = (idx) => parts.slice(0, idx).reduce((s, p) => s + p.dur, 0)
@@ -449,6 +480,12 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
           key={partIndex}
           src={currentUrl}
           autoPlay={playing}
+          onLoadedMetadata={(e) => {
+            const real = e.target.duration
+            if (isFinite(real) && real > 0) {
+              setRealDurations(prev => (prev[partIndex] === real ? prev : { ...prev, [partIndex]: real }))
+            }
+          }}
           onError={(e) => console.error('Audio error:', e)}
         />
       )}
@@ -460,7 +497,7 @@ function VoiceTimelineBar({ segments = [], totalDuration = 30, onTick, onPlaySta
 // ELEMENT TIMELINE TRACKS — Automatically extracted from slide design
 // ═══════════════════════════════════════════════════════════════════════════
 
-function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadTime = null, onSelect }) {
+function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadTime = null, onSelect, totalTimeOverride = null }) {
   const [dragging, setDragging] = useState(null)
   const [selected, setSelected] = useState(null)
   const containerRef = useRef(null)
@@ -468,7 +505,13 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
   const [zoom, setZoom] = useState(0.5) // 50% zoom by default
 
   const segments = scene?.segments || []
-  const totalTime = segments.reduce((sum, seg) => sum + (seg.durationSeconds || seg.duration || 0), 0) || 30
+  // Prefer the parent's real, audio-measured total (totalTimeOverride, fed
+  // from VoiceTimelineBar) over this component's own DB-derived guess — see
+  // the #18 comment near SceneTimelineEditor's own totalTime for why having
+  // three independent calculations of "the same" number was the bug, not
+  // just this one being wrong. Falls back to the local calc only until the
+  // real duration arrives (audio hasn't loaded yet) or there's no scene.
+  const totalTime = totalTimeOverride ?? (segments.reduce((sum, seg) => sum + (seg.durationSeconds || seg.duration || 0), 0) || 30)
 
   const timeToPixel = (time) => (time / totalTime) * (containerRef.current?.offsetWidth || 1000) * zoom
   const pixelToTime = (px) => (px / ((containerRef.current?.offsetWidth || 1000) * zoom)) * totalTime
@@ -554,7 +597,16 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
       }
     } else if (element) {
       // Move the START — the point still lasts the same amount of time.
-      const newTime = Math.max(0, Math.min(initialTime + deltaTime, totalTime - 0.1))
+      // Content points (bullets) are floored at MIN_CONTENT_START_SEC
+      // (2026-08-18, "keep all the point after sec 4 in the visual design
+      // default") — a point dragged earlier than that consistently broke the
+      // exported video's reveal (logo/background missing, no animation at
+      // all) despite several rounds of fixing the capture pipeline itself;
+      // the underlying cause wasn't fully pinned down, so this floors the
+      // UI at the known-working range rather than leaving a trap in place.
+      // Title/subtitle are untouched — 0 has always worked fine for those.
+      const floor = element.type === 'content' ? MIN_CONTENT_START_SEC : 0
+      const newTime = Math.max(floor, Math.min(initialTime + deltaTime, totalTime - 0.1))
       if (Math.abs(newTime - initialTime) > 0.01) {
         onElementUpdate({ id: dragging, startTime: newTime, duration: element.duration })
       }
@@ -568,6 +620,10 @@ function ElementTimelineTrack({ scene, elements = [], onElementUpdate, playheadT
     title: 'bg-blue-500 border-blue-600',
     subtitle: 'bg-purple-500 border-purple-600',
     content: 'bg-green-500 border-green-600',
+    // 2026-08-17 — images get their own color so they're visually distinct
+    // from content points in the track list, not lumped in via the
+    // `|| typeColors.content` fallback.
+    image: 'bg-amber-500 border-amber-600',
   }
 
   // Generate timeline ruler marks
@@ -718,6 +774,14 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackTime, setPlaybackTime] = useState(0)
   const [generatingSlide, setGeneratingSlide] = useState(false)
+  // Real total scene duration, reported up by VoiceTimelineBar once it's
+  // measured the actual audio (2026-08-17 — see the #18 comment near this
+  // component's own totalTime below for the full history: three places used
+  // to each compute "total duration" independently from the DB's
+  // durationSeconds, which can itself drift from the real generated audio).
+  // null until VoiceTimelineBar reports in; every totalTime calc in this
+  // file falls back to the DB-derived guess until then.
+  const [voiceTotalTime, setVoiceTotalTime] = useState(null)
 
   // Feed the parent (Video Editing) everything it needs to render the ONE
   // preview up top as the play surface: whether we're playing, the current
@@ -835,14 +899,52 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
           id: `content-${idx}`,
           label: `Point ${idx + 1}: "${block.text.substring(0, 25)}${block.text.length > 25 ? '...' : ''}"`,
           type: 'content',
-          startTime: timing?.startTime ?? (3 + idx * 3),
+          // Math.max floors this at MIN_CONTENT_START_SEC even for a
+          // PREVIOUSLY-saved sub-4s value (from before this floor existed) —
+          // those were the ones actually breaking the export, so leaving
+          // them displayed/used as-is would keep the trap active for any
+          // scene edited before this fix.
+          startTime: Math.max(MIN_CONTENT_START_SEC, timing?.startTime ?? (3 + idx * 3)),
           duration: timing?.duration ?? 2.5,
         })
       })
     }
 
+    // 4. IMAGES (2026-08-17, "if i generate or add img should appear also
+    // in the remotion and edit timeline for it") — the primary image (if
+    // any) plus every extraImages entry, each its own draggable row just
+    // like a content point. imageTimings/extraImages come straight from
+    // compositions.ts's doGetComposition — extraImages is read fresh off
+    // slideDesign on every fetch (no staleness to worry about there), while
+    // imageTimings persists whatever the user's dragged here before.
+    const imgTimings = comp.imageTimings || []
+    const findTiming = (id) => (Array.isArray(imgTimings) ? imgTimings.find(t => t.elementId === id) : null)
+    if (comp.imageUrl) {
+      const t = findTiming('image')
+      allElements.push({
+        id: 'image',
+        label: 'Image',
+        type: 'image',
+        startTime: t?.startTime ?? 0,
+        duration: t?.duration ?? 3,
+      })
+    }
+    if (Array.isArray(comp.extraImages)) {
+      comp.extraImages.forEach((img, idx) => {
+        const elId = `extraImage:${img.id}`
+        const t = findTiming(elId)
+        allElements.push({
+          id: elId,
+          label: `Image ${idx + 2}`,
+          type: 'image',
+          startTime: t?.startTime ?? 0,
+          duration: t?.duration ?? 3,
+        })
+      })
+    }
+
     setElements(allElements)
-  }, [composition?.id, composition?.title, composition?.contentBlocks?.length])
+  }, [composition?.id, composition?.title, composition?.contentBlocks?.length, composition?.imageUrl, composition?.extraImages?.length])
 
   const handleUpdate = async (update) => {
     try {
@@ -850,8 +952,9 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
         // Reset all elements to default, evenly distributed timing.
         // durationSeconds (not duration — see the header's totalTime below
         // for why the field name matters here) is what SceneSegment rows
-        // actually carry.
-        const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30
+        // actually carry. Prefers voiceTotalTime (real, audio-measured) over
+        // the DB guess, same reasoning as the header's totalTime below.
+        const totalTime = voiceTotalTime ?? ((scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30)
         const timePerElement = totalTime / Math.max(elements.length, 1)
         
         const newEls = elements.map((el, i) => ({
@@ -936,7 +1039,19 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
   // up implying. Three places computing the same number three different
   // ways, one of them silently wrong. Reported as: "Voice timeline show 37
   // sec / line show 35 sec / bar show 30 sec."
-  const totalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30
+  //
+  // FOLLOW-UP (2026-08-17): fixing the field name made all three read the
+  // same DB column, but the DB's durationSeconds can ITSELF drift from the
+  // real generated audio file (re-generated voice, rounding, etc.) — "it's
+  // more then 6s but i can see just 6s and when line complete still can
+  // hear voice". voiceTotalTime is VoiceTimelineBar's real, browser-measured
+  // duration reported upward once available; every totalTime here and in
+  // ElementTimelineTrack now defers to it instead of trusting the DB number
+  // outright, so this header, the ruler, and the red playhead's clamp all
+  // agree with whatever's actually playing instead of the three of them
+  // (now two, post-#18) drifting again for a new reason.
+  const dbTotalTime = (scene?.segments || []).reduce((sum, s) => sum + (s.durationSeconds || s.duration || 0), 0) || 30
+  const totalTime = voiceTotalTime ?? dbTotalTime
 
   return (
     <div className="w-full space-y-3">
@@ -1034,6 +1149,7 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
           totalDuration={totalTime}
           onPlayStateChange={setIsPlaying}
           onTick={setPlaybackTime}
+          onDurationChange={setVoiceTotalTime}
           playToken={playToken}
         />
       </div>
@@ -1068,6 +1184,7 @@ export default function SceneTimelineEditor({ scene, onUpdate, useAvatar = true,
             onElementUpdate={handleUpdate}
             playheadTime={isPlaying ? playbackTime : null}
             onSelect={onElementSelect}
+            totalTimeOverride={totalTime}
           />
         )}
       </div>

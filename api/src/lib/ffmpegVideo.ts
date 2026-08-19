@@ -296,77 +296,147 @@ function writeSvgToDisk(svg: string): string {
 
 async function renderSegmentClip(
   segment: RenderableSegment,
-  pngPath: string,
+  frames: Array<{ path: string; startSec: number }>,
   textAnimationTimings?: string | null
 ): Promise<string> {
   const audioPath = localPathFromUploadUrl(segment.ttsAudioUrl)
-  
+
   if (!audioPath) {
     throw new Error(`Segment ${segment.id}: Audio file not found at ${segment.ttsAudioUrl}`)
   }
-  
-  if (!existsSync(pngPath)) {
-    throw new Error(`Segment ${segment.id}: PNG slide not found at ${pngPath}`)
+  if (!frames.length) {
+    throw new Error(`Segment ${segment.id}: No slide frames to render`)
   }
-  
+  for (const f of frames) {
+    if (!existsSync(f.path)) {
+      throw new Error(`Segment ${segment.id}: PNG slide not found at ${f.path}`)
+    }
+  }
+
   const outName = `${randomUUID()}_segment.mp4`
   const outPath = join(UPLOAD_DIR, outName)
-  
-  console.log(`[renderSegmentClip] Rendering segment ${segment.id}`, {
-    pngPath,
-    audioPath,
-    outPath,
-  })
 
   // Normalize ANY input slide to exactly 1920×1080 — libx264 requires even
   // dimensions, and browser snapshots can come in at arbitrary sizes
   const baseVf = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black'
   const FPS = 24  // Reduced from 30fps to 24fps for faster rendering
 
-  // Background stays STATIC — the slide PNG (whether the Visual Designer's
-  // own WYSIWYG snapshot or the server-side SVG fallback) already has the
-  // title/bullets fully drawn, correctly positioned and styled. This used to
-  // ALSO draw a second, generic-styled copy of that same title/bullet text
-  // on top via ffmpeg drawtext — hardcoded white Arial at a fixed x:100,y:150
-  // position that had no relationship to the slide's real layout — fading in
-  // word-by-word/line-by-line. That's the stray "caption" users were seeing
-  // float over the scene: a duplicate, misplaced re-draw of text already
-  // baked into the background. Removed entirely; the slide image is now the
-  // only place this text is drawn, matching what the editor actually shows.
-  const vf = baseVf
-  const useLoop = true
+  // Single frame — the overwhelmingly common case (no Edit Timeline reveal
+  // configured, or a scene never opened there) — keeps the exact simple,
+  // fast path this always used: one looped static image, no filter graph.
+  if (frames.length === 1) {
+    console.log(`[renderSegmentClip] Rendering segment ${segment.id}`, {
+      pngPath: frames[0].path, audioPath, outPath,
+    })
 
-  const buildArgs = (filter: string, loop: boolean): string[] => [
+    // Background stays STATIC — the slide PNG (whether the Visual Designer's
+    // own WYSIWYG snapshot or the server-side SVG fallback) already has the
+    // title/bullets fully drawn, correctly positioned and styled. This used
+    // to ALSO draw a second, generic-styled copy of that same title/bullet
+    // text on top via ffmpeg drawtext — hardcoded white Arial at a fixed
+    // x:100,y:150 position that had no relationship to the slide's real
+    // layout — fading in word-by-word/line-by-line. That's the stray
+    // "caption" users were seeing float over the scene: a duplicate,
+    // misplaced re-draw of text already baked into the background. Removed
+    // entirely; the slide image is now the only place this text is drawn,
+    // matching what the editor actually shows.
+    const buildArgs = (filter: string): string[] => [
+      '-y',
+      '-loop', '1',
+      '-i', frames[0].path,
+      '-i', audioPath,
+      '-c:v', 'libx264',
+      // A slide clip is a STATIC image held for the length of the narration
+      // — x264's default 'medium' preset spends most of its time on motion
+      // estimation that has nothing to find here. 'veryfast' + 'stillimage'
+      // cuts this encode by roughly 5-8x at equivalent visual quality, which
+      // is the single biggest win in the whole render path (ENCODE_SPEED).
+      ...ENCODE_SPEED,
+      '-tune', 'stillimage',
+      '-r', String(FPS),  // uniform fps so xfade transitions can join clips
+      '-c:a', 'aac', '-b:a', '192k',
+      '-pix_fmt', 'yuv420p',
+      '-vf', filter,
+      '-shortest',
+      outPath,
+    ]
+
+    try {
+      await runFfmpeg(buildArgs(baseVf))
+    } catch (err: any) {
+      console.warn(`[renderSegmentClip] Render failed: ${err?.message?.slice(-300)}`)
+      throw err
+    }
+
+    console.log(`[renderSegmentClip] Created segment video: ${outPath}`)
+    return outPath
+  }
+
+  // Multiple frames (2026-08-17, "if i generate or add img should appear
+  // also in the remotion and edit timeline" / "in the final vd ... it is
+  // static and everything appear in first time") — the Edit Timeline's
+  // per-element reveal timing, baked client-side into a sequence of WYSIWYG
+  // snapshots (one per reveal breakpoint — see VisualDesignerPanel.jsx's
+  // captureRevealFrames), gets composited here as TIMED background layers
+  // instead of one flat static image for the whole clip. Each frame is
+  // chained on top of the previous via ffmpeg's overlay filter gated by
+  // `enable='between(t,start,end)'` — since every frame is a full, opaque
+  // 1920x1080 image, once frame N's window opens it completely replaces
+  // whatever was showing before, i.e. a hard cut at exactly that second.
+  console.log(`[renderSegmentClip] Rendering segment ${segment.id} with ${frames.length} timed reveal frames`, { audioPath, outPath })
+
+  let audioDuration: number
+  try {
+    audioDuration = await getAudioDurationSec(audioPath)
+  } catch (err: any) {
+    console.warn(`[renderSegmentClip] Could not read audio duration, falling back to first frame only: ${err?.message}`)
+    return renderSegmentClip(segment, [frames[0]], textAnimationTimings)
+  }
+  // Slack past the real duration so the last frame's `between()` upper
+  // bound is never accidentally clipped by float rounding right at the end.
+  const endBound = audioDuration + 1
+
+  const sorted = [...frames].sort((a, b) => a.startSec - b.startSec)
+  const inputArgs: string[] = []
+  sorted.forEach(f => { inputArgs.push('-loop', '1', '-i', f.path) })
+  inputArgs.push('-i', audioPath)
+  const audioInputIndex = sorted.length
+
+  const scaleStages = sorted.map((_, i) => `[${i}:v]${baseVf}[bg${i}]`)
+  const overlayStages: string[] = []
+  let prevLabel = 'bg0'
+  for (let i = 1; i < sorted.length; i++) {
+    const outLabel = i === sorted.length - 1 ? 'v' : `s${i}`
+    const start = Math.max(0, sorted[i].startSec)
+    overlayStages.push(`[${prevLabel}][bg${i}]overlay=0:0:enable='between(t,${start},${endBound})'[${outLabel}]`)
+    prevLabel = outLabel
+  }
+  const filterComplex = [...scaleStages, ...overlayStages].join(';')
+
+  const args = [
     '-y',
-    ...(loop ? ['-loop', '1'] : []),
-    '-i', pngPath,
-    '-i', audioPath,
+    ...inputArgs,
     '-c:v', 'libx264',
-    // A slide clip is a STATIC image held for the length of the narration —
-    // x264's default 'medium' preset spends most of its time on motion
-    // estimation that has nothing to find here. 'veryfast' + 'stillimage'
-    // cuts this encode by roughly 5-8x at equivalent visual quality, which is
-    // the single biggest win in the whole render path (see ENCODE_SPEED).
     ...ENCODE_SPEED,
     '-tune', 'stillimage',
-    '-r', String(FPS),  // uniform fps so xfade transitions can join clips
+    '-r', String(FPS),
     '-c:a', 'aac', '-b:a', '192k',
     '-pix_fmt', 'yuv420p',
-    '-vf', filter,
+    '-filter_complex', filterComplex,
+    '-map', '[v]',
+    '-map', `${audioInputIndex}:a`,
     '-shortest',
     outPath,
   ]
 
   try {
-    await runFfmpeg(buildArgs(vf, useLoop))
+    await runFfmpeg(args)
   } catch (err: any) {
-    // Fallback to static slide without text animations if rendering fails
-    console.warn(`[renderSegmentClip] Render failed, retrying with static slide only: ${err?.message?.slice(-300)}`)
-    await runFfmpeg(buildArgs(baseVf, true))
+    console.warn(`[renderSegmentClip] Multi-frame render failed, falling back to first frame only: ${err?.message?.slice(-300)}`)
+    return renderSegmentClip(segment, [sorted[0]], textAnimationTimings)
   }
 
   console.log(`[renderSegmentClip] Created segment video: ${outPath}`)
-
   return outPath
 }
 
@@ -530,25 +600,45 @@ export async function renderSegmentsToVideo(opts: {
       let design: SlideContent = {}
       try { design = JSON.parse(segment.slideDesign || '{}') } catch { /* fallback below */ }
 
-      let pngPath: string
-      const snapshotPath = localPathFromUploadUrl(design.renderedSlideUrl)
-      if (snapshotPath) {
-        console.log(`[renderSegmentsToVideo] Segment ${segment.id}: using Visual Designer snapshot ${snapshotPath}`)
-        pngPath = snapshotPath  // persistent upload — NOT added to temp cleanup
-      } else {
-        console.log(`[renderSegmentsToVideo] Segment ${segment.id}: no snapshot, falling back to server-side slide render`)
-        // Step 1: Create SVG from Visual Designer design
-        const svg = createSlidesSvg(segment, opts.moduleTitle || 'Module', i, opts.segments.length)
-        // Step 2: Write SVG to disk
-        const svgPath = writeSvgToDisk(svg)
-        tempSvgPaths.push(svgPath)
-        // Step 3: Rasterize SVG to PNG
-        pngPath = await rasterizeSvg(svgPath)
-        tempPngPaths.push(pngPath)
+      // revealFrames (2026-08-17): when the Edit Timeline has real, distinct
+      // per-element reveal timing baked in, this is a sequence of snapshots
+      // — one per reveal breakpoint — instead of one flat image, so the
+      // exported video actually progresses through title/content/image
+      // reveals like the editor's own timeline preview does. Falls straight
+      // through to the existing single-snapshot / SVG-fallback behavior
+      // whenever it's absent, has under 2 usable entries, or any frame's
+      // file is missing — this is purely additive, never a hard requirement.
+      let frames: Array<{ path: string; startSec: number }> = []
+      if (Array.isArray(design.revealFrames) && design.revealFrames.length > 1) {
+        frames = design.revealFrames
+          .map(f => ({ path: localPathFromUploadUrl(f?.url), startSec: Number(f?.time) || 0 }))
+          .filter((f): f is { path: string; startSec: number } => !!f.path)
       }
 
-      // Step 4: Render segment video (PNG + audio)
-      return renderSegmentClip(segment, pngPath, segment.textAnimationTimings)
+      if (frames.length > 1) {
+        console.log(`[renderSegmentsToVideo] Segment ${segment.id}: using ${frames.length} timed reveal frames`)
+      } else {
+        let pngPath: string
+        const snapshotPath = localPathFromUploadUrl(design.renderedSlideUrl)
+        if (snapshotPath) {
+          console.log(`[renderSegmentsToVideo] Segment ${segment.id}: using Visual Designer snapshot ${snapshotPath}`)
+          pngPath = snapshotPath  // persistent upload — NOT added to temp cleanup
+        } else {
+          console.log(`[renderSegmentsToVideo] Segment ${segment.id}: no snapshot, falling back to server-side slide render`)
+          // Step 1: Create SVG from Visual Designer design
+          const svg = createSlidesSvg(segment, opts.moduleTitle || 'Module', i, opts.segments.length)
+          // Step 2: Write SVG to disk
+          const svgPath = writeSvgToDisk(svg)
+          tempSvgPaths.push(svgPath)
+          // Step 3: Rasterize SVG to PNG
+          pngPath = await rasterizeSvg(svgPath)
+          tempPngPaths.push(pngPath)
+        }
+        frames = [{ path: pngPath, startSec: 0 }]
+      }
+
+      // Step 4: Render segment video (frame(s) + audio)
+      return renderSegmentClip(segment, frames, segment.textAnimationTimings)
     }
 
     // Results are written back BY INDEX, so the finished clips stay in

@@ -140,28 +140,74 @@ app.http('generateImage', {
         }
       }
 
-      const mime = imagePart.inlineData.mimeType || 'image/png'
+      let mime = imagePart.inlineData.mimeType || 'image/png'
       let ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png'
       let outMime = mime
       let buffer: Buffer = Buffer.from(imagePart.inlineData.data, 'base64')
 
       // Key out the magenta backdrop for diagram-like images so what actually
       // gets stored/overlaid on the slide has real transparency instead of a
-      // flat magenta (or, previously, a literal checkerboard) rectangle.
+      // flat magenta (or checkerboard) rectangle.
+      //
+      // transparencyApplied (2026-08-17, "i generate img in media and click
+      // transparent but it is not" / "i don't want to have pixclt png bg i
+      // need it transparent") — this used to catch a chroma-key failure,
+      // log a warning ONLY the server ever sees, and silently upload the
+      // raw un-keyed image as if everything succeeded. Two distinct failure
+      // modes turned up: (1) chroma-key itself throwing (environment/sharp
+      // issue), and (2) Gemini simply not following the "solid magenta"
+      // instruction and drawing its own checkerboard instead — a
+      // probabilistic model-compliance miss, not a deterministic bug, which
+      // chromaKeyToTransparent now detects and throws on too (see
+      // chromaKey.ts's border-sample check). Since #2 is probabilistic, a
+      // fresh generation attempt often just succeeds on its own — so retry
+      // the WHOLE generation (not just the removal step; re-keying the same
+      // non-magenta image would just fail again) up to MAX_ATTEMPTS times
+      // before giving up and reporting failure to the frontend.
+      let transparencyApplied = false
       if (isDiagramLike) {
-        try {
-          buffer = await chromaKeyToTransparent(buffer)
-          ext = 'png'
-          outMime = 'image/png'
-        } catch (e: any) {
-          ctx.warn(`[generate-image] chroma-key removal failed, using image as-is: ${e?.message}`)
+        const MAX_ATTEMPTS = 3
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            buffer = await chromaKeyToTransparent(buffer)
+            ext = 'png'
+            outMime = 'image/png'
+            transparencyApplied = true
+            break
+          } catch (e: any) {
+            ctx.error(`[generate-image] chroma-key attempt ${attempt}/${MAX_ATTEMPTS} failed: ${e?.stack || e?.message || e}`)
+            if (attempt === MAX_ATTEMPTS) break
+
+            // Generate a FRESH image for the next attempt — re-running
+            // chroma-key on the same buffer would just fail identically
+            // (the model already ignored the instruction once); a new
+            // independent generation gives it another chance to comply.
+            let retry = await callGeminiImage(apiKey, DEFAULT_MODEL, fullPrompt)
+            if (!retry.ok) retry = await callGeminiImage(apiKey, FALLBACK_MODEL, fullPrompt)
+            const retryPart = retry.ok ? retry.parts?.find(p => p.inlineData?.data) : undefined
+            if (!retryPart?.inlineData?.data) {
+              ctx.warn(`[generate-image] retry ${attempt} produced no usable image, stopping retries`)
+              break
+            }
+            mime = retryPart.inlineData.mimeType || mime
+            buffer = Buffer.from(retryPart.inlineData.data, 'base64')
+          }
         }
       }
 
       const file_url = await uploadBuffer(buffer, ext, outMime)
 
       ctx.log(`[generate-image] saved ${buffer.length} bytes → ${file_url}`)
-      return { status: 200, jsonBody: { file_url } }
+      return {
+        status: 200,
+        jsonBody: {
+          file_url,
+          // Only meaningful when isDiagramLike — a non-diagram illustration
+          // was never supposed to have a transparent backdrop, so the
+          // frontend should only warn when this is explicitly false.
+          transparencyApplied: isDiagramLike ? transparencyApplied : null,
+        },
+      }
     } catch (e: any) {
       ctx.error('[generate-image] error:', e)
       return { status: 500, jsonBody: { error: e?.message ?? 'Image generation failed' } }

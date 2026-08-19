@@ -22,6 +22,7 @@ import { modulesService } from '@/services/modules'
 import { scenesService } from '@/services/scenes'
 import { agentsService } from '@/services/agents'
 import { Film, Download, CheckCircle, Loader2, Package, Sparkles, AlertCircle, RefreshCw, X, Info, Lock } from 'lucide-react'
+import { toast } from 'sonner'
 import StageHeader from '@/components/workspace/StageHeader'
 import Spinner from '@/components/ui/Spinner'
 
@@ -47,6 +48,42 @@ const isRendered = (v) => !!v && !String(v).startsWith('heygen:')
 // when i open it again can i see it again and still running").
 const isPending = (v) => !!v && String(v).startsWith('heygen:')
 const pendingVideoId = (v) => String(v).slice('heygen:'.length)
+
+// Submission marker (2026-08-18, "i click on sceen 3 and start loading i
+// close the pop up and go back i can't see it loading ... and in hygen
+// server i can find both and are the same sceen") — isPending above only
+// works AFTER the backend has written the `heygen:<id>` sentinel, which only
+// happens once agentsService.runHeyGenAvatar's request actually resolves. If
+// the popup gets closed (and the modal unmounts) WHILE that first request is
+// still in flight — a very plausible window since it's the request that also
+// renders the slide server-side — there's a real gap where nothing in the DB
+// says this row is busy yet. Reopening then correctly shows 'idle' (nothing
+// was stale, there was just genuinely nothing to see yet), so it's still
+// clickable, and clicking again submits a SECOND HeyGen job for the same
+// part. This marker closes that gap: written to localStorage the INSTANT a
+// generate click happens (before the network call), independent of the
+// modal's mount state or the request ever resolving, so a reopened modal
+// knows "something was submitted here, don't let this be clicked again"
+// even if the server hasn't caught up yet.
+const SUBMIT_MARKER_MAX_AGE_MS = 3 * 60 * 1000 // generous for a slow slide render + submit round-trip
+const submitMarkerKey = (moduleId, rowKey) => `pa-submitting-${moduleId}:${rowKey}`
+const markSubmitting = (moduleId, rowKey) => {
+  try { localStorage.setItem(submitMarkerKey(moduleId, rowKey), String(Date.now())) } catch { /* ignore */ }
+}
+const clearSubmitting = (moduleId, rowKey) => {
+  try { localStorage.removeItem(submitMarkerKey(moduleId, rowKey)) } catch { /* ignore */ }
+}
+const isSubmitting = (moduleId, rowKey) => {
+  try {
+    const raw = localStorage.getItem(submitMarkerKey(moduleId, rowKey))
+    if (!raw) return false
+    if (Date.now() - Number(raw) > SUBMIT_MARKER_MAX_AGE_MS) {
+      localStorage.removeItem(submitMarkerKey(moduleId, rowKey))
+      return false
+    }
+    return true
+  } catch { return false }
+}
 
 // mm:ss for the live elapsed-time readout — HeyGen render time varies a lot
 // (a few minutes to well over 15+ depending on account concurrency/queueing),
@@ -78,10 +115,23 @@ function StepProgress({ label, sublabel }) {
 // them one at a time on request, then merges once every scene is done.
 function GenerateModuleModal({ module, project, onClose }) {
   const queryClient = useQueryClient()
+  // refetchOnMount: 'always' (2026-08-18, "close the popup by mistake... open
+  // it again it stop loading") — the global QueryClient default is a 1-minute
+  // staleTime, so reopening this modal within a minute of first opening it
+  // served the STALE cached `scenes` list instead of refetching — meaning a
+  // job submitted right before the modal was closed (which writes the
+  // `heygen:<id>` pending sentinel straight to the DB, see isPending above)
+  // wouldn't show up yet, and every row looked 'idle' instead of 'busy' even
+  // though the render was genuinely still running server-side. The HeyGen job
+  // itself was never affected by closing the modal — only this modal's own
+  // stale view of it was. Forcing a fresh fetch on every mount fixes that;
+  // resumeRow (below) then picks the still-pending row back up exactly as
+  // designed.
   const { data: scenes = [], isLoading } = useQuery({
     queryKey: ['scenes', module.id],
     queryFn: () => scenesService.listByModule(module.id),
     enabled: !!module.id,
+    refetchOnMount: 'always',
   })
   const orderedScenes = [...scenes].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
 
@@ -137,11 +187,18 @@ function GenerateModuleModal({ module, project, onClose }) {
   // Server-known pending state (isPending) is checked even when this row has
   // no LOCAL rowStates entry yet — that's exactly the case right after the
   // modal is reopened, before the resume effect below has had a chance to
-  // attach its own 'busy' state.
+  // attach its own 'busy' state. isSubmitting (the localStorage marker) is
+  // checked LAST, only when the server doesn't already show pending/done —
+  // it's a fallback for the narrow window before the server even knows a job
+  // was submitted, not meant to override real server state once it arrives.
   const statusOf = (row) => rowStates[row.key]?.status
-    || (isPending(row.renderedUrl) ? 'busy' : isRendered(row.renderedUrl) ? 'done' : 'idle')
+    || (isPending(row.renderedUrl) ? 'busy'
+      : isRendered(row.renderedUrl) ? 'done'
+      : isSubmitting(module.id, row.key) ? 'busy' : 'idle')
   const messageOf = (row) => rowStates[row.key]?.message
-    || (isPending(row.renderedUrl) && !rowStates[row.key] ? 'Still rendering on HeyGen…' : undefined)
+    || (isPending(row.renderedUrl) && !rowStates[row.key] ? 'Still rendering on HeyGen…'
+      : (!isPending(row.renderedUrl) && !isRendered(row.renderedUrl) && isSubmitting(module.id, row.key))
+        ? 'Submitting to HeyGen — reopened before this could be confirmed, syncing…' : undefined)
 
   const [elapsedSec, setElapsedSec] = useState(0)
   useEffect(() => {
@@ -172,13 +229,21 @@ function GenerateModuleModal({ module, project, onClose }) {
   })
 
   const anyPending = rows.some(row => isPending(row.renderedUrl))
+  // Blocks a second click on ANY row currently mid-submission, even right
+  // after reopening the modal before the server has confirmed it — see the
+  // isSubmitting marker comment above.
+  const anySubmitting = rows.some(row => isSubmitting(module.id, row.key))
 
   const generateRow = async (row) => {
-    if (activeRowKey || anyPending) return // one at a time
+    if (activeRowKey || anyPending || anySubmitting) return // one at a time
     if (!project?.defaultAvatarId || !project?.defaultVoiceId) {
       setRowStates(prev => ({ ...prev, [row.key]: { status: 'error', message: 'Choose an avatar and a voice in Casting settings first.' } }))
       return
     }
+    // Written BEFORE the network call, synchronously — survives the modal
+    // being closed while runHeyGenAvatar is still in flight, unlike
+    // activeRowKey/rowStates (plain component state, lost on unmount).
+    markSubmitting(module.id, row.key)
     setActiveRowKey(row.key)
     setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'Rendering the slide and submitting to HeyGen…' } }))
     try {
@@ -187,12 +252,18 @@ function GenerateModuleModal({ module, project, onClose }) {
         setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'HeyGen is rendering the talking avatar (usually 1–2 min)…' } }))
         const outcome = await pollScene(row.scene.id, r.video_id)
         setRowStates(prev => ({ ...prev, [row.key]: outcome }))
+        notifyRowOutcome(row, outcome)
       } else {
-        setRowStates(prev => ({ ...prev, [row.key]: r?.avatar_warning ? { status: 'warning', message: r.avatar_warning } : { status: 'done' } }))
+        const outcome = r?.avatar_warning ? { status: 'warning', message: r.avatar_warning } : { status: 'done' }
+        setRowStates(prev => ({ ...prev, [row.key]: outcome }))
+        notifyRowOutcome(row, outcome)
       }
     } catch (e) {
-      setRowStates(prev => ({ ...prev, [row.key]: { status: 'error', message: errorToString(e) } }))
+      const outcome = { status: 'error', message: errorToString(e) }
+      setRowStates(prev => ({ ...prev, [row.key]: outcome }))
+      notifyRowOutcome(row, outcome)
     } finally {
+      clearSubmitting(module.id, row.key)
       setActiveRowKey(null)
       queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
     }
@@ -214,10 +285,23 @@ function GenerateModuleModal({ module, project, onClose }) {
     setRowStates(prev => ({ ...prev, [row.key]: { status: 'busy', message: 'Still rendering on HeyGen — picked back up after reopening…' } }))
     pollScene(row.scene.id, videoId).then((outcome) => {
       setRowStates(prev => ({ ...prev, [row.key]: outcome }))
+      notifyRowOutcome(row, outcome)
     }).finally(() => {
       setActiveRowKey(null)
       queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
     })
+  }
+
+  // Toast so a render's outcome is visible even if the user closed this
+  // modal (or switched tabs/panels) while it was running — "go for lunch
+  // break he can find the work done and notification" (2026-08-18). Fires
+  // from both a fresh generateRow() and a resumeRow() pickup, so it's the
+  // same regardless of whether the modal stayed open the whole time.
+  const notifyRowOutcome = (row, outcome) => {
+    const label = `${module.title || 'Module'} — ${row.label} (part ${row.displayNumber})`
+    if (outcome.status === 'done') toast.success(`${label} finished rendering`)
+    else if (outcome.status === 'warning') toast.warning(`${label} finished with a warning`, { description: outcome.message })
+    else if (outcome.status === 'error') toast.error(`${label} failed to render`, { description: outcome.message })
   }
 
   // Runs on every render (cheap — just an array scan) but is self-limiting:
@@ -229,6 +313,20 @@ function GenerateModuleModal({ module, project, onClose }) {
     const orphaned = rows.find(row => isPending(row.renderedUrl) && !rowStates[row.key])
     if (orphaned) resumeRow(orphaned)
   })
+
+  // While any row has an unresolved submission marker (isSubmitting but the
+  // server doesn't show a real `heygen:` sentinel yet — the exact gap this
+  // marker exists to cover), keep refetching `scenes` every few seconds so
+  // the UI transitions to properly-confirmed 'busy' (and the orphan-resume
+  // effect above picks it up) as soon as the server catches up, without the
+  // user needing to do anything. Stops on its own once nothing is submitting.
+  useEffect(() => {
+    if (!anySubmitting) return
+    const id = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['scenes', module.id] })
+    }, 3000)
+    return () => clearInterval(id)
+  }, [anySubmitting, module.id])
 
   // No auto-chain "generate everything" action (removed by request) and no
   // auto parallel multi-segment fan-out either — every row (scene OR
@@ -265,12 +363,17 @@ function GenerateModuleModal({ module, project, onClose }) {
       if (url) {
         setMergeStatus('done'); setMergeUrl(url)
         queryClient.invalidateQueries({ queryKey: ['modules', project?.id] })
+        toast.success(`"${module.title || 'Module'}" final video is ready`)
       } else {
-        setMergeStatus('error'); setMergeError(res?.error || 'No video was produced — check every scene above has a rendered clip.')
+        const msg = res?.error || 'No video was produced — check every scene above has a rendered clip.'
+        setMergeStatus('error'); setMergeError(msg)
+        toast.error(`"${module.title || 'Module'}" merge failed`, { description: msg })
       }
     } catch (e) {
+      const msg = e?.response?.data?.error || e?.message || 'Merge failed.'
       setMergeStatus('error')
-      setMergeError(e?.response?.data?.error || e?.message || 'Merge failed.')
+      setMergeError(msg)
+      toast.error(`"${module.title || 'Module'}" merge failed`, { description: msg })
     }
   }
 
@@ -359,7 +462,7 @@ function GenerateModuleModal({ module, project, onClose }) {
                 // click meant to just check the clip. Not-yet-rendered /
                 // errored parts still generate on click, same as before.
                 const isDoneish = status === 'done' || status === 'warning'
-                const canGenerate = !activeRowKey && !anyPending
+                const canGenerate = !activeRowKey && !anyPending && !anySubmitting
                 const clickable = isDoneish || canGenerate
                 const handleTileClick = () => {
                   if (isDoneish) { setPreviewKey(row.key); return }
@@ -483,7 +586,7 @@ function GenerateModuleModal({ module, project, onClose }) {
             <div className="flex gap-2 flex-shrink-0">
               <button type="button"
                 onClick={() => { setPreviewKey(null); generateRow(previewRow) }}
-                disabled={!!activeRowKey || anyPending}
+                disabled={!!activeRowKey || anyPending || anySubmitting}
                 title="Regenerate this part (uses another HeyGen render)"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-50 transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" /> Regenerate

@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { toast } from 'sonner'
-import { ShieldCheck, User as UserIcon, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
+import { ShieldCheck, User as UserIcon, Plus, Pencil, Trash2, X, AlertTriangle, Eye } from 'lucide-react'
 import { adminService } from '@/services/admin'
 import { useAuth } from '@/lib/AuthContext'
 import TiltCard from '@/components/auth/TiltCard'
@@ -106,6 +107,7 @@ function UserFormModal({ mode, user, onClose, onSaved }) {
 
 export default function AdminUsers() {
   const { user: currentUser } = useAuth()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [showCreate, setShowCreate] = useState(false)
   const [editingUser, setEditingUser] = useState(null)
@@ -157,7 +159,7 @@ export default function AdminUsers() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-8 py-10">
+    <div className="px-8 py-10">
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}
         className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -224,6 +226,13 @@ export default function AdminUsers() {
                           >
                             {u.role === 'admin' ? 'Demote' : 'Promote'}
                           </Button>
+                          <button
+                            onClick={() => navigate(`/admin/users/${u.id}`)}
+                            title="View details"
+                            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
                           <button
                             onClick={() => setEditingUser(u)}
                             title="Edit user"

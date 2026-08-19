@@ -39,10 +39,14 @@ export default function Welcome() {
   // Landing on this page already signed in (e.g. hitting "/" from a
   // bookmark) used to still push these into /login and /signup — a signed-in
   // visitor doesn't need to log in again, so both just go straight to their
-  // dashboard instead (2026-08-13: "this also if i log in with user" — the
+  // own home instead (2026-08-13: "this also if i log in with user" — the
   // nav below also needed to actually reflect that logged-in state).
-  const signIn = () => goTo(isAuthenticated ? '/dashboard' : '/login')
-  const signUp = () => goTo(isAuthenticated ? '/dashboard' : '/signup')
+  // Routes by role (2026-08-17: "be in console admin always") — this used to
+  // always send an already-authenticated visitor to /dashboard, even an
+  // admin, so an admin clicking "Sign in"/"Get Started" from Welcome landed
+  // in the professor dashboard instead of the admin console.
+  const signIn = () => goTo(isAuthenticated ? (user?.role === 'admin' ? '/admin' : '/dashboard') : '/login')
+  const signUp = () => goTo(isAuthenticated ? (user?.role === 'admin' ? '/admin' : '/dashboard') : '/signup')
 
   // Account menu — same pattern as the in-app Sidebar's (see Sidebar.jsx),
   // scoped locally here since this page renders outside AppLayout.

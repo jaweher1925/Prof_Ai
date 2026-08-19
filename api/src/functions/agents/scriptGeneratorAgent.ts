@@ -369,7 +369,15 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
       layout: 'bullets',
       theme: DEFAULT_SEED_THEME,
       title: segment.slide_title || 'Key Learning Points',
-      subtitle: 'Essential concepts from this module',
+      // No subtitle (2026-08-17, same reasoning as #17's hook fix above) —
+      // this was hardcoded to 'Essential concepts from this module' on
+      // EVERY welcome scene's content part regardless of what the part is
+      // actually about, so the Element Timeline's "Key Insight" label
+      // showed generic filler instead of real content: "i don't have key
+      // insight in the content // the first 5 [parts of the welcome] scene
+      // default with layout intro". There's no per-part tagline source for
+      // this the way the hook has objectiveTagline, so omitting it entirely
+      // (rather than showing boilerplate) is the honest option.
       blocks: [{
         type: 'bullets',
         items: segment.elements?.length
@@ -387,7 +395,7 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
       layout: 'definition',
       theme: DEFAULT_SEED_THEME,
       title: '💡 ' + (segment.slide_title || 'Think About This'),
-      subtitle: 'Pause and reflect on what you learned',
+      // No subtitle — see the content case's comment above.
       blocks: [{
         type: 'bullets',
         items: [{text: segment.text || 'Take a moment to think about this concept', level: 1}]
@@ -397,7 +405,7 @@ function buildWelcomeSegmentDesign(segment: GeneratedSegment, moduleTitle: strin
       layout: 'summary',
       theme: DEFAULT_SEED_THEME,
       title: '✓ ' + (segment.slide_title || 'What You Learned'),
-      subtitle: 'Summary of key takeaways',
+      // No subtitle — see the content case's comment above.
       blocks: [{
         type: 'bullets',
         items: segment.elements?.length

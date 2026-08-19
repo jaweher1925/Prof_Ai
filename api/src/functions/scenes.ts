@@ -482,23 +482,51 @@ app.http('updateElementTiming', {
         // Update content block timing
         const blockIndex = parseInt(body.elementId.split('-')[1], 10)
         const timings = JSON.parse(composition.contentBlockTimings || '[]')
-        
+
+        // Floored at MIN_CONTENT_START_SEC (2026-08-18, "keep all the point
+        // after sec 4 in the visual design default") — server-side backstop
+        // matching the same floor now applied in the timeline UI
+        // (SceneTimelineEditor.jsx), so a sub-4s value can't sneak in
+        // through any other caller of this endpoint either.
+        const MIN_CONTENT_START_SEC = 4
+        const startTime = Math.max(MIN_CONTENT_START_SEC, body.startTime)
+
         // Find or create timing entry for this block
         let blockTiming = timings.find((t: any) => t.elementId === body.elementId)
         if (!blockTiming) {
           blockTiming = {
             elementId: body.elementId,
             blockIndex,
-            startTime: body.startTime,
+            startTime,
             duration: body.duration || 2.5,
           }
           timings.push(blockTiming)
         } else {
-          blockTiming.startTime = body.startTime
+          blockTiming.startTime = startTime
           if (body.duration !== undefined) blockTiming.duration = body.duration
         }
 
         updateData.contentBlockTimings = JSON.stringify(timings)
+      } else if (body.elementId === 'image' || body.elementId?.startsWith('extraImage:')) {
+        // Image timing (2026-08-17, "should appear also in the remotion and
+        // edit timeline for it") — same upsert-into-a-JSON-array pattern as
+        // content-N above. elementId is 'image' for the slide's primary
+        // image or 'extraImage:<id>' for one of its extraImages entries.
+        const timings = JSON.parse((composition as any).imageTimings || '[]')
+        let imgTiming = timings.find((t: any) => t.elementId === body.elementId)
+        if (!imgTiming) {
+          imgTiming = {
+            elementId: body.elementId,
+            startTime: body.startTime,
+            duration: body.duration ?? 3,
+          }
+          timings.push(imgTiming)
+        } else {
+          imgTiming.startTime = body.startTime
+          if (body.duration !== undefined) imgTiming.duration = body.duration
+        }
+
+        updateData.imageTimings = JSON.stringify(timings)
       }
 
       const updated = await prisma.slideComposition.update({

@@ -98,6 +98,18 @@ export interface SlideContent {
   // pipeline uses this image directly instead of rebuilding the slide with
   // buildSlide() — guaranteeing the video matches the editor pixel-for-pixel.
   renderedSlideUrl?: string
+  // Timed reveal frames (2026-08-17, "if i generate or add img should
+  // appear also in the remotion and edit timeline" / "in the final vd ...
+  // it is static and everything appear in first time") — a sequence of
+  // WYSIWYG snapshots, one per Edit Timeline reveal breakpoint, captured
+  // client-side by VisualDesignerPanel.jsx's captureRevealFrames. When
+  // present with 2+ entries, ffmpegVideo.ts composites them as TIMED
+  // background layers instead of using renderedSlideUrl as one flat static
+  // image for the whole clip — each frame fully replaces the previous one
+  // once its own `time` (seconds into the segment) arrives. Absent, or
+  // fewer than 2 entries, means the segment behaves exactly as before
+  // (falls straight back to renderedSlideUrl / the SVG fallback).
+  revealFrames?: Array<{ time: number; url: string }>
   // Avatar placeholder position/size synced from SlideComposition (#3, #4) —
   // % of slide, center-anchored, 9:16 box. Read by ffmpegVideo.ts's
   // overlayAvatarOnVideo() so the final composited avatar lands exactly
