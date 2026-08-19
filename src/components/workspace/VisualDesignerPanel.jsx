@@ -1215,13 +1215,15 @@ function SceneGroupList({ script, videoIndex, locked = false, selectedId, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moduleApproved])
 
-  const hasSelected = scenes.some(s => s.id === selectedId)
   // Each module is its own collapsible card so the list isn't one long scroll.
-  // Default: the module that holds the currently-selected scene (or the first
-  // module) starts open, the rest collapsed. After that the toggle is fully
-  // manual — even the module you're editing can be collapsed (was previously
-  // forced open by hasSelected, so Module 1 could never be closed).
-  const [collapsed, setCollapsed] = useState(!hasSelected && videoIndex !== 0)
+  // Default: EVERY module starts closed (2026-08-19, "i don't want [module 1
+  // open by default]... i want all them close and i will open them") — the
+  // old default force-opened module index 0 unconditionally (`videoIndex
+  // !== 0` below), so Module 1 always showed expanded on load regardless of
+  // what you were actually doing. Now nothing opens automatically; the
+  // toggle is purely manual for every module, including the one with the
+  // currently-selected scene.
+  const [collapsed, setCollapsed] = useState(true)
   const open = !collapsed && !locked
 
   return (
@@ -1647,6 +1649,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const [segmentDrafts,   setSegmentDrafts]    = useState({}) // id -> draft text while editing
   const [segmentBusy,     setSegmentBusy]      = useState({}) // id -> 'saving' | 'voicing'
   const [segmentError,    setSegmentError]     = useState({}) // id -> error message
+  // Mirrors activeSegmentId for the delayed auto-capture setTimeout below —
+  // see its own comment for why a plain closure over activeSegmentId isn't
+  // enough (2026-08-19, cross-contaminated quiz question slides).
+  const activeSegmentIdRef = useRef(null)
+  useEffect(() => { activeSegmentIdRef.current = activeSegmentId }, [activeSegmentId])
 
   // Live narration playback (#attractive VD): play the scene's voiceover
   // right on the preview canvas and reveal the script one word at a time,
@@ -1920,7 +1927,25 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
   const captureRevealFrames = async (force = false) => {
     if (!scene?.id) return null
     try {
-      const res = await fetch(`/api/scenes/${scene.id}/composition`)
+      // Segment-scoped fetch (2026-08-19 fix — root cause of every non-
+      // primary segment never getting a reveal, regardless of the force gate
+      // fix above). GET /api/scenes/{sceneId}/composition ALWAYS resolves to
+      // the scene's PRIMARY (order_index 0) segment server-side — see
+      // findPrimarySegmentId in api/src/functions/compositions.ts — it has
+      // no way to know which segment is actually active here. For a
+      // multi-part scene (a quiz's Question 2/3/4, a welcome scene's
+      // content/recap parts), this was silently fetching Question 1's own
+      // contentBlocks/timings every time, no matter which part the user was
+      // actually viewing or had dragged timing on — so a drag made on
+      // Question 2 was invisible to this function, and Question 2's
+      // breakpoints (when computed at all) were built from Question 1's
+      // bullets. Fetch THIS segment's own composition directly when one is
+      // active; only fall back to the scene-level (primary-segment) endpoint
+      // for legacy scenes with no segments at all.
+      const compositionUrl = activeSegmentId
+        ? `/api/sceneSegments/${activeSegmentId}/composition`
+        : `/api/scenes/${scene.id}/composition`
+      const res = await fetch(compositionUrl)
       if (!res.ok) return null
       const comp = await res.json()
 
@@ -2056,6 +2081,37 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
         ])
       }
 
+      // Burst window for smoothing a reveal transition into an actual
+      // fade/slide instead of a hard cut (2026-08-19, "start work on that" —
+      // record the live canvas while it animates instead of one still photo
+      // per breakpoint). True DOM video recording isn't viable here — the
+      // slide is real HTML/CSS, not a <canvas>, and there's no in-browser
+      // API to capture an arbitrary DOM subtree as a video stream; rasterizing
+      // it fast enough for real-time 24fps capture isn't realistic either
+      // (each html-to-image pass already costs 100-300ms at this resolution).
+      // So instead of ONE settled photo per breakpoint, take a SHORT BURST of
+      // extra photos while the real CSS entrance animation (.pa-title/
+      // .pa-b0-4/.pa-card0-3, 0.5-0.65s each) is actually mid-flight, then the
+      // existing hard-cut ffmpeg overlay chain plays them back-to-back — with
+      // enough of them close enough together, that reads as a smooth
+      // animation instead of an instant switch, using the exact same render
+      // pipeline that's already proven correct. REVEAL_BURST_WINDOW_SEC
+      // covers the worst-case entrance duration; REVEAL_BURST_MAX_SAMPLES
+      // bounds it so a scene with many points doesn't multiply capture time
+      // unreasonably (each sample is a real screenshot + upload).
+      //
+      // MAX_SAMPLES cut 4 -> 2 (2026-08-19, "it tooks 3 min to just staart
+      // in hygen") — the first version's extra screenshots, PLUS the extra
+      // background-video overlay stages they produce (more frames = more
+      // ffmpeg compositing work before the slide video is even ready to
+      // submit to HeyGen), pushed pre-submission time up by several minutes
+      // on scenes with multiple points. User chose speed over maximum
+      // smoothness: half as many in-between frames per transition still
+      // reads as noticeably smoother than the original single hard-cut
+      // frame, at a fraction of the extra render cost.
+      const REVEAL_BURST_WINDOW_SEC = 0.65
+      const REVEAL_BURST_MAX_SAMPLES = 2
+
       setCapturingReveal(true)
       try {
         const frames = []
@@ -2070,9 +2126,33 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
           const node = document.querySelector('[data-slide-canvas]')
           if (!node) continue
           await waitForImages(node)
+
+          // Sample the transition in progress — skipped for i===0 (the
+          // baseline "before anything" state, nothing is animating in yet).
+          // Each sample is timestamped by REAL elapsed time since the state
+          // change, not a theoretical fixed interval, since the capture
+          // itself (rasterize + upload) is the dominant cost and doesn't
+          // take a fixed amount of time.
+          if (i > 0) {
+            const burstStartMs = Date.now()
+            for (let b = 0; b < REVEAL_BURST_MAX_SAMPLES; b++) {
+              const elapsedSec = (Date.now() - burstStartMs) / 1000
+              if (elapsedSec >= REVEAL_BURST_WINDOW_SEC) break
+              const burstUrl = await captureNodeToUploadedPng(node, `reveal-${i}-burst${b}.png`)
+              if (burstUrl) frames.push({ time: st.time + elapsedSec, url: burstUrl })
+            }
+          }
+
           await waitForEntranceAnimations(node)
           const url = await captureNodeToUploadedPng(node, `reveal-${i}.png`)
-          if (url) frames.push({ time: st.time, url })
+          // Placed at st.time + the full burst window (not bare st.time) so
+          // this settled frame always sorts AFTER every burst sample above —
+          // renderSegmentClip sorts frames by time before building the
+          // ffmpeg overlay chain, and a settled frame timestamped earlier
+          // than its own burst samples would flip the reveal order (the
+          // "fully revealed" state would flash first, then appear to
+          // un-reveal into the mid-transition burst shots).
+          if (url) frames.push({ time: i > 0 ? st.time + REVEAL_BURST_WINDOW_SEC : st.time, url })
         }
         return frames.length > 1 ? frames : []
       } finally {
@@ -2110,7 +2190,19 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     // persist the OLD (empty) revealFrames — silently falling back to the
     // single fully-revealed snapshot despite having just paid for N frame
     // captures/uploads that then went unused.
-    saveContent({ revealFramesOverride: frames })
+    //
+    // MUST be awaited (2026-08-19 fix — "i drag and edit the timeline...
+    // and regenerate but did not change" / a fresh generate still not
+    // animating even after every caller of syncRevealFrames was already
+    // awaiting IT). This was a race one level deeper than the one already
+    // fixed in handleGenerate/handleGenerateAvatarVideo: those two DO await
+    // syncRevealFrames(...), but syncRevealFrames itself was only waiting
+    // for the CAPTURE to finish, then firing this save and returning
+    // immediately — so "await syncRevealFrames(true)" was resolving before
+    // the PATCH to the backend had actually landed, and the render request
+    // right after it could still read the OLD revealFrames from the DB.
+    // Same failure mode, same fix, one call deeper.
+    await saveContent({ revealFramesOverride: frames })
     return frames
   }
 
@@ -2476,7 +2568,36 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
     // who added/edited content without ever opening the Video Editing tab
     // this session, so the Edit Timeline's timing still makes it into the
     // exported video's reveal instead of silently staying static.
-    syncRevealFrames()
+    //
+    // MUST be awaited (2026-08-18 fix — root cause of "remotion still not
+    // work" surviving every capture-mechanism rebuild): captureRevealFrames
+    // captures N frames SEQUENTIALLY, each one waiting on image loads + CSS
+    // entrance animations to finish, then syncRevealFrames PATCHes the
+    // result to the backend — easily several hundred ms to a few seconds.
+    // Firing this without awaiting it let onGenerate() below race ahead and
+    // call the backend render immediately, which reads segment.slideDesign
+    // straight from the DB. That almost always won the race against the
+    // still-in-flight save, so the render saw the OLD (often empty)
+    // revealFrames and silently fell back to the static single-frame path —
+    // even though the capture itself was working perfectly. Every other fix
+    // this session (live-canvas rebuild, entrance-animation wait, image-load
+    // wait) was correct but could never matter while this call wasn't
+    // actually blocking Generate from starting.
+    //
+    // force=true (2026-08-19 fix — "the remotion just work for the first
+    // sceen i generated"): captureRevealFrames silently bails out to []
+    // unless force is passed AND the user has already dragged something in
+    // Edit Timeline for THIS scene (contentBlockTimings/imageTimings both
+    // empty otherwise — a deliberate perf gate, see that function's own
+    // comment). That's exactly why only the one scene the user had actually
+    // opened Edit Timeline on ever got a reveal — every other "Generate"
+    // click saved empty revealFrames and rendered static, by design, not by
+    // bug. Clicking Generate is itself explicit, deliberate intent — same
+    // as the Refresh timing preview button, which already passes force=true
+    // for this exact reason — so every generate should get the default
+    // reveal schedule (title, then each point/image staggered) even on a
+    // scene nobody has manually dragged a timing block on yet.
+    await syncRevealFrames(true)
     setGenerateFailedMsg(null)
     try {
       const result = await onGenerate(scene.id, activeSegmentId)
@@ -2667,8 +2788,35 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       // design has never had a snapshot, capture one now automatically, a
       // beat after the canvas paints — so just opening a scene here is
       // enough to guarantee the export matches it.
+      //
+      // GUARDED (2026-08-19 fix — real data confirmed this): saveContent()
+      // pins WHICH segment it saves to (targetSegmentId) via the
+      // activeSegmentId closed over at schedule time, but the CONTENT it
+      // saves comes from stateRef.current, a ref that keeps tracking
+      // whatever's live on screen RIGHT NOW. If the user clicks through to
+      // another segment (e.g. flipping through a quiz's Question 1→2→3→4)
+      // faster than this 600ms delay, stateRef.current has already moved on
+      // to the NEXT segment's title/bullets by the time this fires — so it
+      // saved segment N+1's content under segment N's own slideDesign.
+      // Checked a real quiz scene's DB rows after this bug was reported and
+      // found exactly that pattern: Question 1's slideDesign held Question
+      // 2's options, Question 2's held Question 3's, etc. Only fire the
+      // delayed save if this is STILL the active segment when it lands;
+      // otherwise skip it silently — the same auto-capture will just retry
+      // correctly next time this segment is actually viewed.
+      //
+      // syncRevealFrames(true), not plain saveContent() (2026-08-19,
+      // "do not wait for me to dragged something in Edit Timeline... user
+      // will not drag anything if it is okey or default") — the user wants
+      // the reveal timeline to just work by default, with no manual setup
+      // required at all, on every scene. syncRevealFrames(true) does
+      // everything saveContent() did here (captures the flat WYSIWYG
+      // snapshot) PLUS captures the full default reveal-frame sequence and
+      // saves it — so simply opening a scene here, once, is now enough to
+      // guarantee it animates later, from whichever button actually
+      // generates it (Visual Design's own Generate, or Final Video Vault's).
       if (!targetDesign.renderedSlideUrl) {
-        setTimeout(() => { saveContent() }, 600)
+        setTimeout(() => { if (activeSegmentIdRef.current === wanted) syncRevealFrames(true) }, 600)
       }
     }
     switchTo()
@@ -2695,8 +2843,11 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       // Same auto-capture-on-first-view as the segment-switch effect above —
       // this is the alternate switch path (segment chips), kept in sync so
       // it doesn't reopen the same gap through a different click target.
+      // Same activeSegmentIdRef guard, and same syncRevealFrames(true)
+      // upgrade (default reveal captured automatically, no drag required) —
+      // see that comment for both.
       if (!targetDesign.renderedSlideUrl) {
-        setTimeout(() => { saveContent() }, 600)
+        setTimeout(() => { if (activeSegmentIdRef.current === id) syncRevealFrames(true) }, 600)
       }
     }
     setSegmentDrafts(prev => prev[id] !== undefined ? prev : {
@@ -2812,6 +2963,27 @@ function SceneEditor({ scene, moduleId, moduleTitle, totalScenes, defaultTheme =
       // and HeyGen/ffmpeg would render from stale data, reproducing the
       // "regenerate still doesn't match my design" bug.
       await saveContent()
+      // Re-capture + save revealFrames too (2026-08-18 fix — this button, not
+      // handleGenerate, is the ACTUAL "render the scene's speaking-avatar
+      // video" action, which is where the reveal timeline actually shows up).
+      // saveContent() above only persists whatever revealFrames are ALREADY
+      // sitting in local state — it never recomputes them. A timeline drag's
+      // own onUpdate={() => syncRevealFrames()} call is fire-and-forget, so
+      // clicking this button right after a drag (or on a scene whose reveal
+      // was never synced yet this session) could fire the real render before
+      // fresh frames existed anywhere to save, reproducing "remotion still
+      // not showing" even after handleGenerate's own await fix — this is the
+      // button that actually matters for it.
+      //
+      // force=true (2026-08-19 fix — "the remotion just work for the first
+      // sceen i generated") — same reasoning as handleGenerate's own force
+      // fix just above: without it, captureRevealFrames silently returns []
+      // for any scene the user hasn't manually dragged an Edit Timeline
+      // point on, so only the one scene they'd actually opened the timeline
+      // for ever got a reveal. Clicking this button is deliberate intent —
+      // treat it the same as the Refresh timing preview button and always
+      // capture the default reveal schedule.
+      await syncRevealFrames(true)
       // activeSegmentId scopes this to the single part being designed.
       const result = await agentsService.runHeyGenAvatar(scene.id, avatarId, voiceId, true, activeSegmentId)
       if (result?.video_id) {

@@ -222,6 +222,23 @@ export async function finalizeHeyGenJob(opts: {
           where: { id: meta.segmentId },
           data: { avatarVideoUrl: finalUrl },
         })
+        // Scene.avatarEngineUsed (2026-08-19 fix — admin dashboard showing
+        // "10 scenes rendered, $0.00 spend, 0 on either engine"). This whole
+        // branch (per-segment renders — every multi-part scene: quizzes,
+        // welcome scenes) never wrote this field at all; only the OTHER
+        // branch below (single-part, whole-scene renders) did. That's a real
+        // cost-tracking gap, not just a cosmetic one — a project built
+        // entirely from multi-part scenes would show $0 estimated spend
+        // forever, no matter how much was actually billed by HeyGen. One
+        // field on the Scene (not per-segment) is enough since every part of
+        // a scene renders through the same project avatar/voice, so they're
+        // always the same engine in practice.
+        if (meta.sceneId && meta.engineUsed) {
+          await prisma.scene.update({
+            where: { id: meta.sceneId },
+            data: { avatarEngineUsed: meta.engineUsed },
+          }).catch(() => { /* best-effort — don't fail the real render over a stats field */ })
+        }
         try { unlinkSync(sidecarPath) } catch { /* best-effort cleanup */ }
 
         const stitched = meta.sceneId ? await stitchSceneFromSegments(meta.sceneId, context) : null
