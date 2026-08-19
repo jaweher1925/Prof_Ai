@@ -4,7 +4,6 @@ services:
     image: jaweherhichri1925/profai-api:latest
     build: ./api
     environment:
-      - LOCAL_DEV=true
       - DATABASE_URL=file:/data/profai.db
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
